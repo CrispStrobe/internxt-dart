@@ -798,6 +798,98 @@ class InternxtCLI {
         stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         exit(1);
       }
+      client.setAuth(creds);
+
+      final commandRestArgs = argResults.rest.sublist(1);
+      // Get path from arguments, default to "/"
+      final pathToList = commandRestArgs.isNotEmpty ? commandRestArgs[0] : '/';
+      final bool showFullUUIDs = argResults['uuids'];
+
+      print("🔍 Resolving path: $pathToList");
+      // --- FIXED: Resolve the path first ---
+      final resolvedInfo = await client.resolvePath(pathToList);
+
+      if (resolvedInfo['type'] != 'folder') {
+        stderr.writeln("❌ Error: Path '$pathToList' is a file, not a folder.");
+        exit(1);
+      }
+      final folderId = resolvedInfo['uuid'] as String;
+      final resolvedPathDisplay = resolvedInfo['path'] ?? pathToList; // Use resolved path if available
+      // --- End Fix ---
+
+      print('📂 Listing folder: $resolvedPathDisplay (UUID: $folderId)\n');
+
+      // Get folders and files using the resolved folderId
+      final folders = await client.listFolders(folderId);
+      final files = await client.listFolderFiles(folderId);
+
+      final items = [...folders, ...files];
+
+      // ... (rest of the table printing logic remains the same) ...
+       if (items.isEmpty) {
+        print('📭 Folder is empty');
+        return;
+      }
+
+      if (showFullUUIDs) {
+        print('╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
+        print('║  Type    Name                                    Size            UUID                                 ║');
+        print('╠════════════════════════════════════════════════════════════════════════════════════════════════════╣');
+      } else {
+        print('╔═══════════════════════════════════════════════════════════════════════════════╗');
+        print('║  Type    Name                                    Size            UUID        ║');
+        print('╠═══════════════════════════════════════════════════════════════════════════════╣');
+      }
+      
+      int folderCount = 0;
+      int fileCount = 0;
+
+      for (var item in items) {
+        final type = item['type'] == 'folder' ? '📁' : '📄';
+        if(item['type'] == 'folder') folderCount++; else fileCount++;
+
+        final plainName = item['name'] ?? 'Unknown';
+        final fileType = item['type'] == 'file' ? (item['fileType'] ?? '') : '';
+        final displayName = (fileType.isNotEmpty && item['type'] == 'file') ? '$plainName.$fileType' : plainName;
+
+        final name = displayName.toString().padRight(40);
+        final size = item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
+        final uuid = item['uuid'] ?? 'N/A';
+
+        if (showFullUUIDs) {
+          print('║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
+        } else {
+          print('║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  ${uuid.substring(0, 8)}... ║');
+        }
+      }
+      
+      if (showFullUUIDs) {
+        print('╚════════════════════════════════════════════════════════════════════════════════════════════════════╝');
+      } else {
+        print('╚═══════════════════════════════════════════════════════════════════════════════╝');
+      }
+      
+      print('\n📊 Total: ${items.length} items ($folderCount folders, $fileCount files)');
+
+
+    } catch (e) {
+      // Improved error message for path not found
+      if (e.toString().contains("Path not found")) {
+         stderr.writeln('❌ Error: Path not found.');
+      } else {
+        stderr.writeln('❌ Error listing folder: $e');
+      }
+      exit(1);
+    }
+  }
+
+  Future<void> handleListUUID(ArgResults argResults) async {
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
 
       client.setAuth(creds);
 
@@ -912,6 +1004,14 @@ class InternxtCLI {
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
 
+      // Generate a unique ID for this batch operation
+      final batchId = config.generateBatchId('upload', sources, targetPath);
+      print("🔄 Batch ID: $batchId");
+
+      // Try loading existing state
+      var batchState = await config.loadBatchState(batchId);
+
+      // Let the client handle generating or resuming the batch
       await client.upload(
         sources,
         targetPath,
@@ -920,12 +1020,20 @@ class InternxtCLI {
         preserveTimestamps: preserveTimestamps,
         include: include,
         exclude: exclude,
-        // Pass credentials down
         bridgeUser: bridgeUser,
         userIdForAuth: userIdForAuth,
+        batchId: batchId,       // Pass batch info
+        initialBatchState: batchState, // Pass loaded state (or null)
+        saveStateCallback: (state) => config.saveBatchState(batchId, state), // How to save
       );
+
+      // If upload completes successfully, delete the state file
+      await config.deleteBatchState(batchId);
+      print("✅ Batch completed.");
+
     } catch (e) {
       stderr.writeln('❌ Upload failed: $e');
+      // Don't delete state file on error, allowing resume
       exit(1);
     }
   }
@@ -962,9 +1070,16 @@ class InternxtCLI {
             'Credentials file is missing bridgeUser or userId. Please login again.');
       }
 
+      // Generate batch ID
+      final batchId = config.generateBatchId('download', [remotePath], localDestination ?? '.');
+      print("🔄 Batch ID: $batchId");
+      
+      // Try loading state
+      var batchState = await config.loadBatchState(batchId);
+      
       print('⬇️  Downloading from path: $remotePath');
 
-      // Call the more feature-rich downloadPath method
+      // Call the downloadPath method
       await client.downloadPath(
         remotePath,
         localDestination: localDestination,
@@ -975,7 +1090,14 @@ class InternxtCLI {
         exclude: exclude,
         bridgeUser: bridgeUser,
         userIdForAuth: userIdForAuth,
+        batchId: batchId, // Pass batch info
+        initialBatchState: batchState, // Pass loaded state
+        saveStateCallback: (state) => config.saveBatchState(batchId, state), // How to save
       );
+
+      // If download completes successfully, delete the state file
+      await config.deleteBatchState(batchId);
+      print("✅ Batch completed.");
     } catch (e) {
       stderr.writeln('❌ Download failed: $e');
       exit(1);
@@ -1549,76 +1671,147 @@ class InternxtClient {
 
   // --- List Operations ---
 
-  Future<List<Map<String, dynamic>>> listFolders(String folderId) async {
-    final url = Uri.parse('$driveApiUrl/folders/content/$folderId/folders');
+  Future<List<Map<String, dynamic>>> listFolders(String folderId, {bool detailed = false}) async {
+    final List<Map<String, dynamic>> allItems = [];
+    int currentOffset = 0;
+    const int limit = 50; // Match python blueprint default
 
-    final response = await http.get(
-      url.replace(queryParameters: {
-        'offset': '0',
-        'limit': '50',
-        'sort': 'plainName',
-        'direction': 'ASC'
-      }),
-      headers: {'Authorization': 'Bearer $newToken'},
-    );
+    _log('Fetching all folders for $folderId (paginated)');
 
-    if (response.statusCode != 200) {
-      _log('List folders response: ${response.statusCode}');
-      _log('List folders body: ${response.body}');
-      throw Exception('Failed to list folders: ${response.statusCode}');
-    }
+    while (true) {
+      final url = Uri.parse('$driveApiUrl/folders/content/$folderId/folders');
+      _log('  GET $url (offset: $currentOffset, limit: $limit)');
 
-    final data = json.decode(response.body);
-    final List<Map<String, dynamic>> items = [];
+      try {
+        final response = await http.get(
+          url.replace(queryParameters: {
+            'offset': currentOffset.toString(),
+            'limit': limit.toString(),
+            'sort': 'plainName',
+            'direction': 'ASC'
+          }),
+          headers: {'Authorization': 'Bearer $newToken'},
+        );
 
-    final folders = data['result'] ?? data['folders'] ?? [];
-    for (var folder in folders) {
-      items.add({
-        'type': 'folder',
-        'name': folder['plainName'] ?? folder['name'],
-        'uuid': folder['uuid'] ?? folder['id'],
-        'size': 0, // Folders don't have size
-      });
-    }
-    return items;
+        if (response.statusCode != 200) {
+           _log('  List folders page failed (${response.statusCode}): ${response.body}');
+           // Decide if we should throw or just stop fetching. Let's throw for now.
+          throw Exception('Failed to list folders page (offset $currentOffset): ${response.statusCode}');
+        }
+
+        final data = json.decode(response.body);
+        final List<dynamic> folders = data['result'] ?? data['folders'] ?? [];
+
+        for (var folder in folders) {
+          final item = {
+            'type': 'folder',
+            'name': folder['plainName'] ?? folder['name'],
+            'uuid': folder['uuid'] ?? folder['id'],
+            'size': 0,
+            if (detailed) ...{
+              'createdAt': folder['createdAt'],
+              'updatedAt': folder['updatedAt'],
+              'creationTime': folder['creationTime'],
+              'modificationTime': folder['modificationTime'],
+              'parentId': folder['parentId'],
+              'parentUuid': folder['parentUuid'],
+              'userId': folder['userId'],
+              'deleted': folder['deleted'],
+              'removed': folder['removed'],
+            },
+          };
+          allItems.add(item);
+        }
+
+        // Check if we need to fetch the next page (like python)
+        if (folders.length < limit) {
+          _log('  Fetched last page of folders (${folders.length} items). Total: ${allItems.length}');
+          break; // Exit loop, all items fetched
+        } else {
+           _log('  Fetched page with $limit folders, requesting next page...');
+          currentOffset += limit; // Prepare for next iteration
+        }
+      } catch (e) {
+         // Log error and rethrow
+         _log('  Error fetching folder page (offset $currentOffset): $e');
+         throw e;
+      }
+    } // End while loop
+
+    return allItems;
   }
 
-  Future<List<Map<String, dynamic>>> listFolderFiles(String folderId) async {
-    final url = Uri.parse('$driveApiUrl/folders/content/$folderId/files');
+  Future<List<Map<String, dynamic>>> listFolderFiles(String folderId, {bool detailed = false}) async {
+     final List<Map<String, dynamic>> allItems = [];
+    int currentOffset = 0;
+    const int limit = 50; // Match python blueprint default
 
-    final response = await http.get(
-      url.replace(queryParameters: {
-        'offset': '0',
-        'limit': '50',
-        'sort': 'plainName',
-        'direction': 'ASC'
-      }),
-      headers: {'Authorization': 'Bearer $newToken'},
-    );
+    _log('Fetching all files for $folderId (paginated)');
 
-    if (response.statusCode != 200) {
-      _log('List files response: ${response.statusCode}');
-      _log('List files body: ${response.body}');
-      throw Exception('Failed to list files: ${response.statusCode}');
-    }
+    while (true) {
+      final url = Uri.parse('$driveApiUrl/folders/content/$folderId/files');
+       _log('  GET $url (offset: $currentOffset, limit: $limit)');
 
-    final data = json.decode(response.body);
-    final List<Map<String, dynamic>> items = [];
+      try {
+        final response = await http.get(
+          url.replace(queryParameters: {
+            'offset': currentOffset.toString(),
+            'limit': limit.toString(),
+            'sort': 'plainName',
+            'direction': 'ASC'
+          }),
+          headers: {'Authorization': 'Bearer $newToken'},
+        );
 
-    final files = data['result'] ?? data['files'] ?? [];
-    for (var file in files) {
-      // Return the raw metadata fields, we need this for resolvePath to work correctly
-      items.add({
-        'type': 'file',
-        'name': file['plainName'] ?? file['name'], // 'name' holds plainName
-        'fileType': file['type'] ?? '', // 'fileType' holds the extension
-        'uuid': file['uuid'] ?? file['id'],
-        'size': file['size'],
-        'bucket': file['bucket'],
-        'fileId': file['fileId'],
-      });
-    }
-    return items;
+        if (response.statusCode != 200) {
+          _log('  List files page failed (${response.statusCode}): ${response.body}');
+          throw Exception('Failed to list files page (offset $currentOffset): ${response.statusCode}');
+        }
+
+        final data = json.decode(response.body);
+        final List<dynamic> files = data['result'] ?? data['files'] ?? [];
+
+        for (var file in files) {
+           final item = {
+            'type': 'file',
+            'name': file['plainName'] ?? file['name'], // plainName
+            'fileType': file['type'] ?? '', // Extension
+            'uuid': file['uuid'] ?? file['id'],
+            'size': file['size'] is int ? file['size'] : int.tryParse(file['size'].toString()) ?? 0,
+            'bucket': file['bucket'],
+            'fileId': file['fileId'],
+            if (detailed) ...{
+              'createdAt': file['createdAt'],
+              'updatedAt': file['updatedAt'],
+              'creationTime': file['creationTime'],
+              'modificationTime': file['modificationTime'],
+              'folderId': file['folderId'],
+              'folderUuid': file['folderUuid'],
+              'userId': file['userId'],
+              'encryptVersion': file['encryptVersion'],
+              'deleted': file['deleted'],
+              'removed': file['removed'],
+              'status': file['status'],
+            },
+          };
+           allItems.add(item);
+        }
+
+        // Check if we need to fetch the next page
+        if (files.length < limit) {
+           _log('  Fetched last page of files (${files.length} items). Total: ${allItems.length}');
+          break; // Exit loop
+        } else {
+          _log('  Fetched page with $limit files, requesting next page...');
+          currentOffset += limit; // Prepare for next iteration
+        }
+      } catch (e) {
+          _log('  Error fetching file page (offset $currentOffset): $e');
+          throw e;
+      }
+    } // End while loop
+
+    return allItems;
   }
 
   Future<Map<String, dynamic>> resolvePath(String path) async {
@@ -1818,6 +2011,9 @@ class InternxtClient {
     return true;
   }
 
+  // helper for delays
+  Future<void> _wait(Duration duration) => Future.delayed(duration);
+
   Future<void> downloadPath(
     String remotePath, {
     String? localDestination,
@@ -1828,117 +2024,237 @@ class InternxtClient {
     required List<String> exclude,
     required String bridgeUser,
     required String userIdForAuth,
+    required String batchId, // <-- Added
+    Map<String, dynamic>? initialBatchState, // <-- Added
+    required Future<void> Function(Map<String, dynamic>) saveStateCallback, // <-- Added
   }) async {
-    // 1. Resolve remote path
+    // 1. Resolve remote path (only needed once)
     final itemInfo = await resolvePath(remotePath);
 
-    // 2. Handle FILE download
+    // 2. Handle SINGLE FILE download (no batching needed)
     if (itemInfo['type'] == 'file') {
-      _log('Path resolved to a file. Starting single file download.');
-
-      final metadata = itemInfo['metadata'] as Map<String, dynamic>;
-      final plainName = metadata['name'] ?? 'file';
-      final fileType = metadata['fileType'] ?? '';
-      final remoteFilename =
-          fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
-
-      // Check filters
-      if (!shouldIncludeFile(remoteFilename, include, exclude)) {
-        print(
-            '🚫 File filtered out by include/exclude patterns: $remoteFilename');
-        return;
-      }
-
-      // Determine local path
-      String localPath;
-      if (localDestination != null) {
-        final destFile = File(localDestination);
-        if (await destFile.parent.exists()) {
-          localPath = localDestination; // Assume it's a full file path
+      // ... (Existing single file download logic is fine here, no need for batch state) ...
+        _log('Path resolved to a file. Starting single file download.');
+        
+        final metadata = itemInfo['metadata'] as Map<String, dynamic>;
+        final plainName = metadata['name'] ?? 'file';
+        final fileType = metadata['fileType'] ?? '';
+        final remoteFilename = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+        
+        // Check filters
+        if (!shouldIncludeFile(remoteFilename, include, exclude)) {
+          print('🚫 File filtered out by include/exclude patterns: $remoteFilename');
+          return;
+        }
+        
+        // Determine local path
+        String localPath;
+        if (localDestination != null) {
+          final destEntity = FileSystemEntity.typeSync(localDestination);
+          if (destEntity == FileSystemEntityType.directory) {
+            localPath = p.join(localDestination, remoteFilename);
+          } else {
+            // Assume it's a file path or non-existent, use as is
+            localPath = localDestination;
+          }
         } else {
-          localPath = p.join(localDestination, remoteFilename);
+          localPath = remoteFilename;
         }
-      } else {
-        localPath = remoteFilename;
-      }
+        
+        final localFile = File(localPath);
 
-      final localFile = File(localPath);
-
-      // Check conflict
-      if (await localFile.exists() && onConflict == 'skip') {
-        print('⏭️  File exists, skipping: $localPath');
+        // Check conflict
+        if (await localFile.exists() && onConflict == 'skip') {
+          print('⏭️  File exists, skipping: $localPath');
+          return;
+        }
+        
+        // Download
+        final downloadResult = await downloadFile(
+          itemInfo['uuid'],
+          bridgeUser,
+          userIdForAuth,
+          preserveTimestamps: preserveTimestamps,
+        );
+        
+        // Save file
+        await localFile.parent.create(recursive: true);
+        await localFile.writeAsBytes(downloadResult['data']);
+        
+        // Preserve timestamps if requested
+        if (downloadResult['preserveTimestamps'] == true &&
+            downloadResult['modificationTime'] != null) {
+          try {
+            final mTime = DateTime.parse(downloadResult['modificationTime']);
+            await localFile.setLastModified(mTime);
+            print('   🕐 Set modification time: $mTime');
+          } catch (e) {
+            print('   ⚠️  Could not set modification time: $e');
+          }
+        }
+        
+        print('\n🎉 Downloaded successfully!');
+        print('📄 From: $remotePath');
+        print('💾 To: $localPath');
         return;
-      }
-
-      // Download
-      final downloadResult = await downloadFile(
-        itemInfo['uuid'],
-        bridgeUser,
-        userIdForAuth,
-        preserveTimestamps: preserveTimestamps,
-      );
-
-      // Save file
-      await localFile.parent.create(recursive: true);
-      await localFile.writeAsBytes(downloadResult['data']);
-
-      // Preserve timestamps if requested
-      if (downloadResult['preserveTimestamps'] == true &&
-          downloadResult['modificationTime'] != null) {
-        try {
-          final mTime = DateTime.parse(downloadResult['modificationTime']);
-          await localFile.setLastModified(mTime);
-          print('   🕐 Set modification time: $mTime');
-        } catch (e) {
-          print('   ⚠️  Could not set modification time: $e');
-        }
-      }
-
-      print('\n🎉 Downloaded successfully!');
-      print('📄 From: $remotePath');
-      print('💾 To: $localPath');
-      return;
     }
 
-    // 3. Handle FOLDER download
+    // 3. Handle FOLDER download (recursive, batching)
     if (itemInfo['type'] == 'folder') {
       if (!recursive) {
-        throw Exception(
-            "'$remotePath' is a folder. Use -r to download recursively.");
+        throw Exception("'$remotePath' is a folder. Use -r to download recursively.");
       }
-
+      
       _log('Path resolved to a folder. Starting recursive download.');
-
-      // Determine base destination
+      
+      // Determine base destination directory
       String baseDestPath;
       if (localDestination != null) {
-        baseDestPath = localDestination;
-      } else {
-        final folderName = itemInfo['metadata']['name'] ?? 'download';
-        baseDestPath = folderName;
-      }
-
+          baseDestPath = localDestination;
+        } else {
+          final folderName = itemInfo['metadata']?['name'] ?? 'download';
+          baseDestPath = folderName;
+        }
       final baseDestDir = Directory(baseDestPath);
-      await baseDestDir.create(recursive: true);
+      await baseDestDir.create(recursive: true); // Ensure base dir exists
 
       print('📂 Downloading folder recursively: $remotePath');
       print('💾 Target directory: ${baseDestDir.path}');
+      
+      Map<String, dynamic> batchState;
+      List<dynamic> tasks;
 
-      // Call recursive helper
-      await _downloadFolderRecursive(
-        itemInfo['uuid'],
-        baseDestDir,
-        bridgeUser: bridgeUser,
-        userIdForAuth: userIdForAuth,
-        onConflict: onConflict,
-        preserveTimestamps: preserveTimestamps,
-        include: include,
-        exclude: exclude,
-      );
+      if (initialBatchState != null) {
+        print("🔄 Resuming previous batch operation...");
+        batchState = initialBatchState;
+        tasks = batchState['tasks'] as List<dynamic>;
+      } else {
+        print("🔍 Generating new batch task list...");
+        tasks = [];
+        // Helper to recursively list remote files and build tasks
+        Future<void> buildDownloadTasks(String currentRemoteFolderUuid, String currentLocalRelPath) async {
+            final files = await listFolderFiles(currentRemoteFolderUuid);
+            final folders = await listFolders(currentRemoteFolderUuid);
 
-      print('\n🎉 Folder download complete!');
+            for(var fileInfo in files) {
+              final plainName = fileInfo['name'] ?? 'file';
+              final fileType = fileInfo['fileType'] ?? '';
+              final remoteFilename = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+              final localFilePath = p.join(baseDestPath, currentLocalRelPath, remoteFilename);
+
+              if (shouldIncludeFile(remoteFilename, include, exclude)) {
+                  tasks.add({
+                      'remoteUuid': fileInfo['uuid'],
+                      'localPath': localFilePath,
+                      'status': 'pending',
+                      'remoteModificationTime': fileInfo['modificationTime'] ?? fileInfo['updatedAt'], // Store for timestamp preservation
+                  });
+              }
+            }
+
+            for(var folderInfo in folders) {
+                final folderName = folderInfo['name'] ?? 'subfolder';
+                final nextLocalRelPath = p.join(currentLocalRelPath, folderName);
+                // Ensure local subdir exists before recursing into it for tasks
+                await Directory(p.join(baseDestPath, nextLocalRelPath)).create(recursive: true);
+                await buildDownloadTasks(folderInfo['uuid'], nextLocalRelPath);
+            }
+        }
+        
+        await buildDownloadTasks(itemInfo['uuid'], ''); // Start from the root of the target folder
+        batchState = {
+          'operationType': 'download',
+          'remotePath': remotePath,
+          'localDestination': baseDestPath,
+          'tasks': tasks,
+        };
+        await saveStateCallback(batchState);
+        print("📝 Task list generated with ${tasks.length} files.");
+      }
+
+      // 4. Process Download Tasks
+      int successCount = 0;
+      int skippedCount = 0;
+      int errorCount = 0;
+      int completedPreviously = 0;
+
+      for (int i = 0; i < tasks.length; i++) {
+          final task = tasks[i] as Map<String, dynamic>;
+          final remoteUuid = task['remoteUuid'] as String;
+          final localPath = task['localPath'] as String;
+          final status = task['status'] as String;
+          final remoteModTime = task['remoteModificationTime'] as String?;
+
+          if (status == 'completed') {
+              _log("✅ Already completed: $localPath");
+              completedPreviously++;
+              continue;
+          }
+          
+          if (status.startsWith('skipped')) {
+              _log("⏭️ Previously skipped: $localPath ($status)");
+              skippedCount++;
+              continue;
+          }
+
+          final localFile = File(localPath);
+
+          // Check conflict before downloading
+          if (await localFile.exists() && onConflict == 'skip') {
+              print('   ⏭️  Skipping existing: ${p.basename(localPath)}');
+              skippedCount++;
+              task['status'] = 'skipped_conflict';
+              await saveStateCallback(batchState);
+              continue;
+          }
+
+          try {
+              print('   -> Downloading: ${p.basename(localPath)}');
+              final downloadResult = await downloadFile(
+                remoteUuid,
+                bridgeUser,
+                userIdForAuth,
+                preserveTimestamps: preserveTimestamps,
+              );
+              
+              await localFile.parent.create(recursive: true); // Ensure parent exists
+              await localFile.writeAsBytes(downloadResult['data']);
+              
+              // Preserve timestamps if requested (use time from task list if download didn't return it)
+              final modTimeStr = downloadResult['modificationTime'] ?? remoteModTime;
+              if (preserveTimestamps && modTimeStr != null) {
+                try {
+                  final mTime = DateTime.parse(modTimeStr);
+                  await localFile.setLastModified(mTime);
+                  _log('   🕐 Set modification time: $mTime');
+                } catch (e) {
+                  _log('   ⚠️  Could not set modification time: $e');
+                }
+              }
+              successCount++;
+              task['status'] = 'completed';
+          } catch(e) {
+              print('   -> ❌ Error downloading ${p.basename(localPath)}: $e');
+              errorCount++;
+              task['status'] = 'error_download';
+          }
+          await saveStateCallback(batchState); // Save progress
+      }
+      
+      // 5. Summary
+      print("=" * 40);
+      print("📊 Batch Download Summary:");
+      if (completedPreviously > 0) print("  ✅ Completed (previous run): $completedPreviously");
+      print("  ✅ Downloaded (this run): $successCount");
+      print("  ⏭️  Skipped:  $skippedCount");
+      print("  ❌ Errors:   $errorCount");
+      print("=" * 40);
+
+      if (errorCount > 0) {
+          throw Exception("Download completed with $errorCount errors. State file kept for inspection/retry.");
+      }
     }
-  }
+  } // End downloadPath
 
   Future<void> _downloadFolderRecursive(
     String folderUuid,
@@ -2047,27 +2363,26 @@ class InternxtClient {
   }
 
   Future<Map<String, dynamic>> createFolderRecursive(String path) async {
-    if (this.rootFolderId == null) {
-      throw Exception("Not logged in");
-    }
-
+    if (this.rootFolderId == null) throw Exception("Not logged in");
     var cleanPath = path.trim().replaceAll(RegExp(r'^/+|/+$'), '');
-    if (cleanPath.isEmpty) {
-      return {'uuid': rootFolderId, 'plainName': 'Root'};
-    }
-
+    if (cleanPath.isEmpty) return {'uuid': rootFolderId, 'plainName': 'Root', 'path': '/'};
     var parts = cleanPath.split('/');
     var currentParentUuid = rootFolderId!;
     var currentPathSoFar = '/';
-    Map<String, dynamic>? foundFolder;
+    // Start with root info, ensure 'path' is included
+    Map<String, dynamic>? currentFolderInfo = {'uuid': rootFolderId, 'plainName': 'Root', 'path': '/'}; 
 
-    for (var part in parts) {
+    for (var i = 0; i < parts.length; i++) {
+      final part = parts[i];
       if (part.isEmpty) continue;
 
-      foundFolder = null;
-      try {
-        final folders = await listFolders(currentParentUuid);
+      // Construct the expected full path for this part
+      final partPath = '$currentPathSoFar/$part'.replaceAll('//', '/');
+      Map<String, dynamic>? foundFolder = null;
 
+      try {
+        // Check if folder exists within the current parent
+        final folders = await listFolders(currentParentUuid);
         for (var folder in folders) {
           if (folder['name'] == part) {
             foundFolder = folder;
@@ -2076,22 +2391,79 @@ class InternxtClient {
         }
 
         if (foundFolder != null) {
+          // Folder exists, update current info and move to next part
           currentParentUuid = foundFolder['uuid'];
-          currentPathSoFar = '$currentPathSoFar/$part'.replaceAll('//', '/');
+          foundFolder['path'] = partPath; 
+          currentFolderInfo = foundFolder; 
+          currentPathSoFar = partPath;
+          _log("  -> Found existing folder: $part in $currentPathSoFar (UUID: ${currentParentUuid.substring(0,8)}...)");
+
         } else {
-          print(
-              '  -> Creating intermediate folder: $part in $currentPathSoFar');
-          final newFolder = await _createFolder(part, currentParentUuid);
-          currentParentUuid = newFolder['uuid'];
-          currentPathSoFar = '$currentPathSoFar/$part'.replaceAll('//', '/');
-          foundFolder = newFolder;
+          // Folder doesn't exist, try to create it
+          _log("  -> Creating folder: $part in $currentPathSoFar");
+          try {
+            final newFolder = await _createFolder(part, currentParentUuid);
+            currentParentUuid = newFolder['uuid'];
+            newFolder['path'] = partPath;
+            currentFolderInfo = newFolder;
+            currentPathSoFar = partPath;
+             _log("     ✅ Created successfully (UUID: ${currentParentUuid.substring(0,8)}...)");
+
+          } on Exception catch (e) {
+            if (e.toString().contains(' 409')) {
+              _log("     ⚠️ Received 409 Conflict, likely created concurrently. Waiting 1s before re-fetching info for '$part'...");
+              
+              await Future.delayed(Duration(seconds: 1)); 
+
+              try {
+                  // Re-list the parent to find the newly created folder's UUID
+                  // Use the parent's UUID (currentFolderInfo should hold the parent before the conflict)
+                  final parentUuidToList = currentFolderInfo!['uuid']; // Ensure we list the correct parent
+                  _log("     Re-fetching folders inside parent UUID: ${parentUuidToList.substring(0,8)}...");
+                  final foldersAfterConflict = await listFolders(parentUuidToList); 
+                  
+                  Map<String, dynamic>? conflictingFolder;
+                  try {
+                     conflictingFolder = foldersAfterConflict.firstWhere(
+                         (folder) => folder['name'] == part,
+                     );
+                  } catch(e) {
+                     conflictingFolder = null; 
+                  }
+                  
+                  if (conflictingFolder != null) {
+                      currentParentUuid = conflictingFolder['uuid'];
+                      conflictingFolder['path'] = partPath; 
+                      currentFolderInfo = conflictingFolder;
+                      currentPathSoFar = partPath;
+                      _log("     ✅ Re-fetched successfully after 409 (UUID: ${currentParentUuid.substring(0,8)}...)");
+                  } else {
+                     _log("     ❌ Re-fetch failed: Folder '$part' not found in parent ${parentUuidToList.substring(0,8)}... after 409.");
+                     throw Exception("Folder '$part' conflict (409) but could not re-fetch it.");
+                  }
+
+              } catch (fetchErr) {
+                 _log("     ❌ Failed during re-fetch attempt for '$part' after 409: $fetchErr");
+                 throw Exception("Failed to resolve folder '$part' after 409 conflict: $fetchErr");
+              }
+            } else {
+              // Re-throw other creation errors
+              throw e;
+            }
+          }
         }
       } catch (e) {
-        throw Exception(
-            "Failed to resolve or create folder part '$part' in '$currentPathSoFar': $e");
+        throw Exception("Failed to process folder part '$part' in '$currentPathSoFar': $e");
       }
     }
-    return foundFolder!; // Will be the last folder found or created
+     if (currentFolderInfo == null) {
+      throw Exception("Failed to resolve or create the final folder in the path.");
+    }
+    // Ensure the path is correctly set on the final info map ONLY if it's missing
+    if (currentFolderInfo['path'] == null) {
+       currentFolderInfo['path'] = currentPathSoFar;
+    }
+    return currentFolderInfo; 
   }
 
   Future<void> _deleteFilePermanently(String fileUuid) async {
@@ -2297,30 +2669,74 @@ class InternxtClient {
   }
 
   Future<Map<String, dynamic>> _startUpload(
-      String bucketId, int fileSize, String user, String pass) async {
-    final url =
-        Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
-    final data = {
-      'uploads': [
-        {'index': 0, 'size': fileSize}
-      ]
+    String bucketId, 
+    int fileSize, 
+    String user, 
+    String pass,
+    {int maxRetries = 3}
+  ) async {
+    final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
+    final data = {'uploads': [{'index': 0, 'size': fileSize}]};
+    final headers = {
+      'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
+      'Content-Type': 'application/json',
     };
-    _log('POST $url (start upload)');
 
-    final response = await http.post(
-      url,
-      headers: {
-        'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
-        'Content-Type': 'application/json',
-      },
-      body: json.encode(data),
-    );
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      _log('POST $url (start upload attempt ${attempt + 1}/${maxRetries + 1})');
+      try {
+        final response = await http.post(
+          url,
+          headers: headers,
+          body: json.encode(data),
+        );
 
-    if (response.statusCode != 200) {
-      _log('Start upload failed: ${response.body}');
-      throw Exception('Failed to start upload: ${response.statusCode}');
+        // Success: check status code and return
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          return json.decode(response.body);
+        }
+
+        // Specific Client/Server Errors (4xx, non-retryable 5xx) - Throw immediately
+        if (response.statusCode >= 400 && response.statusCode < 500 || response.statusCode >= 501) {
+          _log('Start upload failed permanently (${response.statusCode}): ${response.body}');
+          throw Exception('Failed to start upload: ${response.statusCode} ${response.body}');
+        }
+        
+        // Retryable Server Errors (500, 502, 503, 504, potentially 429)
+        _log('Start upload attempt failed (${response.statusCode}), will retry: ${response.body}');
+        if (attempt == maxRetries) {
+            throw Exception('Failed to start upload after ${maxRetries + 1} attempts: ${response.statusCode} ${response.body}');
+        }
+        // Wait before retrying (simple exponential backoff: 1s, 2s, 4s)
+        final delay = Duration(seconds: 1 << attempt); // 1, 2, 4 seconds
+        _log('   Waiting ${delay.inSeconds}s before next retry...');
+        await _wait(delay); 
+        // Continue to next iteration
+
+      } on http.ClientException catch (e) {
+        // Network errors (could be temporary)
+        _log('Start upload network error: $e');
+        if (attempt == maxRetries) {
+          throw Exception('Failed to start upload after ${maxRetries + 1} attempts due to network error: $e');
+        }
+        final delay = Duration(seconds: 1 << attempt); 
+        _log('   Waiting ${delay.inSeconds}s before next retry...');
+        await _wait(delay);
+        // Continue to next iteration
+      } catch (e) {
+        // Catch-all for unexpected errors during the request
+        _log('Start upload unexpected error: $e');
+          if (attempt == maxRetries) {
+          throw Exception('Failed to start upload after ${maxRetries + 1} attempts due to unexpected error: $e');
+        }
+        final delay = Duration(seconds: 1 << attempt); 
+        _log('   Waiting ${delay.inSeconds}s before next retry...');
+        await _wait(delay);
+        // Continue to next iteration
+      }
     }
-    return json.decode(response.body);
+    // Should not be reachable if maxRetries >= 0
+    throw Exception('Failed to start upload after ${maxRetries + 1} attempts.'); 
   }
 
   Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
@@ -2616,162 +3032,187 @@ class InternxtClient {
     required List<String> exclude,
     required String bridgeUser,
     required String userIdForAuth,
+    required String batchId, 
+    Map<String, dynamic>? initialBatchState,
+    required Future<void> Function(Map<String, dynamic>) saveStateCallback, 
   }) async {
     print("🎯 Preparing upload to remote path: $targetPath");
 
-    // 1. Resolve or Create Target Folder
-    Map<String, dynamic> targetFolderInfo;
-    try {
-      targetFolderInfo = await resolvePath(targetPath);
-      if (targetFolderInfo['type'] != 'folder') {
-        throw Exception(
-            "Target path '$targetPath' exists but is not a folder.");
-      }
-      print(
-          "✅ Target folder exists: '${targetFolderInfo['path'] ?? targetPath}'");
-    } on Exception catch (e) {
-      if (e.toString().contains("Path not found")) {
-        print("⏳ Target path '$targetPath' not found. Attempting to create...");
-        try {
-          targetFolderInfo = await createFolderRecursive(targetPath);
-          print("✅ Created target folder '$targetPath'");
-        } catch (createErr) {
-          throw Exception(
-              "Failed to create target folder '$targetPath': $createErr");
+    Map<String, dynamic> batchState;
+    List<dynamic> tasks;
+
+    if (initialBatchState != null) {
+      print("🔄 Resuming previous batch operation...");
+      batchState = initialBatchState;
+      tasks = batchState['tasks'] as List<dynamic>;
+      // Optional: Verify target paths match, etc.
+    } else {
+      print("🔍 Generating new batch task list...");
+      tasks = [];
+      // 1. Resolve or Create Target Folder (only needed for generation)
+      final targetFolderInfo = await _resolveOrCreateRemoteFolder(targetPath);
+      final targetFolderUuid = targetFolderInfo['uuid'] as String;
+      final targetFolderPathStr = targetFolderInfo['path'] as String? ?? targetPath;
+
+      // 2. Generate Task List
+      for (final sourceArg in sources) {
+        final hasTrailingSlash = sourceArg.endsWith('/') || sourceArg.endsWith('\\');
+        final glob = Glob(sourceArg.replaceAll('\\', '/'));
+
+        await for (final entity in glob.list()) {
+            if (await FileSystemEntity.isDirectory(entity.path)) {
+              if (!recursive) continue; // Skip dirs if not recursive
+              final localDir = Directory(entity.path);
+              final filesInDir = localDir.list(recursive: true, followLinks: false);
+              await for (final fileEntity in filesInDir) {
+                  if (fileEntity is File) {
+                      final localFile = fileEntity;
+                      final relativePath = p.relative(localFile.path, from: localDir.path);
+                      String remoteBase = hasTrailingSlash
+                          ? targetFolderPathStr
+                          : p.join(targetFolderPathStr, p.basename(localDir.path)).replaceAll('\\', '/');
+                      final remoteFilePath = p.join(remoteBase, relativePath).replaceAll('\\', '/');
+
+                    if (shouldIncludeFile(p.basename(localFile.path), include, exclude)) {
+                        tasks.add({
+                          'localPath': localFile.path,
+                          'remotePath': remoteFilePath,
+                          'status': 'pending',
+                        });
+                    }
+                  }
+              }
+            } else if (await FileSystemEntity.isFile(entity.path)) {
+              final localFile = File(entity.path);
+              final remoteFilePath = p.join(targetFolderPathStr, p.basename(localFile.path)).replaceAll('\\', '/');
+
+              if (shouldIncludeFile(p.basename(localFile.path), include, exclude)) {
+                  tasks.add({
+                      'localPath': localFile.path,
+                      'remotePath': remoteFilePath,
+                      'status': 'pending',
+                  });
+              }
+            }
         }
-      } else {
-        throw e; // Re-throw other errors
       }
+      batchState = {
+        'operationType': 'upload',
+        'targetRemotePath': targetPath, // Store original target for info
+        'tasks': tasks,
+      };
+      await saveStateCallback(batchState); // Save initial state
+      print("📝 Task list generated with ${tasks.length} files.");
     }
 
-    final targetFolderUuid = targetFolderInfo['uuid'] as String;
-    final targetFolderPathStr =
-        targetFolderInfo['path'] as String? ?? targetPath;
 
-    // 2. Process Sources
+    // 3. Process Tasks
     int successCount = 0;
     int skippedCount = 0;
     int errorCount = 0;
+    int completedPreviously = 0;
 
-    for (final sourceArg in sources) {
-      final hasTrailingSlash =
-          sourceArg.endsWith('/') || sourceArg.endsWith('\\');
+    for (int i = 0; i < tasks.length; i++) {
+      final task = tasks[i] as Map<String, dynamic>;
+      final localPath = task['localPath'] as String;
+      final remotePath = task['remotePath'] as String;
+      final status = task['status'] as String;
 
-      // Expand wildcards
-      final glob = Glob(sourceArg.replaceAll('\\', '/'));
-      await for (final entity in glob.list()) {
-        final localPath = File(entity.path);
-
-        if (await localPath.exists()) {
-          // It's a file
-
-          // Apply filters
-          if (!shouldIncludeFile(
-              p.basename(localPath.path), include, exclude)) {
-            print("🚫 Filtered out: ${localPath.path}");
-            continue;
-          }
-
-          final result = await _uploadSingleItem(
-            localPath,
-            targetFolderPathStr,
-            targetFolderUuid,
-            onConflict,
-            bridgeUser: bridgeUser,
-            userIdForAuth: userIdForAuth,
-            preserveTimestamps: preserveTimestamps,
-            // remoteFilename is optional, so it's fine not to pass it here
-          );
-          if (result == "uploaded") successCount++;
-          if (result == "skipped") skippedCount++;
-          if (result == "error") errorCount++;
-        } else if (await Directory(entity.path).exists()) {
-          // It's a directory
-          final localDir = Directory(entity.path);
-          if (!recursive) {
-            print(
-                "⚠️ Skipping directory (use -r to upload recursively): ${localDir.path}");
-            skippedCount++;
-            continue;
-          }
-
-          print("📂 Processing directory recursively: ${localDir.path}");
-
-          // Determine remote base path for children
-          String dirRemoteBasePath;
-          if (hasTrailingSlash) {
-            print(
-                "  ✨ Copying contents directly to target (trailing slash detected)");
-            dirRemoteBasePath = targetFolderPathStr;
-          } else {
-            print(
-                "  📁 Creating folder '${p.basename(localDir.path)}' in target");
-            dirRemoteBasePath = p
-                .join(targetFolderPathStr, p.basename(localDir.path))
-                .replaceAll('\\', '/');
-          }
-
-          final files = localDir.list(recursive: true, followLinks: false);
-          await for (final fileEntity in files) {
-            if (fileEntity is File) {
-              final localFile = fileEntity;
-
-              // Apply filters
-              if (!shouldIncludeFile(
-                  p.basename(localFile.path), include, exclude)) {
-                print("  -> 🚫 Filtered: ${localFile.path}");
-                continue;
-              }
-
-              // Find relative path
-              final relativePath =
-                  p.relative(localFile.path, from: localDir.path);
-              final itemTargetParentPath = p
-                  .join(dirRemoteBasePath, p.dirname(relativePath))
-                  .replaceAll('\\', '/');
-              final remoteFileName = p.basename(localFile.path);
-
-              _log("  -> Found file: ${localFile.path}");
-              _log("     Target parent path: $itemTargetParentPath");
-
-              // Ensure parent folder exists
-              Map<String, dynamic> parentFolderInfo;
-              try {
-                parentFolderInfo =
-                    await createFolderRecursive(itemTargetParentPath);
-              } catch (createErr) {
-                print(
-                    "     ❌ Error ensuring parent folder $itemTargetParentPath: $createErr");
-                errorCount++;
-                continue;
-              }
-
-              final result = await _uploadSingleItem(
-                localFile,
-                itemTargetParentPath,
-                parentFolderInfo['uuid'],
-                onConflict,
-                bridgeUser: bridgeUser,
-                userIdForAuth: userIdForAuth,
-                preserveTimestamps: preserveTimestamps,
-                remoteFileName: remoteFileName,
-              );
-              if (result == "uploaded") successCount++;
-              if (result == "skipped") skippedCount++;
-              if (result == "error") errorCount++;
-            }
-          }
-        }
+      final localFile = File(localPath);
+      if (!await localFile.exists()) {
+        print("⚠️ Source file no longer exists, skipping: $localPath");
+        skippedCount++;
+        task['status'] = 'skipped_missing_source'; // Mark specifically
+        await saveStateCallback(batchState); // Save state update
+        continue;
       }
+
+      if (status == 'completed') {
+        _log("✅ Already completed: ${p.basename(localPath)}");
+        completedPreviously++;
+        continue;
+      }
+
+      if (status.startsWith('skipped')) {
+        _log("⏭️ Previously skipped: ${p.basename(localPath)} ($status)");
+        skippedCount++;
+        continue;
+      }
+      
+      // Ensure parent folder exists for the remote path
+      final remoteParentPath = p.dirname(remotePath).replaceAll('\\', '/');
+      Map<String, dynamic> parentFolderInfo;
+      try {
+          parentFolderInfo = await createFolderRecursive(remoteParentPath);
+      } catch (createErr) {
+          print("     ❌ Error ensuring parent folder $remoteParentPath: $createErr");
+          errorCount++;
+          task['status'] = 'error_create_parent';
+          await saveStateCallback(batchState);
+          continue; // Skip this file
+      }
+
+      final result = await _uploadSingleItem(
+          localFile,
+          remoteParentPath, // Pass the resolved parent path
+          parentFolderInfo['uuid'], // Pass the resolved parent UUID
+          onConflict,
+          bridgeUser: bridgeUser,
+          userIdForAuth: userIdForAuth,
+          preserveTimestamps: preserveTimestamps,
+          remoteFileName: p.basename(remotePath), // Use the target filename
+      );
+
+      if (result == "uploaded") {
+        successCount++;
+        task['status'] = 'completed';
+      } else if (result == "skipped") {
+        skippedCount++;
+        task['status'] = 'skipped_conflict';
+      } else {
+        errorCount++;
+        task['status'] = 'error_upload';
+      }
+      await saveStateCallback(batchState); // Save progress after each file
     }
 
-    // 3. Summary
+    // 4. Summary
     print("=" * 40);
-    print("📊 Upload Summary:");
-    print("  ✅ Uploaded: $successCount");
+    print("📊 Batch Upload Summary:");
+    if (completedPreviously > 0) print("  ✅ Completed (previous run): $completedPreviously");
+    print("  ✅ Uploaded (this run): $successCount");
     print("  ⏭️  Skipped:  $skippedCount");
     print("  ❌ Errors:   $errorCount");
     print("=" * 40);
+
+    if (errorCount > 0) {
+      throw Exception("Upload completed with $errorCount errors. State file kept for inspection/retry.");
+    }
+  }
+
+  // Helper function to resolve/create target folder (extracted logic)
+  Future<Map<String, dynamic>> _resolveOrCreateRemoteFolder(String targetPath) async {
+    Map<String, dynamic> targetFolderInfo;
+      try {
+        targetFolderInfo = await resolvePath(targetPath);
+        if (targetFolderInfo['type'] != 'folder') {
+          throw Exception("Target path '$targetPath' exists but is not a folder.");
+        }
+        _log("✅ Target folder exists: '${targetFolderInfo['path'] ?? targetPath}'");
+      } on Exception catch (e) {
+        if (e.toString().contains("Path not found")) {
+          _log("⏳ Target path '$targetPath' not found. Attempting to create...");
+          try {
+            targetFolderInfo = await createFolderRecursive(targetPath);
+            _log("✅ Created target folder '$targetPath'");
+          } catch (createErr) {
+            throw Exception("Failed to create target folder '$targetPath': $createErr");
+          }
+        } else {
+          throw e; // Re-throw other errors
+        }
+      }
+      return targetFolderInfo;
   }
 
   Future<Map<String, dynamic>> _getDownloadLinks(
@@ -2896,16 +3337,70 @@ class InternxtClient {
 class ConfigService {
   late final String configDir;
   late final String credentialsFile;
+  late final String batchStateDir; // <-- ADDED
 
   ConfigService() {
-    final home = Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        '.';
+    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
     configDir = p.join(home, '.internxt-cli');
     credentialsFile = p.join(configDir, '.inxtcli-dart-creds.json');
+    batchStateDir = p.join(configDir, 'batch_states'); // <-- ADDED
 
-    // Ensure config directory exists
     Directory(configDir).createSync(recursive: true);
+    Directory(batchStateDir).createSync(recursive: true); // <-- Ensure it exists
+  }
+
+  // Helper to generate a unique ID for a batch
+  String generateBatchId(String operationType, List<String> sources, String target) {
+      final input = '$operationType-${sources.join('|')}-$target';
+      final bytes = utf8.encode(input);
+      final digest = crypto.sha1.convert(bytes);
+      return digest.toString().substring(0, 16); // Use a prefix of SHA1 hash
+  }
+
+  // Get the state file path
+  String getBatchStateFilePath(String batchId) {
+    return p.join(batchStateDir, 'batch_state_$batchId.json');
+  }
+
+  // Load state
+  Future<Map<String, dynamic>?> loadBatchState(String batchId) async {
+    final filePath = getBatchStateFilePath(batchId);
+    final file = File(filePath);
+    if (await file.exists()) {
+      try {
+        final content = await file.readAsString();
+        return json.decode(content) as Map<String, dynamic>;
+      } catch (e) {
+        print("⚠️ Warning: Could not read batch state file '$filePath': $e");
+        await deleteBatchState(batchId); // Delete corrupted state
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // Save state
+  Future<void> saveBatchState(String batchId, Map<String, dynamic> state) async {
+     final filePath = getBatchStateFilePath(batchId);
+     final file = File(filePath);
+     try {
+        await file.writeAsString(json.encode(state));
+     } catch (e) {
+        print("⚠️ Warning: Could not save batch state file '$filePath': $e");
+     }
+  }
+
+  // Delete state
+  Future<void> deleteBatchState(String batchId) async {
+    final filePath = getBatchStateFilePath(batchId);
+    final file = File(filePath);
+    if (await file.exists()) {
+      try {
+        await file.delete();
+      } catch (e) {
+         print("⚠️ Warning: Could not delete batch state file '$filePath': $e");
+      }
+    }
   }
 
   Future<void> saveCredentials(Map<String, String?> credentials) async {
