@@ -1,1 +1,2 @@
-.dart_tool/*
+# Ignores the directory and everything inside it
+.dart_tool/
