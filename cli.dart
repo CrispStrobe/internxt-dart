@@ -29,7 +29,6 @@ class InternxtCLI {
     final parser = ArgParser()
       ..addFlag('debug', abbr: 'd', help: 'Enable debug output')
       ..addFlag('uuids', help: 'Show full UUIDs in list command')
-      // Add options for upload/download
       ..addFlag('recursive', abbr: 'r', help: 'Recursive operation')
       ..addFlag('preserve-timestamps', abbr: 'p', help: 'Preserve file modification times')
       ..addOption('target', abbr: 't', help: 'Destination path on Internxt Drive')
@@ -38,7 +37,9 @@ class InternxtCLI {
           allowed: ['overwrite', 'skip'],
           defaultsTo: 'skip')
       ..addMultiOption('include', help: 'Include only files matching pattern')
-      ..addMultiOption('exclude', help: 'Exclude files matching pattern');
+      ..addMultiOption('exclude', help: 'Exclude files matching pattern')
+      // --force flag for trash/delete
+      ..addFlag('force', abbr: 'f', help: 'Skip confirmation for destructive actions');
 
     final argResults = parser.parse(arguments);
     debugMode = argResults['debug'];
@@ -84,6 +85,18 @@ class InternxtCLI {
         case 'test':
           await handleTest();
           break;
+        case 'mkdir-path':
+          await handleMkdirPath(argResults);
+          break;
+        case 'resolve':
+          await handleResolve(argResults);
+          break;
+        case 'trash-path':
+          await handleTrashPath(argResults);
+          break;
+        case 'delete-path':
+          await handleDeletePath(argResults);
+          break;
         case 'help':
         case '--help':
         case '-h':
@@ -118,6 +131,12 @@ class InternxtCLI {
     print('  download <file-uuid> Download a file by its UUID');
     print('  download-path <path> Download a file/folder by its path');
     print('  upload <sources...>  Upload files/folders to Internxt');
+
+    print('  mkdir-path <path>  Create a new folder (and subfolders) by path');
+    print('  resolve <path>     Show what a path points to (debugging)');
+    print('  trash-path <path>  Move a file or folder to trash by path');
+    print('  delete-path <path> Permanently delete a file or folder by path');
+
     print('  config             Show configuration');
     print('  test               Run crypto tests');
     print('  help               Show this help message');
@@ -125,6 +144,7 @@ class InternxtCLI {
     print('Options:');
     print('  --debug, -d        Enable debug output');
     print('  --uuids            Show full UUIDs in "list" command');
+    print('  -f, --force        Skip confirmation for "trash-path" and "delete-path"');
     print('');
     print('Upload/Download Options:');
     print('  -t, --target <path>  Remote destination path (default: /)');
@@ -143,6 +163,8 @@ class InternxtCLI {
     print('  dart cli.dart upload my_folder/ -t /Backup -r');
     print('  dart cli.dart download-path /Documents/file.txt');
     print('  dart cli.dart download-path /Backup -r');
+    print('  dart cli.dart mkdir-path /New/SubFolder');
+    print('  dart cli.dart trash-path /OldFile.txt');
   }
   
   void printHelp() {
@@ -238,6 +260,158 @@ class InternxtCLI {
       print('✅ Logged out successfully');
     } catch (e) {
       stderr.writeln('❌ Error: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleMkdirPath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.isEmpty) {
+      stderr.writeln('❌ Usage: dart cli.dart mkdir-path <path>');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final path = args[0];
+      print("📁 Creating folder(s): $path");
+      
+      final createdFolder = await client.createFolderRecursive(path);
+      
+      print("✅ Folder created successfully!");
+      print("   Name: ${createdFolder['plainName']}");
+      print("   UUID: ${createdFolder['uuid']}");
+      
+    } catch (e) {
+      stderr.writeln('❌ Error creating folder: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleResolve(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.isEmpty) {
+      stderr.writeln('❌ Usage: dart cli.dart resolve <path>');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final path = args[0];
+      print("🔍 Resolving path: $path");
+      
+      final resolved = await client.resolvePath(path);
+      
+      print("\n✅ Path resolved successfully!");
+      print("=" * 40);
+      print("  Type: ${resolved['type']?.toString().toUpperCase()}");
+      print("  UUID: ${resolved['uuid']}");
+      print("\n  Metadata:");
+      // Simple pretty print of the metadata map
+      (resolved['metadata'] as Map<String, dynamic>).forEach((key, value) {
+        print("    $key: $value");
+      });
+      print("=" * 40);
+
+    } catch (e) {
+      stderr.writeln('❌ Error resolving path: $e');
+      exit(1);
+    }
+  }
+
+  // Helper for confirmation
+  bool _confirmAction(String prompt, bool force) {
+    if (force) {
+      return true;
+    }
+    stdout.write('$prompt [y/N]: ');
+    final response = stdin.readLineSync()?.toLowerCase().trim();
+    return response == 'y' || response == 'yes';
+  }
+
+  Future<void> handleTrashPath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.isEmpty) {
+      stderr.writeln('❌ Usage: dart cli.dart trash-path <path> [--force]');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final path = args[0];
+      final force = argResults['force'] as bool;
+      
+      print("🔍 Resolving path: $path");
+      final resolved = await client.resolvePath(path);
+      
+      final prompt = '❓ Move ${resolved['type']} "$path" to trash?';
+      if (!_confirmAction(prompt, force)) {
+        print("❌ Cancelled");
+        exit(0);
+      }
+      
+      await client.trashItems(resolved['uuid'], resolved['type']);
+      
+      print("✅ Item moved to trash: $path");
+
+    } catch (e) {
+      stderr.writeln('❌ Error trashing item: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleDeletePath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.isEmpty) {
+      stderr.writeln('❌ Usage: dart cli.dart delete-path <path> [--force]');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final path = args[0];
+      final force = argResults['force'] as bool;
+      
+      print("🔍 Resolving path: $path");
+      final resolved = await client.resolvePath(path);
+      
+      print("⚠️  WARNING: This will PERMANENTLY delete the item. This action cannot be undone!");
+      final prompt = '❓ Permanently delete ${resolved['type']} "$path"?';
+      if (!_confirmAction(prompt, force)) {
+        print("❌ Cancelled");
+        exit(0);
+      }
+      
+      await client.deletePermanently(resolved['uuid'], resolved['type']);
+      
+      print("✅ Item permanently deleted: $path");
+
+    } catch (e) {
+      stderr.writeln('❌ Error deleting item: $e');
       exit(1);
     }
   }
@@ -1393,9 +1567,8 @@ class InternxtClient {
   }
 
 
-  // --- NEW: UPLOAD LOGIC (Ported from cli.py, drive.py, api.py) ---
+  // --- UPLOAD / REMOVE LOGIC ---
 
-  // NEW: _createFolder (port of api.py)
   Future<Map<String, dynamic>> _createFolder(String name, String parentFolderUuid) async {
     final url = Uri.parse('$driveApiUrl/folders');
     final data = {'plainName': name, 'parentFolderUuid': parentFolderUuid};
@@ -1439,7 +1612,6 @@ class InternxtClient {
       try {
         final folders = await listFolders(currentParentUuid);
 
-        // FIXED: (Error 1) Replaced firstWhere with a loop to safely handle 'null'
         for (var folder in folders) {
           if (folder['name'] == part) {
             foundFolder = folder;
@@ -1464,7 +1636,6 @@ class InternxtClient {
     return foundFolder!; // Will be the last folder found or created
   }
 
-  // NEW: _deleteFilePermanently (port of api.py delete_file)
   Future<void> _deleteFilePermanently(String fileUuid) async {
     final url = Uri.parse('$driveApiUrl/files/$fileUuid');
     _log('DELETE $url');
@@ -1478,7 +1649,6 @@ class InternxtClient {
     }
   }
 
-  // NEW: _deleteFolderPermanently (port of api.py delete_folder)
   Future<void> _deleteFolderPermanently(String folderUuid) async {
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
     _log('DELETE $url');
@@ -1491,7 +1661,6 @@ class InternxtClient {
     }
   }
 
-  // NEW: _startUpload (port of api.py)
   Future<Map<String, dynamic>> _startUpload(String bucketId, int fileSize, String user, String pass) async {
     final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
     final data = {'uploads': [{'index': 0, 'size': fileSize}]};
@@ -1513,7 +1682,6 @@ class InternxtClient {
     return json.decode(response.body);
   }
 
-  // NEW: _uploadChunk (port of api.py)
   Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
     _log('PUT $uploadUrl (uploading chunk)');
     final response = await http.put(
@@ -1528,7 +1696,6 @@ class InternxtClient {
     }
   }
 
-  // NEW: _finishUpload (port of api.py)
   Future<Map<String, dynamic>> _finishUpload(String bucketId, Map<String, dynamic> payload, String user, String pass) async {
     final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
     _log('POST $url (finish upload)');
@@ -1549,7 +1716,6 @@ class InternxtClient {
     return json.decode(response.body);
   }
 
-  // NEW: _createFileEntry (port of api.py)
   Future<Map<String, dynamic>> _createFileEntry(Map<String, dynamic> payload) async {
     final url = Uri.parse('$driveApiUrl/files');
     _log('POST $url (create file entry)');
@@ -1568,6 +1734,57 @@ class InternxtClient {
       throw Exception('Failed to create file entry: ${response.statusCode}');
     }
     return json.decode(response.body);
+  }
+
+  Future<void> trashItems(String uuid, String type) async {
+    final url = Uri.parse('$driveApiUrl/storage/trash/add');
+    final payload = {
+      'items': [
+        {'uuid': uuid, 'type': type}
+      ]
+    };
+    _log('POST $url (trashing item $uuid)');
+    
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+    
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log('Trash item failed: ${response.body}');
+      throw Exception('Failed to trash item: ${response.statusCode}');
+    }
+  }
+
+  Future<void> deletePermanently(String uuid, String type) async {
+    final url = Uri.parse('$driveApiUrl/storage/trash');
+    final payload = {
+      'items': [
+        {'uuid': uuid, 'type': type}
+      ]
+    };
+    _log('DELETE $url (deleting item $uuid)');
+    
+    // http.delete does not natively support a body.
+    // We must build the request manually.
+    final request = http.Request('DELETE', url)
+      ..headers.addAll({
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      })
+      ..body = json.encode(payload);
+      
+    final response = await request.send();
+    
+    if (response.statusCode != 200) {
+      final responseBody = await response.stream.bytesToString();
+      _log('Delete item failed: $responseBody');
+      throw Exception('Failed to delete item: ${response.statusCode}');
+    }
   }
 
   Future<Map<String, dynamic>> _uploadFile(
