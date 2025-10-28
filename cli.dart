@@ -97,6 +97,23 @@ class InternxtCLI {
         case 'delete-path':
           await handleDeletePath(argResults);
           break;
+        case 'list-trash':
+          // Pass the full argResults to handle --uuids flag
+          await handleListTrash(argResults);
+          break;
+        case 'restore-uuid':
+          await handleRestoreUuid(argResults);
+          break;
+        // Restore by name/path
+        case 'restore-path':
+          await handleRestorePath(argResults);
+          break;
+        case 'move-path':
+          await handleMovePath(argResults);
+          break;
+        case 'rename-path':
+          await handleRenamePath(argResults);
+          break;
         case 'help':
         case '--help':
         case '-h':
@@ -136,6 +153,11 @@ class InternxtCLI {
     print('  resolve <path>     Show what a path points to (debugging)');
     print('  trash-path <path>  Move a file or folder to trash by path');
     print('  delete-path <path> Permanently delete a file or folder by path');
+    print('  list-trash         List items currently in the trash');
+    print('  restore-uuid <uuid> [-t <dest_path>] Restore item by UUID');
+    print('  restore-path <name> [-t <dest_path>] Restore item by Name (from trash list)');
+    print('  move-path <src_path> <dest_path> Move a file or folder');
+    print('  rename-path <path> <new_name> Rename a file or folder');
 
     print('  config             Show configuration');
     print('  test               Run crypto tests');
@@ -290,6 +312,352 @@ class InternxtCLI {
       
     } catch (e) {
       stderr.writeln('❌ Error creating folder: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleListTrash(ArgResults argResults) async {
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+
+      print('🗑️  Listing trash contents...\n');
+      
+      final trashItems = await client.getTrashContent(); // Fetch all items (handle pagination later if needed)
+      
+      if (trashItems.isEmpty) {
+        print('📭 Trash is empty');
+        return;
+      }
+      
+      // Get the --uuids flag value
+      final bool showFullUUIDs = argResults['uuids'];
+      
+      // Adjust table layout based on whether full UUIDs are shown
+      if (showFullUUIDs) {
+        print('╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
+        print('║  Type    Name                                    Size            UUID                                 ║');
+        print('╠════════════════════════════════════════════════════════════════════════════════════════════════════╣');
+      } else {
+        print('╔═══════════════════════════════════════════════════════════════════════════════╗');
+        print('║  Type    Name                                    Size            UUID        ║');
+        print('╠═══════════════════════════════════════════════════════════════════════════════╣');
+      }
+      
+      int folderCount = 0;
+      int fileCount = 0;
+
+      for (var item in trashItems) {
+        final type = item['type'] == 'folder' ? '📁' : '📄';
+        if(item['type'] == 'folder') folderCount++; else fileCount++;
+
+        final plainName = item['name'] ?? 'Unknown';
+        // Use fileType from the map
+        final fileType = item['fileType'] ?? ''; 
+        final displayName = (fileType.isNotEmpty && item['type'] == 'file') ? '$plainName.$fileType' : plainName;
+
+        final name = displayName.toString().padRight(40);
+        final size = item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
+        final uuid = item['uuid'] ?? 'N/A';
+
+        // Print either the full UUID or the truncated one
+        if (showFullUUIDs) {
+          print('║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
+        } else {
+          print('║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  ${uuid.substring(0, 8)}... ║');
+        }
+      }
+      
+      // Adjust table footer
+      if (showFullUUIDs) {
+        print('╚════════════════════════════════════════════════════════════════════════════════════════════════════╝');
+      } else {
+        print('╚═══════════════════════════════════════════════════════════════════════════════╝');
+      }
+      
+      print('\n📊 Total: ${trashItems.length} items ($folderCount folders, $fileCount files)');
+      print('\n💡 Use "restore-path <name> -t /dest" or "restore-uuid <uuid> -t /dest" to restore.');
+
+    } catch (e) {
+      stderr.writeln('❌ Error listing trash: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleRestoreUuid(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.isEmpty) {
+      stderr.writeln('❌ Usage: dart cli.dart restore-uuid <item-uuid> [-t /destination/path]');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final itemUuid = args[0];
+      final destinationPath = argResults['target'] as String? ?? '/'; // Default to root
+      final force = argResults['force'] as bool; // Respect --force
+
+      print("🔍 Resolving destination path: $destinationPath");
+      final destFolderInfo = await client.resolvePath(destinationPath);
+      if (destFolderInfo['type'] != 'folder') {
+        throw Exception("Destination path '$destinationPath' is not a folder.");
+      }
+      final destinationFolderUuid = destFolderInfo['uuid'] as String;
+
+      // We still need the type to call the correct move function.
+      // Fetching trash is inefficient but necessary here without a dedicated 'get item info' API.
+      print("🔍 Finding item type for $itemUuid in trash...");
+      final trashItems = await client.getTrashContent(limit: 1000); 
+      Map<String, dynamic>? itemToRestore; 
+      try {
+        itemToRestore = trashItems.firstWhere((item) => item['uuid'] == itemUuid);
+      } catch (e) { itemToRestore = null; }
+
+      if (itemToRestore == null) {
+        // Maybe it's not in trash? Or maybe pagination issue?
+        // Let's try getting metadata directly (might fail if truly deleted/not accessible)
+         try {
+           print("   Item not found in trash list, trying direct metadata fetch...");
+           await client.getFileMetadata(itemUuid); // Check if it's a file
+           itemToRestore = {'type': 'file', 'name': 'Unknown File (fetched directly)'};
+         } catch (fileErr) {
+           try {
+              await client.getFolderMetadata(itemUuid); // Check if it's a folder
+              itemToRestore = {'type': 'folder', 'name': 'Unknown Folder (fetched directly)'};
+           } catch(folderErr) {
+              throw Exception("Item with UUID $itemUuid not found in trash or as existing metadata.");
+           }
+         }
+      }
+      
+      final itemType = itemToRestore['type'] as String;
+      final itemName = itemToRestore['name']?.toString() ?? itemUuid; 
+
+      print("✅ Item identified as ${itemType}: $itemName");
+
+      final prompt = '❓ Restore ${itemType} "$itemName" ($itemUuid) to "$destinationPath"?';
+      if (!_confirmAction(prompt, force)) {
+          print("❌ Cancelled");
+          exit(0);
+      }
+
+      print("🚀 Restoring item...");
+      if (itemType == 'file') {
+        await client.moveFile(itemUuid, destinationFolderUuid);
+      } else if (itemType == 'folder') {
+        await client.moveFolder(itemUuid, destinationFolderUuid);
+      } else {
+        throw Exception("Unknown item type: $itemType");
+      }
+      
+      print("✅ Item restored successfully to: $destinationPath");
+
+    } catch (e) {
+      stderr.writeln('❌ Error restoring item: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleRestorePath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.isEmpty) {
+      stderr.writeln('❌ Usage: dart cli.dart restore-path <item-name-in-trash> [-t /destination/path]');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final itemNameInTrash = args[0];
+      final destinationPath = argResults['target'] as String? ?? '/'; // Default to root
+      final force = argResults['force'] as bool; // Respect --force
+
+      print("🔍 Resolving destination path: $destinationPath");
+      final destFolderInfo = await client.resolvePath(destinationPath);
+      if (destFolderInfo['type'] != 'folder') {
+        throw Exception("Destination path '$destinationPath' is not a folder.");
+      }
+      final destinationFolderUuid = destFolderInfo['uuid'] as String;
+
+      // Find item(s) by name in trash
+      print("🔍 Finding item(s) named '$itemNameInTrash' in trash...");
+      final trashItems = await client.getTrashContent(limit: 1000); 
+
+      final matchingItems = trashItems.where((item) {
+         final plainName = item['name'] ?? 'Unknown';
+         final fileType = item['fileType'] ?? ''; 
+         final displayName = (fileType.isNotEmpty && item['type'] == 'file') ? '$plainName.$fileType' : plainName;
+         return displayName == itemNameInTrash;
+      }).toList();
+
+
+      if (matchingItems.isEmpty) {
+        throw Exception("Item named '$itemNameInTrash' not found in trash.");
+      }
+
+      if (matchingItems.length > 1) {
+          stderr.writeln("❌ Error: Multiple items named '$itemNameInTrash' found in trash.");
+          stderr.writeln("   Please use 'restore-uuid' with the specific UUID:");
+          for (var item in matchingItems) {
+            stderr.writeln("   - ${item['type']} ${item['uuid']}");
+          }
+          exit(1);
+      }
+      
+      // Exactly one item found
+      final itemToRestore = matchingItems.first;
+      final itemUuid = itemToRestore['uuid'] as String;
+      final itemType = itemToRestore['type'] as String;
+
+      print("✅ Found unique ${itemType}: $itemNameInTrash ($itemUuid)");
+
+      final prompt = '❓ Restore ${itemType} "$itemNameInTrash" ($itemUuid) to "$destinationPath"?';
+      if (!_confirmAction(prompt, force)) {
+          print("❌ Cancelled");
+          exit(0);
+      }
+
+      print("🚀 Restoring item...");
+      if (itemType == 'file') {
+        await client.moveFile(itemUuid, destinationFolderUuid);
+      } else if (itemType == 'folder') {
+        await client.moveFolder(itemUuid, destinationFolderUuid);
+      } else {
+        throw Exception("Unknown item type: $itemType");
+      }
+      
+      print("✅ Item restored successfully to: $destinationPath");
+
+    } catch (e) {
+      stderr.writeln('❌ Error restoring item: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleMovePath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.length < 2) {
+      stderr.writeln('❌ Usage: dart cli.dart move-path <source-path> <destination-path>');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final sourcePath = args[0];
+      final destinationPath = args[1];
+      final force = argResults['force'] as bool; // Respect --force
+
+      print("🔍 Resolving source path: $sourcePath");
+      final sourceInfo = await client.resolvePath(sourcePath);
+      final sourceUuid = sourceInfo['uuid'] as String;
+      final sourceType = sourceInfo['type'] as String;
+      final sourceName = sourceInfo['metadata']?['name'] ?? sourcePath; // Get name for prompt
+
+      print("🔍 Resolving destination path: $destinationPath");
+      final destFolderInfo = await client.resolvePath(destinationPath);
+      if (destFolderInfo['type'] != 'folder') {
+        throw Exception("Destination path '$destinationPath' is not a folder.");
+      }
+      final destinationFolderUuid = destFolderInfo['uuid'] as String;
+      
+      final prompt = '❓ Move ${sourceType} "$sourceName" to "$destinationPath"?';
+       if (!_confirmAction(prompt, force)) {
+          print("❌ Cancelled");
+          exit(0);
+      }
+
+      print("🚀 Moving item...");
+      if (sourceType == 'file') {
+        await client.moveFile(sourceUuid, destinationFolderUuid);
+      } else if (sourceType == 'folder') {
+        await client.moveFolder(sourceUuid, destinationFolderUuid);
+      } else {
+        throw Exception("Unknown item type: $sourceType");
+      }
+      
+      print("✅ Item moved successfully to: $destinationPath");
+
+    } catch (e) {
+      stderr.writeln('❌ Error moving item: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleRenamePath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
+    if (args.length < 2) {
+      stderr.writeln('❌ Usage: dart cli.dart rename-path <path> <new-name>');
+      exit(1);
+    }
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      final path = args[0];
+      final newName = args[1];
+      final force = argResults['force'] as bool; // Respect --force
+
+      print("🔍 Resolving path: $path");
+      final itemInfo = await client.resolvePath(path);
+      final itemUuid = itemInfo['uuid'] as String;
+      final itemType = itemInfo['type'] as String;
+      final oldName = itemInfo['metadata']?['name'] ?? path;
+
+      final prompt = '❓ Rename ${itemType} "$oldName" to "$newName"?';
+      if (!_confirmAction(prompt, force)) {
+          print("❌ Cancelled");
+          exit(0);
+      }
+
+      print("🚀 Renaming item...");
+      if (itemType == 'file') {
+        // Parse new name and extension like Python/Typescript
+        final String newPlainName;
+        final String? newFileType;
+        if (newName.contains('.')) {
+          newPlainName = p.basenameWithoutExtension(newName);
+          newFileType = p.extension(newName).replaceAll('.', '');
+        } else {
+          newPlainName = newName;
+          newFileType = null; // Important: API expects null/empty if no extension
+        }
+        await client.renameFile(itemUuid, newPlainName, newFileType);
+      } else if (itemType == 'folder') {
+        await client.renameFolder(itemUuid, newName);
+      } else {
+        throw Exception("Unknown item type: $itemType");
+      }
+      
+      print("✅ Item renamed successfully to: $newName");
+
+    } catch (e) {
+      stderr.writeln('❌ Error renaming item: $e');
       exit(1);
     }
   }
@@ -929,6 +1297,38 @@ class InternxtClient {
     
     return json.decode(response.body);
   }
+
+  Future<Map<String, dynamic>> getFileMetadata(String fileUuid) async {
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
+    _log('GET $url (fetching file metadata)');
+    
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+    
+    if (response.statusCode != 200) {
+      _log('Get file metadata failed: ${response.body}');
+      throw Exception('Failed to get file metadata: ${response.statusCode}');
+    }
+    return json.decode(response.body);
+  }
+
+  Future<Map<String, dynamic>> getFolderMetadata(String folderUuid) async {
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
+     _log('GET $url (fetching folder metadata)');
+    
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+    
+    if (response.statusCode != 200) {
+      _log('Get folder metadata failed: ${response.body}');
+      throw Exception('Failed to get folder metadata: ${response.statusCode}');
+    }
+    return json.decode(response.body);
+  }
   
   /// Pass to hash
   Map<String, String> _passToHash(String password, String salt) {
@@ -1338,7 +1738,6 @@ class InternxtClient {
     };
   }
 
-  // NEW: Add shouldIncludeFile (port of drive.py)
   bool shouldIncludeFile(
     String fileName,
     List<String> include,
@@ -1363,7 +1762,6 @@ class InternxtClient {
     return true;
   }
 
-  // NEW: Add downloadPath (port of Python's download_path)
   Future<void> downloadPath(
     String remotePath, {
     String? localDestination,
@@ -1483,7 +1881,6 @@ class InternxtClient {
     }
   }
 
-  // NEW: Add _downloadFolderRecursive (port of drive.py)
   Future<void> _downloadFolderRecursive(
     String folderUuid,
     Directory currentDest, {
@@ -1646,6 +2043,180 @@ class InternxtClient {
     if (response.statusCode != 200) {
       _log('Delete file failed: ${response.body}');
       // Don't throw, just log. Overwrite should proceed.
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getTrashContent({int offset = 0, int limit = 50}) async {
+    // This ports api.py's get_trash_content function
+    // GET /storage/trash/paginated?offset=0&limit=50&type=files|folders
+    // FIXED: Make separate calls for files and folders like TS TrashService.ts
+    
+    final url = Uri.parse('$driveApiUrl/storage/trash/paginated');
+    final List<Map<String, dynamic>> allItems = [];
+
+    // Fetch Files
+    try {
+      _log('GET $url?type=files (listing trash files)');
+      final fileResponse = await http.get(
+        url.replace(queryParameters: {
+          'offset': offset.toString(),
+          'limit': limit.toString(),
+          'type': 'files', 
+        }),
+        headers: {'Authorization': 'Bearer $newToken'},
+      );
+
+      if (fileResponse.statusCode != 200) {
+        _log('List trash files failed: ${fileResponse.body}');
+        // Don't throw immediately, try fetching folders too
+      } else {
+        final fileData = json.decode(fileResponse.body);
+        final files = fileData['result'] ?? fileData['items'] ?? []; 
+        for (var item in files) {
+           allItems.add({
+            'type': 'file', // Explicitly set type
+            'name': item['plainName'] ?? item['name'], 
+            'fileType': item['type'] ?? '', // File extension
+            'uuid': item['uuid'] ?? item['id'],
+            'size': item['size'], 
+          });
+        }
+      }
+    } catch (e) {
+       _log('Error fetching trash files: $e');
+    }
+
+    // Fetch Folders
+    try {
+      _log('GET $url?type=folders (listing trash folders)');
+       final folderResponse = await http.get(
+        url.replace(queryParameters: {
+          'offset': offset.toString(),
+          'limit': limit.toString(),
+          'type': 'folders', 
+        }),
+        headers: {'Authorization': 'Bearer $newToken'},
+      );
+
+      if (folderResponse.statusCode != 200) {
+        _log('List trash folders failed: ${folderResponse.body}');
+        // Don't throw immediately
+      } else {
+        final folderData = json.decode(folderResponse.body);
+        final folders = folderData['result'] ?? folderData['items'] ?? [];
+        for (var item in folders) {
+          allItems.add({
+            'type': 'folder', // Explicitly set type
+            'name': item['plainName'] ?? item['name'], 
+            'fileType': '', // Folders don't have fileType
+            'uuid': item['uuid'] ?? item['id'],
+            'size': null, // Folders don't have size
+          });
+        }
+      }
+    } catch (e) {
+      _log('Error fetching trash folders: $e');
+    }
+
+    // If both calls failed somehow, throw an error now
+    if (allItems.isEmpty && (offset == 0)) { // Only throw if it's the first page and empty
+       _log('Both trash list calls failed or returned empty.');
+       // Check if *any* call failed previously, throw based on that status?
+       // For now, let's just indicate failure if list is empty after trying both.
+       throw Exception('Failed to list trash content (files and folders). Check debug logs.');
+    }
+
+    return allItems;
+  }
+
+  Future<void> moveFile(String fileUuid, String destinationFolderUuid) async {
+    // PATCH /files/{fileUuid} with {'destinationFolder': destinationFolderUuid}
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid');
+    final payload = {'destinationFolder': destinationFolderUuid};
+    _log('PATCH $url (moving file $fileUuid)');
+
+    final response = await http.patch(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Move file failed: ${response.body}');
+      throw Exception('Failed to move file: ${response.statusCode}');
+    }
+  }
+
+  Future<void> moveFolder(String folderUuid, String destinationFolderUuid) async {
+    // PATCH /folders/{folderUuid} with {'destinationFolder': destinationFolderUuid}
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
+    final payload = {'destinationFolder': destinationFolderUuid};
+    _log('PATCH $url (moving folder $folderUuid)');
+
+    final response = await http.patch(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+     if (response.statusCode != 200) {
+      _log('Move folder failed: ${response.body}');
+      throw Exception('Failed to move folder: ${response.statusCode}');
+    }
+  }
+
+  Future<void> renameFile(String fileUuid, String newPlainName, String? newType) async {
+    // PUT /files/{fileUuid}/meta
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
+    final payload = <String, dynamic>{'plainName': newPlainName};
+    // Only include 'type' if it's not null. API might require null/empty string.
+    // Python api.py checks `if new_type is not None:`
+    if (newType != null) {
+      payload['type'] = newType;
+    } else {
+      payload['type'] = ''; // Match TS behavior if no extension
+    }
+    _log('PUT $url (renaming file $fileUuid)');
+
+    final response = await http.put(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Rename file failed: ${response.body}');
+      throw Exception('Failed to rename file: ${response.statusCode}');
+    }
+  }
+
+  Future<void> renameFolder(String folderUuid, String newName) async {
+    // PUT /folders/{folderUuid}/meta
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
+    final payload = {'plainName': newName};
+    _log('PUT $url (renaming folder $folderUuid)');
+
+    final response = await http.put(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Rename folder failed: ${response.body}');
+      throw Exception('Failed to rename folder: ${response.statusCode}');
     }
   }
 
