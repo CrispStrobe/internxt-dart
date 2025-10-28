@@ -1,0 +1,14 @@
+name: internxt_client
+description: Internxt API client in Dart
+version: 1.0.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  http: ^1.1.0
+  pointycastle: ^3.7.3
+  bip39: ^1.0.6
+  crypto: ^3.0.3
+  hex: ^0.2.0
+  args: ^2.7.0
