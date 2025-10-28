@@ -12,3 +12,4 @@ dependencies:
   crypto: ^3.0.3
   hex: ^0.2.0
   args: ^2.7.0
+  glob: ^2.1.3

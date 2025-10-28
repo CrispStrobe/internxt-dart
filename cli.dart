@@ -10,6 +10,9 @@ import 'package:pointycastle/export.dart';
 import 'package:bip39/bip39.dart' as bip39;
 import 'package:hex/hex.dart';
 import 'package:path/path.dart' as p;
+import 'package:glob/glob.dart';
+import 'package:glob/list_local_fs.dart';
+import 'package:http_parser/http_parser.dart' show MediaType;
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -25,26 +28,35 @@ class InternxtCLI {
   Future<void> run(List<String> arguments) async {
     final parser = ArgParser()
       ..addFlag('debug', abbr: 'd', help: 'Enable debug output')
-      ..addFlag('uuids', help: 'Show full UUIDs in list command');
-    
+      ..addFlag('uuids', help: 'Show full UUIDs in list command')
+      // Add options for upload/download
+      ..addFlag('recursive', abbr: 'r', help: 'Recursive operation')
+      ..addFlag('preserve-timestamps', abbr: 'p', help: 'Preserve file modification times')
+      ..addOption('target', abbr: 't', help: 'Destination path on Internxt Drive')
+      ..addOption('on-conflict',
+          help: 'Action if target exists (overwrite/skip)',
+          allowed: ['overwrite', 'skip'],
+          defaultsTo: 'skip')
+      ..addMultiOption('include', help: 'Include only files matching pattern')
+      ..addMultiOption('exclude', help: 'Exclude files matching pattern');
+
     final argResults = parser.parse(arguments);
     debugMode = argResults['debug'];
     client.debugMode = debugMode;
-    
+
     final commandArgs = argResults.rest;
 
     if (commandArgs.isEmpty) {
       printWelcome();
       return;
     }
-    
+
     final command = commandArgs[0];
-    final args = commandArgs.sublist(1);
     
     try {
       switch (command) {
         case 'login':
-          await handleLogin(args);
+          await handleLogin(commandArgs.sublist(1));
           break;
         case 'whoami':
           await handleWhoami();
@@ -56,10 +68,15 @@ class InternxtCLI {
           await handleList(argResults);
           break;
         case 'download':
-          await handleDownload(args);
+          // simple UUID downloader
+          await handleDownload(argResults.rest.sublist(1));
           break;
         case 'download-path':
-          await handleDownloadPath(args);
+          // more feature-rich path downloader
+          await handleDownloadPath(argResults);
+          break;
+        case 'upload':
+          await handleUpload(argResults);
           break;
         case 'config':
           await handleConfig();
@@ -99,7 +116,8 @@ class InternxtCLI {
     print('  whoami             Show current user info');
     print('  list [path-id]     List files and folders (default: root)');
     print('  download <file-uuid> Download a file by its UUID');
-    print('  download-path <path> Download a file by its path (e.g., /readme.md)');
+    print('  download-path <path> Download a file/folder by its path');
+    print('  upload <sources...>  Upload files/folders to Internxt');
     print('  config             Show configuration');
     print('  test               Run crypto tests');
     print('  help               Show this help message');
@@ -108,12 +126,23 @@ class InternxtCLI {
     print('  --debug, -d        Enable debug output');
     print('  --uuids            Show full UUIDs in "list" command');
     print('');
+    print('Upload/Download Options:');
+    print('  -t, --target <path>  Remote destination path (default: /)');
+    print('  -r, --recursive    Recursive operation for directories');
+    print('  -p, --preserve-timestamps');
+    print('                     Preserve file modification times');
+    print('  --on-conflict <mode> Action on conflict (overwrite/skip) (default: skip)');
+    print('  --include <pattern>  Include files matching pattern');
+    print('  --exclude <pattern>  Exclude files matching pattern');
+    print('');
     print('Examples:');
     print('  dart cli.dart login --debug');
     print('  dart cli.dart list');
-    print('  dart cli.dart list --uuids');
-    print('  dart cli.dart download <file-uuid-from-list>');
-    print('  dart cli.dart download-path /readme.md');
+    print('  dart cli.dart upload file.txt -t /Documents');
+    print('  dart cli.dart upload "assets/*.png" -t /Images');
+    print('  dart cli.dart upload my_folder/ -t /Backup -r');
+    print('  dart cli.dart download-path /Documents/file.txt');
+    print('  dart cli.dart download-path /Backup -r');
   }
   
   void printHelp() {
@@ -288,7 +317,55 @@ class InternxtCLI {
     }
   }
 
-  Future<void> handleDownloadPath(List<String> args) async {
+  Future<void> handleUpload(ArgResults argResults) async {
+    final sources = argResults.rest.sublist(1);
+    if (sources.isEmpty) {
+      stderr.writeln('❌ No source files or directories specified.');
+      exit(1);
+    }
+
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        exit(1);
+      }
+      client.setAuth(creds);
+      
+      // Get credentials to pass to the client
+      final bridgeUser = creds['bridgeUser'];
+      final userIdForAuth = creds['userIdForAuth'];
+      if (bridgeUser == null || userIdForAuth == null) {
+         throw Exception('Credentials file is missing bridgeUser or userId. Please login again.');
+      }
+
+      final targetPath = argResults['target'] as String? ?? '/';
+      final recursive = argResults['recursive'] as bool;
+      final onConflict = argResults['on-conflict'] as String;
+      final preserveTimestamps = argResults['preserve-timestamps'] as bool;
+      final include = argResults['include'] as List<String>;
+      final exclude = argResults['exclude'] as List<String>;
+
+      await client.upload(
+        sources,
+        targetPath,
+        recursive: recursive,
+        onConflict: onConflict,
+        preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
+        // FIXED: Pass credentials down
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+      );
+    } catch (e) {
+      stderr.writeln('❌ Upload failed: $e');
+      exit(1);
+    }
+  }
+
+  Future<void> handleDownloadPath(ArgResults argResults) async {
+    final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
       stderr.writeln('❌ Usage: dart cli.dart download-path <path>');
       exit(1);
@@ -300,43 +377,41 @@ class InternxtCLI {
         stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         exit(1);
       }
-      
       client.setAuth(creds);
-      
-      final path = args[0];
-      print('🔍 Resolving path: $path');
 
-      // 1. Resolve the path to get the item info
-      final itemInfo = await client.resolvePath(path);
+      // Get all options
+      final remotePath = args[0];
+      final localDestination = argResults['target'] as String?;
+      final recursive = argResults['recursive'] as bool;
+      final onConflict = argResults['on-conflict'] as String;
+      final preserveTimestamps = argResults['preserve-timestamps'] as bool;
+      final include = argResults['include'] as List<String>;
+      final exclude = argResults['exclude'] as List<String>;
       
-      if (itemInfo['type'] != 'file') {
-        throw Exception("Path '$path' is a folder, not a file.");
-      }
-
-      final fileUuid = itemInfo['uuid'] as String;
-      print('✅ Path resolved to file UUID: $fileUuid');
-      
-      // 2. Now call the existing download logic
+      // Get credentials needed for download
       final bridgeUser = creds['bridgeUser'];
       final userIdForAuth = creds['userIdForAuth'];
-
       if (bridgeUser == null || userIdForAuth == null) {
          throw Exception('Credentials file is missing bridgeUser or userId. Please login again.');
       }
 
-      print('⬇️  Downloading file: $fileUuid\n');
-      
-      final result = await client.downloadFile(fileUuid, bridgeUser, userIdForAuth);
-      final data = result['data'] as Uint8List;
-      final filename = result['filename'] as String;
-      
-      final file = File(filename);
-      await file.writeAsBytes(data);
-      
-      print('\n✅ Downloaded successfully: $filename');
-      print('📊 Size: ${formatSize(data.length)}');
+      print('⬇️  Downloading from path: $remotePath');
+
+      // Call the more feature-rich downloadPath method
+      await client.downloadPath(
+        remotePath,
+        localDestination: localDestination,
+        recursive: recursive,
+        onConflict: onConflict,
+        preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+      );
+
     } catch (e) {
-      stderr.writeln('❌ Error: $e');
+      stderr.writeln('❌ Download failed: $e');
       exit(1);
     }
   }
@@ -475,6 +550,7 @@ class InternxtClient {
   String? userEmail;
   String? userId;
   String? rootFolderId;
+  String? bucketId;
   
   void _log(String message) {
     if (debugMode) {
@@ -482,13 +558,14 @@ class InternxtClient {
     }
   }
 
-  void setAuth(Map<String, String?> creds) {
+  void setAuth(Map<String, String?> creds) { // <-- Allow String?
     authToken = creds['token'];
     newToken = creds['newToken'];
     mnemonic = creds['mnemonic'];
     userEmail = creds['email'];
     userId = creds['userId'];
     rootFolderId = creds['rootFolderId'];
+    bucketId = creds['bucketId'];
   }
   
   /// Check if 2FA is needed for an email
@@ -523,7 +600,7 @@ class InternxtClient {
   }
   
   /// Login to Internxt
-  Future<Map<String, String>> login(String email, String password, {String? tfaCode}) async {
+  Future<Map<String, String?>> login(String email, String password, {String? tfaCode}) async {
     _log('========================================');
     _log('Starting login process');
     _log('Email: $email');
@@ -614,11 +691,13 @@ class InternxtClient {
     final userEmail = user['email'];
     final userId = user['userId'] ?? user['uuid'];
     final rootFolderId = user['rootFolderId'];
+    final bucketId = user['bucket'];
     
     _log('User info extracted:');
     _log('   Email: $userEmail');
     _log('   User ID: $userId');
     _log('   Root Folder ID: $rootFolderId');
+    _log('   Bucket ID: $bucketId');
     
     final encryptedMnemonic = user['mnemonic'];
     if (encryptedMnemonic == null) {
@@ -653,6 +732,7 @@ class InternxtClient {
       // We must save bridgeUser and userId for downloads
       'bridgeUser': user['bridgeUser'],
       'userIdForAuth': user['userId'],
+      'bucketId': bucketId,
     };
   }
   
@@ -1008,20 +1088,22 @@ class InternxtClient {
   
   // --- Download Operations ---
 
-  Future<Map<String, dynamic>> downloadFile(String fileUuid, String bridgeUser, String userIdForAuth) async {
+  Future<Map<String, dynamic>> downloadFile(
+    String fileUuid,
+    String bridgeUser,
+    String userIdForAuth, {
+    bool preserveTimestamps = false, // ADDED
+  }) async {
     _log('Starting file download: $fileUuid');
     
-    // Step 1: Get file metadata
     print('   📋 Fetching file metadata...');
     final metadataUrl = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-    _log('GET $metadataUrl');
     
     final metadataResponse = await http.get(
       metadataUrl,
       headers: {'Authorization': 'Bearer $newToken'},
     );
     
-    _log('Metadata response: ${metadataResponse.statusCode}');
     if (metadataResponse.statusCode != 200) {
       _log('Metadata body: ${metadataResponse.body}');
       throw Exception('Failed to get metadata: ${metadataResponse.statusCode}');
@@ -1031,7 +1113,6 @@ class InternxtClient {
     final bucketId = metadata['bucket'];
     final networkFileId = metadata['fileId'];
     
-    // parse size to int
     final fileSize = metadata['size'] is int 
         ? metadata['size'] as int
         : int.tryParse(metadata['size'].toString()) ?? 0;
@@ -1039,27 +1120,23 @@ class InternxtClient {
     final fileName = metadata['plainName'] ?? 'file';
     final fileType = metadata['type'] ?? '';
     final filename = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
-    
+
+    // ADDED: Get timestamps from metadata
+    String? modificationTime = metadata['modificationTime'] ?? metadata['updatedAt'];
+
     print('   📄 File: $filename');
     print('   📊 Size: ${formatSize(fileSize)}');
     
-    // Step 2: Get network credentials
     final networkAuth = _getNetworkAuth(bridgeUser, userIdForAuth);
     final networkUser = networkAuth['user']!;
     final networkPass = networkAuth['pass']!;
-    _log('Network auth obtained for user: $networkUser');
     
-    // Step 3: Get download links
     print('   🔗 Fetching download links...');
     final linksResponse = await _getDownloadLinks(bucketId, networkFileId, networkUser, networkPass);
     final downloadUrl = linksResponse['shards'][0]['url'];
     final fileIndexHex = linksResponse['index'];
-    _log('   🔗 Download URL acquired');
     
-    // Step 4: Download encrypted data
     print('   ☁️  Downloading encrypted data...');
-    _log('Downloading from: $downloadUrl');
-    
     final downloadResponse = await http.get(Uri.parse(downloadUrl));
     
     if (downloadResponse.statusCode != 200) {
@@ -1067,9 +1144,7 @@ class InternxtClient {
     }
     
     final encryptedData = downloadResponse.bodyBytes;
-    _log('   ☁️  Downloaded ${formatSize(encryptedData.length)} encrypted');
     
-    // Step 5: Decrypt
     print('   🔐 Decrypting...');
     final decryptedData = _decryptStream(
       encryptedData,
@@ -1077,12 +1152,736 @@ class InternxtClient {
       bucketId,
       fileIndexHex,
     );
-    _log('   🔐 Decrypted ${formatSize(decryptedData.length)}');
     
-    // Step 6: Trim to exact size
     final trimmedData = decryptedData.sublist(0, fileSize);
+
+    // Return all info needed
+    return {
+      'data': trimmedData,
+      'filename': filename,
+      'modificationTime': modificationTime, // ADDED
+      'preserveTimestamps': preserveTimestamps, // ADDED
+    };
+  }
+
+  // NEW: Add shouldIncludeFile (port of drive.py)
+  bool shouldIncludeFile(
+    String fileName,
+    List<String> include,
+    List<String> exclude,
+  ) {
+    // If include patterns specified, file must match at least one
+    if (include.isNotEmpty) {
+      final matchesInclude = include.any((pattern) => Glob(pattern).matches(fileName));
+      if (!matchesInclude) {
+        return false;
+      }
+    }
     
-    return {'data': trimmedData, 'filename': filename};
+    // If exclude patterns specified, file must not match any
+    if (exclude.isNotEmpty) {
+      final matchesExclude = exclude.any((pattern) => Glob(pattern).matches(fileName));
+      if (matchesExclude) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
+  // NEW: Add downloadPath (port of Python's download_path)
+  Future<void> downloadPath(
+    String remotePath, {
+    String? localDestination,
+    required bool recursive,
+    required String onConflict,
+    required bool preserveTimestamps,
+    required List<String> include,
+    required List<String> exclude,
+    required String bridgeUser,
+    required String userIdForAuth,
+  }) async {
+    // 1. Resolve remote path
+    final itemInfo = await resolvePath(remotePath);
+    
+    // 2. Handle FILE download
+    if (itemInfo['type'] == 'file') {
+      _log('Path resolved to a file. Starting single file download.');
+      
+      final metadata = itemInfo['metadata'] as Map<String, dynamic>;
+      final plainName = metadata['name'] ?? 'file';
+      final fileType = metadata['fileType'] ?? '';
+      final remoteFilename = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+      
+      // Check filters
+      if (!shouldIncludeFile(remoteFilename, include, exclude)) {
+        print('🚫 File filtered out by include/exclude patterns: $remoteFilename');
+        return;
+      }
+      
+      // Determine local path
+      String localPath;
+      if (localDestination != null) {
+        final destFile = File(localDestination);
+        if (await destFile.parent.exists()) {
+          localPath = localDestination; // Assume it's a full file path
+        } else {
+          localPath = p.join(localDestination, remoteFilename);
+        }
+      } else {
+        localPath = remoteFilename;
+      }
+      
+      final localFile = File(localPath);
+
+      // Check conflict
+      if (await localFile.exists() && onConflict == 'skip') {
+        print('⏭️  File exists, skipping: $localPath');
+        return;
+      }
+      
+      // Download
+      final downloadResult = await downloadFile(
+        itemInfo['uuid'],
+        bridgeUser,
+        userIdForAuth,
+        preserveTimestamps: preserveTimestamps,
+      );
+      
+      // Save file
+      await localFile.parent.create(recursive: true);
+      await localFile.writeAsBytes(downloadResult['data']);
+      
+      // Preserve timestamps if requested
+      if (downloadResult['preserveTimestamps'] == true &&
+          downloadResult['modificationTime'] != null) {
+        try {
+          final mTime = DateTime.parse(downloadResult['modificationTime']);
+          await localFile.setLastModified(mTime);
+          print('   🕐 Set modification time: $mTime');
+        } catch (e) {
+          print('   ⚠️  Could not set modification time: $e');
+        }
+      }
+      
+      print('\n🎉 Downloaded successfully!');
+      print('📄 From: $remotePath');
+      print('💾 To: $localPath');
+      return;
+    }
+    
+    // 3. Handle FOLDER download
+    if (itemInfo['type'] == 'folder') {
+      if (!recursive) {
+        throw Exception("'$remotePath' is a folder. Use -r to download recursively.");
+      }
+      
+      _log('Path resolved to a folder. Starting recursive download.');
+      
+      // Determine base destination
+      String baseDestPath;
+      if (localDestination != null) {
+        baseDestPath = localDestination;
+      } else {
+        final folderName = itemInfo['metadata']['name'] ?? 'download';
+        baseDestPath = folderName;
+      }
+      
+      final baseDestDir = Directory(baseDestPath);
+      await baseDestDir.create(recursive: true);
+      
+      print('📂 Downloading folder recursively: $remotePath');
+      print('💾 Target directory: ${baseDestDir.path}');
+
+      // Call recursive helper
+      await _downloadFolderRecursive(
+        itemInfo['uuid'],
+        baseDestDir,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        onConflict: onConflict,
+        preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
+      );
+      
+      print('\n🎉 Folder download complete!');
+    }
+  }
+
+  // NEW: Add _downloadFolderRecursive (port of drive.py)
+  Future<void> _downloadFolderRecursive(
+    String folderUuid,
+    Directory currentDest, {
+    required String bridgeUser,
+    required String userIdForAuth,
+    required String onConflict,
+    required bool preserveTimestamps,
+    required List<String> include,
+    required List<String> exclude,
+  }) async {
+    // 1. Get folder contents
+    final files = await listFolderFiles(folderUuid);
+    final folders = await listFolders(folderUuid);
+    
+    // 2. Download files in this folder
+    for (var fileInfo in files) {
+      final plainName = fileInfo['name'] ?? 'file';
+      final fileType = fileInfo['fileType'] ?? '';
+      final fileName = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+      
+      // Apply filters
+      if (!shouldIncludeFile(fileName, include, exclude)) {
+        _log('   🚫 Filtered: $fileName');
+        continue;
+      }
+      
+      final fileDest = File(p.join(currentDest.path, fileName));
+      
+      // Check conflict
+      if (await fileDest.exists() && onConflict == 'skip') {
+        print('   ⏭️  Skipping existing: $fileName');
+        continue;
+      }
+      
+      try {
+        print('   -> Downloading: $fileName');
+        final downloadResult = await downloadFile(
+          fileInfo['uuid'],
+          bridgeUser,
+          userIdForAuth,
+          preserveTimestamps: preserveTimestamps,
+        );
+        
+        await fileDest.writeAsBytes(downloadResult['data']);
+        
+        // Preserve timestamps if requested
+        if (downloadResult['preserveTimestamps'] == true &&
+            downloadResult['modificationTime'] != null) {
+          try {
+            final mTime = DateTime.parse(downloadResult['modificationTime']);
+            await fileDest.setLastModified(mTime);
+            _log('   🕐 Set modification time: $mTime');
+          } catch (e) {
+            _log('   ⚠️  Could not set modification time: $e');
+          }
+        }
+      } catch (e) {
+        print('   -> ❌ Error downloading $fileName: $e');
+      }
+    }
+    
+    // 3. Recurse into subfolders
+    for (var folderInfo in folders) {
+      final folderName = folderInfo['name'] ?? 'subfolder';
+      final subfolderDest = Directory(p.join(currentDest.path, folderName));
+      await subfolderDest.create(recursive: true);
+      
+      print('📂 Entering folder: $folderName');
+      
+      await _downloadFolderRecursive(
+        folderInfo['uuid'],
+        subfolderDest,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        onConflict: onConflict,
+        preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
+      );
+    }
+  }
+
+
+  // --- NEW: UPLOAD LOGIC (Ported from cli.py, drive.py, api.py) ---
+
+  // NEW: _createFolder (port of api.py)
+  Future<Map<String, dynamic>> _createFolder(String name, String parentFolderUuid) async {
+    final url = Uri.parse('$driveApiUrl/folders');
+    final data = {'plainName': name, 'parentFolderUuid': parentFolderUuid};
+    _log('POST $url (create folder $name)');
+    
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(data),
+    );
+    
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log('Create folder failed: ${response.body}');
+      throw Exception('Failed to create folder: ${response.statusCode}');
+    }
+    return json.decode(response.body);
+  }
+
+  Future<Map<String, dynamic>> createFolderRecursive(String path) async {
+    if (this.rootFolderId == null) {
+      throw Exception("Not logged in");
+    }
+    
+    var cleanPath = path.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+    if (cleanPath.isEmpty) {
+      return {'uuid': rootFolderId, 'plainName': 'Root'};
+    }
+    
+    var parts = cleanPath.split('/');
+    var currentParentUuid = rootFolderId!;
+    var currentPathSoFar = '/';
+    Map<String, dynamic>? foundFolder;
+    
+    for (var part in parts) {
+      if (part.isEmpty) continue;
+      
+      foundFolder = null;
+      try {
+        final folders = await listFolders(currentParentUuid);
+
+        // FIXED: (Error 1) Replaced firstWhere with a loop to safely handle 'null'
+        for (var folder in folders) {
+          if (folder['name'] == part) {
+            foundFolder = folder;
+            break;
+          }
+        }
+        
+        if (foundFolder != null) {
+          currentParentUuid = foundFolder['uuid'];
+          currentPathSoFar = '$currentPathSoFar/$part'.replaceAll('//', '/');
+        } else {
+          print('  -> Creating intermediate folder: $part in $currentPathSoFar');
+          final newFolder = await _createFolder(part, currentParentUuid);
+          currentParentUuid = newFolder['uuid'];
+          currentPathSoFar = '$currentPathSoFar/$part'.replaceAll('//', '/');
+          foundFolder = newFolder;
+        }
+      } catch (e) {
+        throw Exception("Failed to resolve or create folder part '$part' in '$currentPathSoFar': $e");
+      }
+    }
+    return foundFolder!; // Will be the last folder found or created
+  }
+
+  // NEW: _deleteFilePermanently (port of api.py delete_file)
+  Future<void> _deleteFilePermanently(String fileUuid) async {
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid');
+    _log('DELETE $url');
+    final response = await http.delete(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+    if (response.statusCode != 200) {
+      _log('Delete file failed: ${response.body}');
+      // Don't throw, just log. Overwrite should proceed.
+    }
+  }
+
+  // NEW: _deleteFolderPermanently (port of api.py delete_folder)
+  Future<void> _deleteFolderPermanently(String folderUuid) async {
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
+    _log('DELETE $url');
+    final response = await http.delete(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+    if (response.statusCode != 200) {
+      _log('Delete folder failed: ${response.body}');
+    }
+  }
+
+  // NEW: _startUpload (port of api.py)
+  Future<Map<String, dynamic>> _startUpload(String bucketId, int fileSize, String user, String pass) async {
+    final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
+    final data = {'uploads': [{'index': 0, 'size': fileSize}]};
+    _log('POST $url (start upload)');
+    
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(data),
+    );
+    
+    if (response.statusCode != 200) {
+      _log('Start upload failed: ${response.body}');
+      throw Exception('Failed to start upload: ${response.statusCode}');
+    }
+    return json.decode(response.body);
+  }
+
+  // NEW: _uploadChunk (port of api.py)
+  Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
+    _log('PUT $uploadUrl (uploading chunk)');
+    final response = await http.put(
+      Uri.parse(uploadUrl),
+      headers: {'Content-Type': 'application/octet-stream'},
+      body: chunkData,
+    );
+    
+    if (response.statusCode != 200) {
+      _log('Upload chunk failed: ${response.body}');
+      throw Exception('Failed to upload chunk: ${response.statusCode}');
+    }
+  }
+
+  // NEW: _finishUpload (port of api.py)
+  Future<Map<String, dynamic>> _finishUpload(String bucketId, Map<String, dynamic> payload, String user, String pass) async {
+    final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
+    _log('POST $url (finish upload)');
+    
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+    
+    if (response.statusCode != 200) {
+      _log('Finish upload failed: ${response.body}');
+      throw Exception('Failed to finish upload: ${response.statusCode}');
+    }
+    return json.decode(response.body);
+  }
+
+  // NEW: _createFileEntry (port of api.py)
+  Future<Map<String, dynamic>> _createFileEntry(Map<String, dynamic> payload) async {
+    final url = Uri.parse('$driveApiUrl/files');
+    _log('POST $url (create file entry)');
+    
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+    
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log('Create file entry failed: ${response.body}');
+      throw Exception('Failed to create file entry: ${response.statusCode}');
+    }
+    return json.decode(response.body);
+  }
+
+  Future<Map<String, dynamic>> _uploadFile(
+      File localFile,
+      String destinationFolderUuid,
+      String remoteFileName, {
+        required String bridgeUser,
+        required String userIdForAuth,
+        String? creationTime,
+        String? modificationTime,
+      }) async {
+      // We use the bucketId from credentials
+      if (this.bucketId == null) {
+        throw Exception("Bucket ID not found in credentials. Please login again.");
+      }
+      final bucketId = this.bucketId!;
+
+      if (this.mnemonic == null) throw Exception("Not logged in");
+
+      final networkAuth = _getNetworkAuth(bridgeUser, userIdForAuth);
+      // ... (rest of the function is correct) ...
+      final networkUser = networkAuth['user']!;
+      final networkPass = networkAuth['pass']!;
+      
+      final fileBytes = await localFile.readAsBytes();
+      final fileSize = fileBytes.length;
+      
+      print("     📤 Uploading '$remoteFileName' (${formatSize(fileSize)})...");
+      
+      // 1. Encrypt
+      _log("     🔐 Encrypting with exact protocol");
+      // This call will now use the correct bucketId
+      final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId);
+      final encryptedData = encryptedResult['data']!;
+      final fileIndexHex = encryptedResult['index']!;
+      
+      // 2. Start
+      _log("     🚀 Initializing network upload");
+      final startResponse = await _startUpload(bucketId, encryptedData.length, networkUser, networkPass);
+      final uploadUrl = startResponse['uploads'][0]['url'];
+      final fileNetworkUuid = startResponse['uploads'][0]['uuid'];
+      
+      // 3. Upload
+      _log("     ☁️  Uploading encrypted data");
+      await _uploadChunk(uploadUrl, encryptedData);
+      
+      // 4. Finish
+      _log("     ✅ Finalizing network upload");
+      final encryptedHash = crypto.sha256.convert(encryptedData).toString();
+      final finishPayload = {
+        'index': fileIndexHex,
+        'shards': [{'hash': encryptedHash, 'uuid': fileNetworkUuid}]
+      };
+      final finishResponse = await _finishUpload(bucketId, finishPayload, networkUser, networkPass);
+      final networkFileId = finishResponse['id'];
+      
+      // 5. Create Entry
+      _log("     📋 Creating file metadata");
+      final plainName = p.basenameWithoutExtension(remoteFileName);
+      final fileType = p.extension(remoteFileName).replaceAll('.', '');
+      
+      final fileEntryPayload = <String, dynamic>{
+        'folderUuid': destinationFolderUuid,
+        'plainName': plainName,
+        'type': fileType,
+        'size': fileSize,
+        'bucket': bucketId, 
+        'fileId': networkFileId,
+        'encryptVersion': 'Aes03', 
+        'name': '', 
+      };
+      
+      if (creationTime != null) {
+        fileEntryPayload['creationTime'] = creationTime;
+        _log("     🕐 Added creationTime to payload");
+      }
+      if (modificationTime != null) {
+        fileEntryPayload['modificationTime'] = modificationTime;
+        _log("     🕐 Added modificationTime to payload");
+      }
+      
+      return await _createFileEntry(fileEntryPayload);
+    }
+
+  Future<String> _uploadSingleItem(
+    File localFile,
+    String targetRemoteParentPath,
+    String targetFolderUuid,
+    String onConflict, {
+    required String bridgeUser,
+    required String userIdForAuth,
+    required bool preserveTimestamps,
+    String? remoteFileName, 
+  }) async {
+    final effectiveRemoteFilename = remoteFileName ?? p.basename(localFile.path);
+    final fullTargetRemotePath = p.join(targetRemoteParentPath, effectiveRemoteFilename).replaceAll('\\', '/');
+    print("  -> Preparing upload: '${p.basename(localFile.path)}' to '$fullTargetRemotePath'");
+    
+    Map<String, dynamic>? existingItemInfo;
+    try {
+      existingItemInfo = await resolvePath(fullTargetRemotePath);
+      print("  -> Target exists: $fullTargetRemotePath (Type: ${existingItemInfo['type']})");
+    } on Exception catch (e) {
+      if (e.toString().contains("Path not found")) {
+        print("  -> Target does not exist, proceeding with upload");
+      } else {
+        print("  -> ⚠️  Error checking target existence: $e");
+      }
+    }
+
+    if (existingItemInfo != null) {
+      if (onConflict == 'skip') {
+        print("  -> ⏭️  Skipping due to conflict policy (file exists)");
+        return "skipped";
+      } else if (onConflict == 'overwrite') {
+        if (existingItemInfo['type'] == 'folder') {
+          print("  -> ❌ Cannot overwrite folder with a file: $fullTargetRemotePath");
+          return "error";
+        } else {
+          print("  -> 🔄 Overwriting existing file...");
+          try {
+            await _deleteFilePermanently(existingItemInfo['uuid']);
+            print("  -> 🗑️  Deleted existing file for overwrite");
+          } catch (delErr) {
+            print("  -> ❌ Error deleting existing file for overwrite: $delErr");
+            return "error";
+          }
+        }
+      }
+    }
+    
+    // --- Proceed with upload ---
+    try {
+      String? creationTime;
+      String? modificationTime;
+      
+      if (preserveTimestamps) {
+        try {
+          final stat = await localFile.stat();
+          modificationTime = stat.modified.toUtc().toIso8601String();
+          creationTime = stat.changed.toUtc().toIso8601String(); // 'changed' is closest to 'creation'
+          _log("     🕐 Preserving timestamps: Mod=$modificationTime, Cre=$creationTime");
+        } catch (e) {
+          _log("     ⚠️  Could not read timestamps: $e");
+        }
+      }
+      
+      await _uploadFile(
+        localFile,
+        targetFolderUuid,
+        effectiveRemoteFilename,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        creationTime: creationTime,
+        modificationTime: modificationTime,
+      );
+      print("  -> ✅ Successfully uploaded: $effectiveRemoteFilename");
+      return "uploaded";
+    } catch (upErr) {
+      print("  -> ❌ Error during upload: $upErr");
+      return "error";
+    }
+  }
+
+  Future<void> upload(
+    List<String> sources,
+    String targetPath, {
+    required bool recursive,
+    required String onConflict,
+    required bool preserveTimestamps,
+    required List<String> include,
+    required List<String> exclude,
+    required String bridgeUser,
+    required String userIdForAuth,
+  }) async {
+    print("🎯 Preparing upload to remote path: $targetPath");
+
+    // 1. Resolve or Create Target Folder
+    Map<String, dynamic> targetFolderInfo;
+    try {
+      targetFolderInfo = await resolvePath(targetPath);
+      if (targetFolderInfo['type'] != 'folder') {
+        throw Exception("Target path '$targetPath' exists but is not a folder.");
+      }
+      print("✅ Target folder exists: '${targetFolderInfo['path'] ?? targetPath}'");
+    } on Exception catch (e) {
+      if (e.toString().contains("Path not found")) {
+        print("⏳ Target path '$targetPath' not found. Attempting to create...");
+        try {
+          targetFolderInfo = await createFolderRecursive(targetPath);
+          print("✅ Created target folder '$targetPath'");
+        } catch (createErr) {
+          throw Exception("Failed to create target folder '$targetPath': $createErr");
+        }
+      } else {
+        throw e; // Re-throw other errors
+      }
+    }
+    
+    final targetFolderUuid = targetFolderInfo['uuid'] as String;
+    final targetFolderPathStr = targetFolderInfo['path'] as String? ?? targetPath;
+    
+    // 2. Process Sources
+    int successCount = 0;
+    int skippedCount = 0;
+    int errorCount = 0;
+    
+    for (final sourceArg in sources) {
+      final hasTrailingSlash = sourceArg.endsWith('/') || sourceArg.endsWith('\\');
+      
+      // Expand wildcards
+      final glob = Glob(sourceArg.replaceAll('\\', '/'));
+      await for (final entity in glob.list()) {
+        final localPath = File(entity.path);
+        
+        if (await localPath.exists()) {
+          // It's a file
+          
+          // Apply filters
+          if (!shouldIncludeFile(p.basename(localPath.path), include, exclude)) {
+            print("🚫 Filtered out: ${localPath.path}");
+            continue;
+          }
+          
+          final result = await _uploadSingleItem(
+            localPath,
+            targetFolderPathStr,
+            targetFolderUuid,
+            onConflict,
+            bridgeUser: bridgeUser,
+            userIdForAuth: userIdForAuth,
+            preserveTimestamps: preserveTimestamps,
+            // remoteFilename is optional, so it's fine not to pass it here
+          );
+          if (result == "uploaded") successCount++;
+          if (result == "skipped") skippedCount++;
+          if (result == "error") errorCount++;
+          
+        } else if (await Directory(entity.path).exists()) {
+          // It's a directory
+          final localDir = Directory(entity.path);
+          if (!recursive) {
+            print("⚠️ Skipping directory (use -r to upload recursively): ${localDir.path}");
+            skippedCount++;
+            continue;
+          }
+          
+          print("📂 Processing directory recursively: ${localDir.path}");
+          
+          // Determine remote base path for children
+          String dirRemoteBasePath;
+          if (hasTrailingSlash) {
+            print("  ✨ Copying contents directly to target (trailing slash detected)");
+            dirRemoteBasePath = targetFolderPathStr;
+          } else {
+            print("  📁 Creating folder '${p.basename(localDir.path)}' in target");
+            dirRemoteBasePath = p.join(targetFolderPathStr, p.basename(localDir.path)).replaceAll('\\', '/');
+          }
+          
+          final files = localDir.list(recursive: true, followLinks: false);
+          await for (final fileEntity in files) {
+            if (fileEntity is File) {
+              final localFile = fileEntity;
+              
+              // Apply filters
+              if (!shouldIncludeFile(p.basename(localFile.path), include, exclude)) {
+                print("  -> 🚫 Filtered: ${localFile.path}");
+                continue;
+              }
+              
+              // Find relative path
+              final relativePath = p.relative(localFile.path, from: localDir.path);
+              final itemTargetParentPath = p.join(dirRemoteBasePath, p.dirname(relativePath)).replaceAll('\\', '/');
+              final remoteFileName = p.basename(localFile.path);
+              
+              _log("  -> Found file: ${localFile.path}");
+              _log("     Target parent path: $itemTargetParentPath");
+              
+              // Ensure parent folder exists
+              Map<String, dynamic> parentFolderInfo;
+              try {
+                parentFolderInfo = await createFolderRecursive(itemTargetParentPath);
+              } catch (createErr) {
+                print("     ❌ Error ensuring parent folder $itemTargetParentPath: $createErr");
+                errorCount++;
+                continue;
+              }
+              
+              final result = await _uploadSingleItem(
+                localFile,
+                itemTargetParentPath,
+                parentFolderInfo['uuid'],
+                onConflict,
+                bridgeUser: bridgeUser,
+                userIdForAuth: userIdForAuth,
+                preserveTimestamps: preserveTimestamps,
+                remoteFileName: remoteFileName,
+              );
+              if (result == "uploaded") successCount++;
+              if (result == "skipped") skippedCount++;
+              if (result == "error") errorCount++;
+            }
+          }
+        }
+      }
+    }
+    
+    // 3. Summary
+    print("=" * 40);
+    print("📊 Upload Summary:");
+    print("  ✅ Uploaded: $successCount");
+    print("  ⏭️  Skipped:  $skippedCount");
+    print("  ❌ Errors:   $errorCount");
+    print("=" * 40);
   }
   
   Future<Map<String, dynamic>> _getDownloadLinks(String bucketId, String fileId, String user, String pass) async {
@@ -1120,7 +1919,7 @@ class InternxtClient {
         };
     }
 
-  // --- File Decryption ---
+  // --- File Crypto ---
   
   /// Get deterministic key (SHA512)
   Uint8List _getFileDeterministicKey(Uint8List key, Uint8List data) {
@@ -1168,6 +1967,33 @@ class InternxtClient {
     return cipher.process(encryptedData);
   }
 
+  Map<String, dynamic> _encryptStream(
+    Uint8List data,
+    String mnemonic,
+    String bucketId,
+  ) {
+    // Generate 32-byte random index
+    final random = Random.secure();
+    final index = Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
+    
+    // Generate file key
+    final fileKey = _generateFileKey(mnemonic, bucketId, index);
+    
+    // Use first 16 bytes of index as IV
+    final iv = index.sublist(0, 16);
+    
+    // Encrypt using AES-256-CTR
+    final cipher = CTRStreamCipher(AESEngine())
+      ..init(true, ParametersWithIV(KeyParameter(fileKey), iv));
+      
+    final encryptedData = cipher.process(data);
+    
+    return {
+      'data': encryptedData,
+      'index': HEX.encode(index),
+    };
+  }
+
 }
 
 // ============================================================================
@@ -1187,7 +2013,7 @@ class ConfigService {
     Directory(configDir).createSync(recursive: true);
   }
   
-  Future<void> saveCredentials(Map<String, String> credentials) async {
+  Future<void> saveCredentials(Map<String, String?> credentials) async {
     final file = File(credentialsFile);
     await file.writeAsString(json.encode(credentials));
   }
