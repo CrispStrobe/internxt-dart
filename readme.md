@@ -1,258 +1,211 @@
-# Internxt Python CLI
+# Internxt CLI - Dart Edition 🎯
 
-A Python implementation of the Internxt CLI for encrypted cloud storage with **path-based operations** and a **built-in WebDAV server**.
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
+A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart and designed to be compatible with the functionality of an internal Python blueprint. This is nothing offical from Internxt and still work in progress, so use at your own risk, and do not expect everything to work perfectly!
+
+This tool allows you to manage your Internxt Drive files and folders directly from your terminal, including uploads, downloads, listing, moving, renaming, and trash operations.
 
 ## ✨ Features
 
-### 🌐 **WebDAV Server**
-- ✅ **Mount as a local drive**: Access your Internxt Drive directly from Finder, File Explorer, or any WebDAV client.
-- ✅ **Cross-platform support**: Works on Windows, macOS, and Linux.
-- ✅ **Stable and Compatible**: Uses `waitress` (or `cheroot`, but buggy) for the best client compatibility.
+* **Authentication:** Login/logout securely.
+* **File Management:** List, upload, download, move, rename files and folders.
+* **Path-Based Operations:** Interact with your drive using familiar file paths (e.g., `/Documents/report.pdf`).
+* **Trash Management:** List trash contents, move items to trash, delete permanently, and restore items.
+* **Recursive Operations:** Upload and download entire directory structures.
+* **Conflict Handling:** Choose whether to overwrite or skip existing files during uploads/downloads.
+* **Wildcard Support:** Use `*` and `?` for uploading multiple files (via shell expansion).
+* **Timestamp Preservation:** Option to preserve original file modification times during uploads/downloads.
+* **Filtering:** Include or exclude files based on patterns during uploads/downloads.
+* **Cross-Platform:** Runs wherever the Dart SDK is available.
 
-### 🛣️ **Path-Based Operations**
-- ✅ **Human-readable paths**: Use `/Documents/report.pdf` instead of UUIDs.
-- ✅ **Wildcard search**: Find files with `*.pdf`, `report*`, etc.
-- ✅ **Tree visualization**: See your folder structure at a glance.
-- ✅ **Path navigation**: Browse folders like your local filesystem.
+## 🛠️ Installation
 
-### 🔐 **Core Functionality**
-- ✅ **Secure authentication**: Login/logout with 2FA support.
-- ✅ **File operations**: Upload, download with progress indicators.
-- ✅ **Folder management**: Create and organize folders.
-- ✅ **Zero-knowledge encryption**: AES-256-CTR client-side encryption.
+1.  **Install Dart SDK:** Follow the instructions on the [official Dart website](https://dart.dev/get-dart).
+2.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/CrispStrobe/internxt-dart.git
+    cd internxt-dart
+    ```
+3.  **Get Dependencies:**
+    ```bash
+    dart pub get
+    ```
 
-## 🚀 Quick Start
+## 🚀 Usage
+
+All commands are run using the Dart executable:
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Login to your account
-python cli.py login
-
-# Mount your drive locally! (EASIEST WAY TO USE)
-python cli.py webdav-start
-
-# Or, use path-based commands
-python cli.py list-path
-python cli.py find "*.pdf"
-python cli.py download-path "/Documents/important.pdf"
+dart cli.dart <command> [arguments...] [options...]
 ````
 
-## 📖 Complete Usage Guide
-
-### 🔐 Authentication
+Example:
 
 ```bash
-# Login with interactive prompts
-python cli.py login
-
-# Login non-interactively
-python cli.py login --email user@example.com --password mypass --2fa 123456
-
-# Check current user
-python cli.py whoami
-
-# Logout and clear credentials
-python cli.py logout
+dart cli.dart list --uuids
+dart cli.dart upload file.txt --target /Documents
+dart cli.dart download-path /Documents/file.txt
 ```
 
-### 🌐 WebDAV Server
+## 📚 Commands
 
-Mount your Internxt Drive as a local disk.
-
-```bash
-# Start the WebDAV server (it will print the URL and credentials)
-python cli.py webdav-start
-
-# Start in the background
-python cli.py webdav-start --background
-
-# Check if the server is running
-python cli.py webdav-status
-
-# Stop the server
-python cli.py webdav-stop
-
-# Show mount instructions for your OS
-python cli.py webdav-mount
-
-# Test if the server is responding correctly
-python cli.py webdav-test
-```
-
-After starting, open your file manager (Finder/File Explorer) or Client (like CyberDuck) and connect to the server at `http://localhost:8080` with username `internxt` and password `internxt-webdav`.
-
-### 🛣️ Path-Based Operations
-
-#### Navigate & List
-
-```bash
-# List root folder with readable paths
-python cli.py list-path
-
-# Navigate to specific folders
-python cli.py list-path "/Documents"
-python cli.py list-path "/Photos/2023/Summer"
-
-# Show detailed information
-python cli.py list-path "/Documents" --detailed
-```
-
-#### Search & Find
-
-```bash
-# Find files with wildcards
-python cli.py find "*.pdf"              # All PDF files
-python cli.py find "report*"            # Files starting with "report"
-
-# Search in specific locations
-python cli.py find "*.jpg" --path "/Photos"
-```
-
-#### Visual Navigation
-
-```bash
-# Show folder structure as tree
-python cli.py tree
-python cli.py tree "/Projects" --depth 2
-```
-
-#### Download Files
-
-```bash
-# Download by path (much easier!)
-python cli.py download-path "/Documents/report.pdf"
-python cli.py download-path "/Photos/vacation.jpg" --destination ~/Downloads/
-```
-
-### 🗑️ Delete & Trash Operations
-
-#### Move to Trash (Recoverable)
-
-```bash
-# Move to trash by path
-python cli.py trash-path "/OldDocuments/outdated.pdf"
-python cli.py trash-path "/TempFolder"
-```
-
-#### Permanent Delete (⚠️ Cannot Be Undone)
-
-```bash
-# Permanently delete by path (with warnings)
-python cli.py delete-path "/TempFile.txt"
-```
-
-### 📁 Traditional Operations (UUID-based)
-
-```bash
-# List folders (old way with UUIDs)
-python cli.py list
-python cli.py list --folder-id <folder-uuid>
-
-# Create folders
-python cli.py mkdir "My New Folder"
-
-# Upload/Download by UUID
-python cli.py upload ./document.pdf
-python cli.py download <file-uuid>
-```
-
-### 🔧 Utility Commands
-
-```bash
-# Show current configuration
-python cli.py config
-
-# Test CLI components
-python cli.py test
-
-# Extended help with examples
-python cli.py help-extended
-
-# Debug path resolution
-python cli.py resolve "/Documents/report.pdf"
-```
-
-## 📦 Installation
-
-```bash
-# Clone the repository
-git clone [https://github.com/internxt/python-cli.git](https://github.com/internxt/python-cli.git)
-cd python-cli
-
-# Install dependencies
-pip install -r requirements.txt
-
-# For the best WebDAV experience, install 'waitress'
-pip install waitress
-
-# Start using immediately
-python cli.py login
-python cli.py webdav-start
-```
-
-### Requirements
-
-  - **Python 3.8+**
-  - **Dependencies**: `cryptography`, `mnemonic`, `tqdm`, `requests`, `click`, `WsgiDAV`
-  - **WebDAV Server**: `waitress` (recommended) or `cheroot`
-
-## 🔒 Security & Privacy
-
-This CLI implements **the same security model** as official Internxt clients:
-
-  - **Client-side encryption**: All files encrypted on your device before upload (AES-256-CTR).
-  - **Zero-knowledge**: Internxt servers never see your unencrypted data or keys.
-  - **Secure Credentials**: Encrypted and stored locally in `~/.internxt-cli/`.
-
-## 🏗️ Development
-
-### Project Structure
-
-```
-internxt-cli/
-├── cli.py                    # Main CLI interface with all commands
-├── config/
-│   └── config.py             # Configuration management
-├── services/
-│   ├── auth.py               # Authentication & login
-│   ├── crypto.py             # Encryption/decryption
-│   ├── drive.py              # Drive operations & path resolution
-│   ├── webdav_provider.py    # WsgiDAV provider for Internxt
-│   └── webdav_server.py      # WebDAV server management
-└── utils/
-    └── api.py                # HTTP API client
-```
-
-### Development Setup
-
-```bash
-# Clone and setup development environment
-git clone [https://github.com/internxt/python-cli.git](https://github.com/internxt/python-cli.git)
-cd python-cli
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-
-# Install in development mode
-pip install -e .
-pip install -r requirements.txt
-```
-
-### Getting Help
-
-```bash
-python cli.py --help
-python cli.py help-extended
-python cli.py <command> --help
-```
-
-## 📄 License
-
-**AGPL-3.0 license**
+Here's a list of available commands:
 
 -----
 
-*Made with ❤️ for the Internxt community*
+### Authentication
+
+  * **`login`**
+
+      * Logs you into your Internxt account. Prompts for email, password, and 2FA code if needed.
+      * Usage: `dart cli.dart login`
+
+  * **`logout`**
+
+      * Logs you out and clears locally stored credentials.
+      * Usage: `dart cli.dart logout`
+
+  * **`whoami`**
+
+      * Shows the email, user ID, and root folder ID of the currently logged-in user.
+      * Usage: `dart cli.dart whoami`
+
+-----
+
+### File & Folder Operations
+
+  * **`list [folder-uuid]`**
+
+      * Lists the files and folders within a specific folder UUID. Defaults to the root folder if no UUID is provided.
+      * Options:
+          * `--uuids`: Show full UUIDs instead of truncated ones.
+      * Usage:
+          * `dart cli.dart list`
+          * `dart cli.dart list <folder-uuid-from-previous-list> --uuids`
+
+  * **`upload <sources...>`**
+
+      * Uploads local files or directories to your Internxt Drive. Supports wildcards via shell expansion (e.g., `images/*.jpg`).
+      * Options:
+          * `-t, --target <path>`: Remote destination path (default: `/`).
+          * `-r, --recursive`: Required to upload directories.
+          * `-p, --preserve-timestamps`: Try to keep original file modification times.
+          * `--on-conflict <mode>`: `overwrite` or `skip` (default: `skip`).
+          * `--include <pattern>`: Only include files matching the glob pattern. Can be used multiple times.
+          * `--exclude <pattern>`: Exclude files matching the glob pattern. Can be used multiple times.
+      * Usage:
+          * `dart cli.dart upload file.txt -t /Documents`
+          * `dart cli.dart upload "assets/*.png" -t /Images --on-conflict overwrite`
+          * `dart cli.dart upload my_folder/ -t /Backup -r -p --exclude "*.tmp"`
+
+  * **`download <file-uuid>`**
+
+      * Downloads a single file using its UUID.
+      * Usage: `dart cli.dart download <file-uuid-from-list>`
+
+  * **`download-path <path>`**
+
+      * Downloads a file or folder using its remote path (e.g., `/Documents/report.pdf`).
+      * Options:
+          * `-t, --target <local_path>`: Local destination path/directory. If omitted, downloads to the current directory.
+          * `-r, --recursive`: Required to download folders.
+          * `-p, --preserve-timestamps`: Try to set the local file modification time to the remote time.
+          * `--on-conflict <mode>`: `overwrite` or `skip` (default: `skip`).
+          * `--include <pattern>`: Only include files matching the glob pattern (when downloading recursively).
+          * `--exclude <pattern>`: Exclude files matching the glob pattern (when downloading recursively).
+      * Usage:
+          * `dart cli.dart download-path /Documents/file.txt`
+          * `dart cli.dart download-path /Backup -r -t ./local_backup --include "*.jpg"`
+
+  * **`mkdir-path <path>`**
+
+      * Creates a new folder at the specified path. It automatically creates any necessary parent folders (like `mkdir -p`).
+      * Usage: `dart cli.dart mkdir-path /Work/Projects/NewProject`
+
+  * **`move-path <source-path> <destination-path>`**
+
+      * Moves a file or folder from the source path to the destination *folder* path.
+      * Options:
+          * `-f, --force`: Skip confirmation.
+      * Usage: `dart cli.dart move-path /Documents/report.pdf /Archive`
+
+  * **`rename-path <path> <new-name>`**
+
+      * Renames a file or folder at the specified path. Include the extension in `<new-name>` for files.
+      * Options:
+          * `-f, --force`: Skip confirmation.
+      * Usage:
+          * `dart cli.dart rename-path /Documents/report.pdf final_report.pdf`
+          * `dart cli.dart rename-path /Archive OldArchive`
+
+-----
+
+### Trash Operations
+
+  * **`list-trash`**
+
+      * Lists all files and folders currently in the trash.
+      * Options:
+          * `--uuids`: Show full UUIDs instead of truncated ones.
+      * Usage: `dart cli.dart list-trash`
+
+  * **`trash-path <path>`**
+
+      * Moves the file or folder at the specified path to the trash.
+      * Options:
+          * `-f, --force`: Skip confirmation.
+      * Usage: `dart cli.dart trash-path /Temporary/old_file.txt`
+
+  * **`delete-path <path>`**
+
+      * **Permanently** deletes the file or folder at the specified path. **This cannot be undone.** Use with caution.
+      * Options:
+          * `-f, --force`: Skip confirmation (highly recommended to omit this).
+      * Usage: `dart cli.dart delete-path /ReallyDeleteThis.txt --force`
+
+  * **`restore-uuid <item-uuid>`**
+
+      * Restores an item from the trash using its UUID to a specified destination folder.
+      * Options:
+          * `-t, --target <path>`: Destination folder path to restore to (default: `/`).
+          * `-f, --force`: Skip confirmation.
+      * Usage: `dart cli.dart restore-uuid <uuid-from-list-trash> -t /RestoredFiles`
+
+  * **`restore-path <item-name>`**
+
+      * Restores an item from the trash using its *name* (as shown in `list-trash`) to a specified destination folder. Fails if multiple items have the same name.
+      * Options:
+          * `-t, --target <path>`: Destination folder path to restore to (default: `/`).
+          * `-f, --force`: Skip confirmation.
+      * Usage: `dart cli.dart restore-path "My Report.pdf" -t /Documents`
+
+-----
+
+### Utility Commands
+
+  * **`resolve <path>`**
+
+      * A debugging tool that shows the type (file/folder) and UUID that a given path points to.
+      * Usage: `dart cli.dart resolve /Documents/file.txt`
+
+  * **`config`**
+
+      * Displays the current configuration, including API endpoints and local file paths used by the CLI.
+      * Usage: `dart cli.dart config`
+
+  * **`test`**
+
+      * Runs internal crypto and configuration tests to ensure compatibility with the blueprint.
+      * Usage: `dart cli.dart test`
+
+  * **`help`**
+
+      * Shows the list of commands and options.
+      * Usage: `dart cli.dart help`
+
+-----
+
+## 📄 License
+
+This project is licensed under the **GNU Affero General Public License v3.0**. See the [LICENSE.txt](LICENSE.txt) file for details.
