@@ -1,6 +1,6 @@
 #!/usr/bin/env dart
 
-import 'dart:convert'; // Required for latin1 and json
+import 'dart:convert'; // Required for latin1
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -20,23 +20,10 @@ void main(List<String> arguments) async {
   await cli.run(arguments);
 }
 
-// Helper class for cache entries
-class _CacheEntry {
-    final dynamic items;
-    final DateTime timestamp;
-    _CacheEntry({required this.items, required this.timestamp});
-}
-
 class InternxtCLI {
-  // Use a final config and pass it to the client
+  final InternxtClient client = InternxtClient();
   final ConfigService config = ConfigService();
-  late final InternxtClient client;
   bool debugMode = false;
-
-  // Constructor to initialize the client with the config
-  InternxtCLI() {
-    client = InternxtClient(config: config);
-  }
 
   Future<void> run(List<String> arguments) async {
     final parser = ArgParser()
@@ -53,15 +40,9 @@ class InternxtCLI {
           defaultsTo: 'skip')
       ..addMultiOption('include', help: 'Include only files matching pattern')
       ..addMultiOption('exclude', help: 'Exclude files matching pattern')
+      // --force flag for trash/delete
       ..addFlag('force',
-          abbr: 'f', help: 'Skip confirmation for destructive actions')
-      // --depth for 'tree'
-      ..addOption('depth',
-          abbr: 'l', help: 'Maximum depth to show for tree', defaultsTo: '3')
-      // --maxdepth for 'find'
-      ..addOption('maxdepth',
-          help: 'Limit find to N levels deep (-1 for infinite)', defaultsTo: '-1');
-
+          abbr: 'f', help: 'Skip confirmation for destructive actions');
 
     final argResults = parser.parse(arguments);
     debugMode = argResults['debug'];
@@ -91,9 +72,11 @@ class InternxtCLI {
           await handleList(argResults);
           break;
         case 'download':
+          // simple UUID downloader
           await handleDownload(argResults.rest.sublist(1));
           break;
         case 'download-path':
+          // more feature-rich path downloader
           await handleDownloadPath(argResults);
           break;
         case 'upload':
@@ -118,11 +101,13 @@ class InternxtCLI {
           await handleDeletePath(argResults);
           break;
         case 'list-trash':
+          // Pass the full argResults to handle --uuids flag
           await handleListTrash(argResults);
           break;
         case 'restore-uuid':
           await handleRestoreUuid(argResults);
           break;
+        // Restore by name/path
         case 'restore-path':
           await handleRestorePath(argResults);
           break;
@@ -132,17 +117,6 @@ class InternxtCLI {
         case 'rename-path':
           await handleRenamePath(argResults);
           break;
-        // --- NEW COMMANDS ---
-        case 'search':
-          await handleSearch(argResults);
-          break;
-        case 'find':
-          await handleFind(argResults);
-          break;
-        case 'tree':
-          await handleTree(argResults);
-          break;
-        // --- END NEW COMMANDS ---
         case 'help':
         case '--help':
         case '-h':
@@ -173,7 +147,7 @@ class InternxtCLI {
     print('  login              Login to your account');
     print('  logout             Logout and clear credentials');
     print('  whoami             Show current user info');
-    print('  list [path]        List files and folders (default: root)');
+    print('  list [path-id]     List files and folders (default: root)');
     print('  download <file-uuid> Download a file by its UUID');
     print('  download-path <path> Download a file/folder by its path');
     print('  upload <sources...>  Upload files/folders to Internxt');
@@ -188,24 +162,16 @@ class InternxtCLI {
         '  restore-path <name> [-t <dest_path>] Restore item by Name (from trash list)');
     print('  move-path <src_path> <dest_path> Move a file or folder');
     print('  rename-path <path> <new_name> Rename a file or folder');
-    
-    print('  search <query>     Server-side search for files/folders');
-    print('  find <path> <pattern> Recursively find files (e.g., "*.pdf")');
-    print('  tree [path]        Show folder structure as a tree');
 
     print('  config             Show configuration');
     print('  test               Run crypto tests');
     print('  help               Show this help message');
     print('');
     print('Options:');
-    print('  --debug            Enable debug output');
-    print('  --uuids            Show full UUIDs in "list" and "search"');
+    print('  --debug, -d        Enable debug output');
+    print('  --uuids            Show full UUIDs in "list" command');
     print(
         '  -f, --force        Skip confirmation for "trash-path" and "delete-path"');
-    print(
-        '  -l, --depth <l>    Maximum depth for "tree" command (default: 3)');
-    print(
-        '  --maxdepth <l>   Limit "find" to N levels deep (-1 for infinite)');
     print('');
     print('Upload/Download Options:');
     print('  -t, --target <path>  Remote destination path (default: /)');
@@ -219,11 +185,12 @@ class InternxtCLI {
     print('');
     print('Examples:');
     print('  dart cli.dart login --debug');
-    print('  dart cli.dart list /Documents');
-    print('  dart cli.dart tree /Documents -l 2');
-    print('  dart cli.dart find / --maxdepth 3 "*.jpg"');
-    print('  dart cli.dart upload file.txt -t /Documents -p');
-    print('  dart cli.dart download-path /Documents/file.txt -p');
+    print('  dart cli.dart list');
+    print('  dart cli.dart upload file.txt -t /Documents');
+    print('  dart cli.dart upload "assets/*.png" -t /Images');
+    print('  dart cli.dart upload my_folder/ -t /Backup -r');
+    print('  dart cli.dart download-path /Documents/file.txt');
+    print('  dart cli.dart download-path /Backup -r');
     print('  dart cli.dart mkdir-path /New/SubFolder');
     print('  dart cli.dart trash-path /OldFile.txt');
   }
@@ -264,7 +231,6 @@ class InternxtCLI {
 
     // Check 2FA requirements
     print('🔍 Checking 2FA requirements...');
-    // This call is now refactored
     final needs2fa = await client.is2faNeeded(email);
 
     String? tfaCode;
@@ -281,7 +247,6 @@ class InternxtCLI {
     // Perform login
     print('🔐 Logging in...');
     try {
-      // This call is now refactored
       final credentials = await client.login(email, password, tfaCode: tfaCode);
 
       // Save credentials
@@ -345,8 +310,6 @@ class InternxtCLI {
       final path = args[0];
       print("📁 Creating folder(s): $path");
 
-      // This call is now refactored to use timestamps (which are null here)
-      // and cache invalidation
       final createdFolder = await client.createFolderRecursive(path);
 
       print("✅ Folder created successfully!");
@@ -369,17 +332,18 @@ class InternxtCLI {
 
       print('🗑️  Listing trash contents...\n');
 
-      // This call is now refactored for token refresh
       final trashItems = await client
-          .getTrashContent(); 
+          .getTrashContent(); // Fetch all items (handle pagination later if needed)
 
       if (trashItems.isEmpty) {
         print('📭 Trash is empty');
         return;
       }
 
-      // ... (rest of the method logic is unchanged) ...
+      // Get the --uuids flag value
       final bool showFullUUIDs = argResults['uuids'];
+
+      // Adjust table layout based on whether full UUIDs are shown
       if (showFullUUIDs) {
         print(
             '╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
@@ -395,23 +359,30 @@ class InternxtCLI {
         print(
             '╠═══════════════════════════════════════════════════════════════════════════════╣');
       }
+
       int folderCount = 0;
       int fileCount = 0;
+
       for (var item in trashItems) {
         final type = item['type'] == 'folder' ? '📁' : '📄';
         if (item['type'] == 'folder')
           folderCount++;
         else
           fileCount++;
+
         final plainName = item['name'] ?? 'Unknown';
+        // Use fileType from the map
         final fileType = item['fileType'] ?? '';
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
+
         final name = displayName.toString().padRight(40);
         final size =
             item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
         final uuid = item['uuid'] ?? 'N/A';
+
+        // Print either the full UUID or the truncated one
         if (showFullUUIDs) {
           print(
               '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
@@ -420,6 +391,8 @@ class InternxtCLI {
               '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  ${uuid.substring(0, 8)}... ║');
         }
       }
+
+      // Adjust table footer
       if (showFullUUIDs) {
         print(
             '╚════════════════════════════════════════════════════════════════════════════════════════════════════╝');
@@ -427,6 +400,7 @@ class InternxtCLI {
         print(
             '╚═══════════════════════════════════════════════════════════════════════════════╝');
       }
+
       print(
           '\n📊 Total: ${trashItems.length} items ($folderCount folders, $fileCount files)');
       print(
@@ -455,16 +429,18 @@ class InternxtCLI {
 
       final itemUuid = args[0];
       final destinationPath =
-          argResults['target'] as String? ?? '/'; 
-      final force = argResults['force'] as bool;
+          argResults['target'] as String? ?? '/'; // Default to root
+      final force = argResults['force'] as bool; // Respect --force
 
       print("🔍 Resolving destination path: $destinationPath");
-      // This call is now refactored (token refresh, cache)
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
         throw Exception("Destination path '$destinationPath' is not a folder.");
       }
       final destinationFolderUuid = destFolderInfo['uuid'] as String;
+
+      // We don't necessarily know the type, but the UUID is key.
+      // We'll try moving as file, then folder, mimicking python's move_item
 
       final prompt =
           '❓ Restore item "$itemUuid" to "$destinationPath"? (Type unknown, will try file then folder)';
@@ -475,13 +451,11 @@ class InternxtCLI {
 
       print("🚀 Restoring item (trying file first)...");
       try {
-        // This call is now refactored (token refresh, cache invalidation)
         await client.moveFile(itemUuid, destinationFolderUuid);
         print("✅ Item restored successfully (as file) to: $destinationPath");
       } catch (fileErr) {
         print("   File restore failed ($fileErr), trying folder...");
         try {
-          // This call is now refactored (token refresh, cache invalidation)
           await client.moveFolder(itemUuid, destinationFolderUuid);
           print(
               "✅ Item restored successfully (as folder) to: $destinationPath");
@@ -515,23 +489,21 @@ class InternxtCLI {
 
       final itemNameInTrash = args[0];
       final destinationPath =
-          argResults['target'] as String? ?? '/'; 
-      final force = argResults['force'] as bool; 
+          argResults['target'] as String? ?? '/'; // Default to root
+      final force = argResults['force'] as bool; // Respect --force
 
       print("🔍 Resolving destination path: $destinationPath");
-      // Refactored call
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
         throw Exception("Destination path '$destinationPath' is not a folder.");
       }
       final destinationFolderUuid = destFolderInfo['uuid'] as String;
 
+      // Find item(s) by name in trash
       print("🔍 Finding item(s) named '$itemNameInTrash' in trash...");
-      // Refactored call
       final trashItems = await client.getTrashContent(limit: 1000);
 
       final matchingItems = trashItems.where((item) {
-        // ... (matching logic unchanged) ...
         final plainName = item['name'] ?? 'Unknown';
         final fileType = item['fileType'] ?? '';
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
@@ -543,8 +515,8 @@ class InternxtCLI {
       if (matchingItems.isEmpty) {
         throw Exception("Item named '$itemNameInTrash' not found in trash.");
       }
+
       if (matchingItems.length > 1) {
-        // ... (error logic unchanged) ...
         stderr.writeln(
             "❌ Error: Multiple items named '$itemNameInTrash' found in trash.");
         stderr.writeln("   Please use 'restore-uuid' with the specific UUID:");
@@ -554,6 +526,7 @@ class InternxtCLI {
         exit(1);
       }
 
+      // Exactly one item found
       final itemToRestore = matchingItems.first;
       final itemUuid = itemToRestore['uuid'] as String;
       final itemType = itemToRestore['type'] as String;
@@ -568,7 +541,6 @@ class InternxtCLI {
       }
 
       print("🚀 Restoring item...");
-      // Refactored calls
       if (itemType == 'file') {
         await client.moveFile(itemUuid, destinationFolderUuid);
       } else if (itemType == 'folder') {
@@ -584,7 +556,7 @@ class InternxtCLI {
     }
   }
 
-Future<void> handleMovePath(ArgResults argResults) async {
+  Future<void> handleMovePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.length < 2) {
       stderr.writeln(
@@ -602,18 +574,16 @@ Future<void> handleMovePath(ArgResults argResults) async {
 
       final sourcePath = args[0];
       final destinationPath = args[1];
-      final force = argResults['force'] as bool; 
+      final force = argResults['force'] as bool; // Respect --force
 
       print("🔍 Resolving source path: $sourcePath");
-      // Refactored call
       final sourceInfo = await client.resolvePath(sourcePath);
       final sourceUuid = sourceInfo['uuid'] as String;
       final sourceType = sourceInfo['type'] as String;
       final sourceName =
-          sourceInfo['metadata']?['name'] ?? sourcePath; 
+          sourceInfo['metadata']?['name'] ?? sourcePath; // Get name for prompt
 
       print("🔍 Resolving destination path: $destinationPath");
-      // Refactored call
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
         throw Exception("Destination path '$destinationPath' is not a folder.");
@@ -628,7 +598,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
       }
 
       print("🚀 Moving item...");
-      // Refactored calls
       if (sourceType == 'file') {
         await client.moveFile(sourceUuid, destinationFolderUuid);
       } else if (sourceType == 'folder') {
@@ -661,10 +630,9 @@ Future<void> handleMovePath(ArgResults argResults) async {
 
       final path = args[0];
       final newName = args[1];
-      final force = argResults['force'] as bool;
+      final force = argResults['force'] as bool; // Respect --force
 
       print("🔍 Resolving path: $path");
-      // Refactored call
       final itemInfo = await client.resolvePath(path);
       final itemUuid = itemInfo['uuid'] as String;
       final itemType = itemInfo['type'] as String;
@@ -677,8 +645,8 @@ Future<void> handleMovePath(ArgResults argResults) async {
       }
 
       print("🚀 Renaming item...");
-      // Refactored calls
       if (itemType == 'file') {
+        // Parse new name and extension like Python/Typescript
         final String newPlainName;
         final String? newFileType;
         if (newName.contains('.')) {
@@ -687,7 +655,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         } else {
           newPlainName = newName;
           newFileType =
-              null;
+              null; // Important: API expects null/empty if no extension
         }
         await client.renameFile(itemUuid, newPlainName, newFileType);
       } else if (itemType == 'folder') {
@@ -721,7 +689,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
       final path = args[0];
       print("🔍 Resolving path: $path");
 
-      // Refactored call
       final resolved = await client.resolvePath(path);
 
       print("\n✅ Path resolved successfully!");
@@ -729,6 +696,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
       print("  Type: ${resolved['type']?.toString().toUpperCase()}");
       print("  UUID: ${resolved['uuid']}");
       print("\n  Metadata:");
+      // Simple pretty print of the metadata map
       (resolved['metadata'] as Map<String, dynamic>).forEach((key, value) {
         print("    $key: $value");
       });
@@ -768,7 +736,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
       final force = argResults['force'] as bool;
 
       print("🔍 Resolving path: $path");
-      // Refactored call
       final resolved = await client.resolvePath(path);
 
       final prompt = '❓ Move ${resolved['type']} "$path" to trash?';
@@ -777,7 +744,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
         exit(0);
       }
 
-      // Refactored call
       await client.trashItems(resolved['uuid'], resolved['type']);
 
       print("✅ Item moved to trash: $path");
@@ -806,7 +772,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
       final force = argResults['force'] as bool;
 
       print("🔍 Resolving path: $path");
-      // Refactored call
       final resolved = await client.resolvePath(path);
 
       print(
@@ -817,7 +782,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
         exit(0);
       }
 
-      // Refactored call
       await client.deletePermanently(resolved['uuid'], resolved['type']);
 
       print("✅ Item permanently deleted: $path");
@@ -837,11 +801,12 @@ Future<void> handleMovePath(ArgResults argResults) async {
       client.setAuth(creds);
 
       final commandRestArgs = argResults.rest.sublist(1);
+      // Get path from arguments, default to "/"
       final pathToList = commandRestArgs.isNotEmpty ? commandRestArgs[0] : '/';
       final bool showFullUUIDs = argResults['uuids'];
 
       print("🔍 Resolving path: $pathToList");
-      // Refactored call (now uses cache)
+      // --- FIXED: Resolve the path first ---
       final resolvedInfo = await client.resolvePath(pathToList);
 
       if (resolvedInfo['type'] != 'folder') {
@@ -849,11 +814,12 @@ Future<void> handleMovePath(ArgResults argResults) async {
         exit(1);
       }
       final folderId = resolvedInfo['uuid'] as String;
-      final resolvedPathDisplay = resolvedInfo['path'] ?? pathToList;
+      final resolvedPathDisplay = resolvedInfo['path'] ?? pathToList; // Use resolved path if available
+      // --- End Fix ---
 
       print('📂 Listing folder: $resolvedPathDisplay (UUID: $folderId)\n');
 
-      // Refactored calls (now use cache)
+      // Get folders and files using the resolved folderId
       final folders = await client.listFolders(folderId);
       final files = await client.listFolderFiles(folderId);
 
@@ -863,8 +829,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         print('📭 Folder is empty');
         return;
       }
-      
-      // ... (rest of the printing logic is unchanged) ...
+
       if (showFullUUIDs) {
         print('╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
         print('║  Type    Name                                    Size            UUID                                 ║');
@@ -874,31 +839,40 @@ Future<void> handleMovePath(ArgResults argResults) async {
         print('║  Type    Name                                    Size            UUID        ║');
         print('╠═══════════════════════════════════════════════════════════════════════════════╣');
       }
+      
       int folderCount = 0;
       int fileCount = 0;
+
       for (var item in items) {
         final type = item['type'] == 'folder' ? '📁' : '📄';
         if(item['type'] == 'folder') folderCount++; else fileCount++;
+
         final plainName = item['name'] ?? 'Unknown';
         final fileType = item['type'] == 'file' ? (item['fileType'] ?? '') : '';
         final displayName = (fileType.isNotEmpty && item['type'] == 'file') ? '$plainName.$fileType' : plainName;
+
         final name = displayName.toString().padRight(40);
         final size = item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
         final uuid = item['uuid'] ?? 'N/A';
+
         if (showFullUUIDs) {
           print('║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
         } else {
           print('║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  ${uuid.substring(0, 8)}... ║');
         }
       }
+      
       if (showFullUUIDs) {
         print('╚════════════════════════════════════════════════════════════════════════════════════════════════════╝');
       } else {
         print('╚═══════════════════════════════════════════════════════════════════════════════╝');
       }
+      
       print('\n📊 Total: ${items.length} items ($folderCount folders, $fileCount files)');
 
+
     } catch (e) {
+      // Improved error message for path not found
       if (e.toString().contains("Path not found")) {
          stderr.writeln('❌ Error: Path not found.');
       } else {
@@ -908,9 +882,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
     }
   }
 
-  // NOTE: This method 'handleListUUID' seems redundant given 'handleList'
-  // now supports paths. I'm keeping it for compatibility, but note
-  // that 'handleList' is the primary method.
   Future<void> handleListUUID(ArgResults argResults) async {
     try {
       final creds = await config.readCredentials();
@@ -918,18 +889,23 @@ Future<void> handleMovePath(ArgResults argResults) async {
         stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         exit(1);
       }
+
       client.setAuth(creds);
 
       final commandRestArgs = argResults.rest.sublist(1);
+
+      // Get folderId from remaining arguments
       final folderId = commandRestArgs.isNotEmpty
           ? commandRestArgs[0]
           : creds['rootFolderId']!;
+      // Check if the --uuids flag was passed
       final bool showFullUUIDs = argResults['uuids'];
 
       print('📂 Listing folder: $folderId\n');
 
-      // Refactored calls (now use cache)
+      // Get folders
       final folders = await client.listFolders(folderId);
+      // Get files
       final files = await client.listFolderFiles(folderId);
 
       final items = [...folders, ...files];
@@ -939,7 +915,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         return;
       }
 
-      // ... (rest of the printing logic is unchanged) ...
+      // Adjust table layout based on whether full UUIDs are shown
       if (showFullUUIDs) {
         print(
             '╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
@@ -955,17 +931,23 @@ Future<void> handleMovePath(ArgResults argResults) async {
         print(
             '╠═══════════════════════════════════════════════════════════════════════════════╣');
       }
+
       for (var item in items) {
         final type = item['type'] == 'folder' ? '📁' : '📄';
+
+        // Re-create the full name for display
         final plainName = item['name'] ?? 'Unknown';
         final fileType = item['type'] == 'file' ? (item['fileType'] ?? '') : '';
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
+
         final name = displayName.toString().padRight(40);
         final size =
             item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
         final uuid = item['uuid'] ?? 'N/A';
+
+        // Print either the full UUID or the truncated one
         if (showFullUUIDs) {
           print(
               '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
@@ -974,6 +956,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
               '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  ${uuid.substring(0, 8)}... ║');
         }
       }
+
       if (showFullUUIDs) {
         print(
             '╚════════════════════════════════════════════════════════════════════════════════════════════════════╝');
@@ -981,6 +964,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         print(
             '╚═══════════════════════════════════════════════════════════════════════════════╝');
       }
+
       print(
           '\n📊 Total: ${items.length} items (${folders.length} folders, ${files.length} files)');
     } catch (e) {
@@ -1004,6 +988,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
       }
       client.setAuth(creds);
 
+      // Get credentials to pass to the client
       final bridgeUser = creds['bridgeUser'];
       final userIdForAuth = creds['userIdForAuth'];
       if (bridgeUser == null || userIdForAuth == null) {
@@ -1014,36 +999,40 @@ Future<void> handleMovePath(ArgResults argResults) async {
       final targetPath = argResults['target'] as String? ?? '/';
       final recursive = argResults['recursive'] as bool;
       final onConflict = argResults['on-conflict'] as String;
-      // This is now read and passed to the client
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
 
+      // Generate a unique ID for this batch operation
       final batchId = config.generateBatchId('upload', sources, targetPath);
       print("🔄 Batch ID: $batchId");
+
+      // Try loading existing state
       var batchState = await config.loadBatchState(batchId);
 
-      // This call is now refactored (token refresh, timestamps, cache)
+      // Let the client handle generating or resuming the batch
       await client.upload(
         sources,
         targetPath,
         recursive: recursive,
         onConflict: onConflict,
-        preserveTimestamps: preserveTimestamps, // <-- Passed
+        preserveTimestamps: preserveTimestamps,
         include: include,
         exclude: exclude,
         bridgeUser: bridgeUser,
         userIdForAuth: userIdForAuth,
-        batchId: batchId,       
-        initialBatchState: batchState, 
-        saveStateCallback: (state) => config.saveBatchState(batchId, state),
+        batchId: batchId,       // Pass batch info
+        initialBatchState: batchState, // Pass loaded state (or null)
+        saveStateCallback: (state) => config.saveBatchState(batchId, state), // How to save
       );
 
+      // If upload completes successfully, delete the state file
       await config.deleteBatchState(batchId);
       print("✅ Batch completed.");
 
     } catch (e) {
       stderr.writeln('❌ Upload failed: $e');
+      // Don't delete state file on error, allowing resume
       exit(1);
     }
   }
@@ -1063,15 +1052,16 @@ Future<void> handleMovePath(ArgResults argResults) async {
       }
       client.setAuth(creds);
 
+      // Get all options
       final remotePath = args[0];
       final localDestination = argResults['target'] as String?;
       final recursive = argResults['recursive'] as bool;
       final onConflict = argResults['on-conflict'] as String;
-      // This is now read and passed to the client
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
 
+      // Get credentials needed for download
       final bridgeUser = creds['bridgeUser'];
       final userIdForAuth = creds['userIdForAuth'];
       if (bridgeUser == null || userIdForAuth == null) {
@@ -1079,29 +1069,32 @@ Future<void> handleMovePath(ArgResults argResults) async {
             'Credentials file is missing bridgeUser or userId. Please login again.');
       }
 
+      // Generate batch ID
       final batchId = config.generateBatchId('download', [remotePath], localDestination ?? '.');
       print("🔄 Batch ID: $batchId");
       
+      // Try loading state
       var batchState = await config.loadBatchState(batchId);
       
       print('⬇️  Downloading from path: $remotePath');
 
-      // This call is now refactored (token refresh, timestamps, cache)
+      // Call the downloadPath method
       await client.downloadPath(
         remotePath,
         localDestination: localDestination,
         recursive: recursive,
         onConflict: onConflict,
-        preserveTimestamps: preserveTimestamps, // <-- Passed
+        preserveTimestamps: preserveTimestamps,
         include: include,
         exclude: exclude,
         bridgeUser: bridgeUser,
         userIdForAuth: userIdForAuth,
-        batchId: batchId,
-        initialBatchState: batchState, 
-        saveStateCallback: (state) => config.saveBatchState(batchId, state),
+        batchId: batchId, // Pass batch info
+        initialBatchState: batchState, // Pass loaded state
+        saveStateCallback: (state) => config.saveBatchState(batchId, state), // How to save
       );
 
+      // If download completes successfully, delete the state file
       await config.deleteBatchState(batchId);
       print("✅ Batch completed.");
     } catch (e) {
@@ -1110,7 +1103,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
     }
   }
 
-Future<void> handleDownload(List<String> args) async {
+  Future<void> handleDownload(List<String> args) async {
     if (args.isEmpty) {
       stderr.writeln('❌ Usage: dart cli.dart download <file-uuid>');
       exit(1);
@@ -1125,6 +1118,7 @@ Future<void> handleDownload(List<String> args) async {
 
       client.setAuth(creds);
 
+      // pass credentials to client.downloadFile. They are required for _getNetworkAuth.
       final fileUuid = args[0];
       final bridgeUser = creds['bridgeUser'];
       final userIdForAuth = creds['userIdForAuth'];
@@ -1136,7 +1130,6 @@ Future<void> handleDownload(List<String> args) async {
 
       print('⬇️  Downloading file: $fileUuid\n');
 
-      // This call is now refactored for token refresh
       final result =
           await client.downloadFile(fileUuid, bridgeUser, userIdForAuth);
       final data = result['data'] as Uint8List;
@@ -1159,14 +1152,13 @@ Future<void> handleDownload(List<String> args) async {
     print('╚════════════════════════════════════════╝');
     print('📁 Config dir: ${config.configDir}');
     print('🔐 Credentials file: ${config.credentialsFile}');
-    print('🔄 Batch states dir: ${config.batchStateDir}');
     print('');
     print('🌐 API Endpoints (from Python blueprint):');
     print('   NETWORK_URL: ${InternxtClient.networkUrl}');
     print('     └─ Data: /buckets/{bucketId}/files/...');
     print('   DRIVE_API_URL: ${InternxtClient.driveApiUrl}');
-    print('     └─ Auth: /auth/login, /auth/security, /users/refresh');
-    print('     └─ Meta: /folders/..., /files/..., /fuzzy/...');
+    print('     └─ Auth: /auth/login, /auth/security');
+    print('     └─ Meta: /storage/v2/folders/..., /storage/file/...');
     print('');
     print('🔒 Crypto:');
     print('   APP_CRYPTO_SECRET: ${InternxtClient.appCryptoSecret}');
@@ -1236,153 +1228,6 @@ Future<void> handleDownload(List<String> args) async {
 
     print('✅ All tests passed!');
   }
-
-  Future<void> handleSearch(ArgResults argResults) async {
-    final args = argResults.rest.sublist(1);
-    if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart search <query>');
-      exit(1);
-    }
-    final query = args[0];
-    final detailed = argResults['uuids']; // Re-use --uuids as --detailed
-
-    try {
-      final creds = await config.readCredentials();
-      if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
-      }
-      client.setAuth(creds);
-
-      print("🔍 Searching for '$query' across your drive...");
-      if (detailed) {
-        print("   (Fetching full paths, this may take a moment...)");
-      }
-
-      // This call is new
-      final results = await client.search(query, detailed: detailed);
-      final folders = results['folders']!;
-      final files = results['files']!;
-
-      if (folders.isEmpty && files.isEmpty) {
-        print("\n📭 No results found.");
-        return;
-      }
-
-      print("\n" + "=" * 60);
-      if (folders.isNotEmpty) {
-        print("📂 Folders (${folders.length}):");
-        for (var folder in folders) {
-          final displayName = folder['fullPath'] ?? folder['name'];
-          print("  📁 $displayName (UUID: ${folder['uuid']})");
-        }
-      }
-
-      if (files.isNotEmpty) {
-        print("\n📄 Files (${files.length}):");
-        for (var file in files) {
-          final displayName = file['fullPath'] ?? file['name'];
-          final type = file['type'] ?? '';
-          final fullName = (type.isNotEmpty && !displayName.endsWith(type))
-              ? '$displayName.$type'
-              : displayName;
-          print("  📄 $fullName (UUID: ${file['uuid']})");
-        }
-      }
-      print("=" * 60);
-      print("\n💡 Use 'download-path' or 'list-path' with the full path.");
-
-    } catch (e) {
-      stderr.writeln('❌ Error during search: $e');
-      exit(1);
-    }
-  }
-
-  Future<void> handleFind(ArgResults argResults) async {
-    final args = argResults.rest.sublist(1);
-    if (args.length < 2) {
-      stderr.writeln('❌ Usage: dart cli.dart find <path> <pattern>');
-      stderr.writeln('   Example: dart cli.dart find / "*.pdf"');
-      exit(1);
-    }
-    final path = args[0];
-    final pattern = args[1];
-    // Read the new --maxdepth option
-    final maxDepth = int.tryParse(argResults['maxdepth'] ?? '-1') ?? -1;
-
-    try {
-      final creds = await config.readCredentials();
-      if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
-      }
-      client.setAuth(creds);
-
-      print("🔍 Finding files matching '$pattern' in '$path'...");
-      if (maxDepth != -1) {
-        print("   (Limiting search to $maxDepth levels deep)");
-      }
-      
-      // This call is new and passes maxDepth
-      final results = await client.findFiles(
-        path, 
-        pattern,
-        maxDepth: maxDepth,
-      );
-
-      if (results.isEmpty) {
-        print("\n📭 No results found.");
-        return;
-      }
-
-      print("\n" + "=" * 60);
-      print("📄 Found Files (${results.length}):");
-      for (var file in results) {
-        final size = formatSize(file['size'] ?? 0);
-        print("  ${file['fullPath']}  ($size)");
-      }
-      print("=" * 60);
-      print("\n💡 Use 'download-path' with the full path.");
-
-    } catch (e) {
-      stderr.writeln('❌ Error during find: $e');
-      exit(1);
-    }
-  }
-
-  Future<void> handleTree(ArgResults argResults) async {
-    final args = argResults.rest.sublist(1);
-    final path = args.isNotEmpty ? args[0] : '/';
-    // Read the --depth option
-    final maxDepth = int.tryParse(argResults['depth'] ?? '3') ?? 3;
-
-    try {
-      final creds = await config.readCredentials();
-      if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
-      }
-      client.setAuth(creds);
-
-      print("\n🌳 Folder tree starting from: $path");
-      print("=" * 60);
-      // Print the root of the tree itself
-      print(path == '/' ? '📁 /' : '📁 ${p.basename(path)}');
-      
-      // Call the new client method
-      await client.printTree(
-        path,
-        (line) => print(line), // Pass the standard print function
-        maxDepth: maxDepth,
-      );
-
-      print("\n(Showing maximum $maxDepth levels deep)");
-
-    } catch (e) {
-      stderr.writeln('❌ Error generating tree: $e');
-      exit(1);
-    }
-  }
 }
 
 // ============================================================================
@@ -1397,7 +1242,6 @@ class InternxtClient {
   static const String appCryptoSecret = '6KYQBP847D4ATSFA';
 
   bool debugMode = false;
-  final ConfigService config;
 
   String? authToken;
   String? newToken;
@@ -1407,16 +1251,6 @@ class InternxtClient {
   String? rootFolderId;
   String? bucketId;
 
-  // Caching variables
-  static const Duration _cacheDuration = Duration(minutes: 10);
-  final Map<String, _CacheEntry> _folderCache = {};
-  final Map<String, _CacheEntry> _fileCache = {};
-
-  // Token refresh lock
-  bool _isRefreshingToken = false;
-
-  InternxtClient({required this.config});
-
   void _log(String message) {
     if (debugMode) {
       print('🔍 [DEBUG] $message');
@@ -1424,6 +1258,7 @@ class InternxtClient {
   }
 
   void setAuth(Map<String, String?> creds) {
+    // <-- Allow String?
     authToken = creds['token'];
     newToken = creds['newToken'];
     mnemonic = creds['mnemonic'];
@@ -1433,225 +1268,34 @@ class InternxtClient {
     bucketId = creds['bucketId'];
   }
 
-  // --- Token Refresh ---
-
-  /// Calls the API to get new tokens.
-  Future<Map<String, dynamic>> _apiRefreshToken(String currentNewToken) async {
-    final url = Uri.parse('$driveApiUrl/users/refresh');
-    _log('GET $url (refreshing token)'); // Note: Python blueprint uses GET
-
-    try {
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer $currentNewToken',
-          'Content-Type': 'application/json',
-        },
-      );
-
-      if (response.statusCode != 200) {
-        _log('Token refresh failed: ${response.body}');
-        throw Exception('Token refresh failed: ${response.statusCode}');
-      }
-
-      return json.decode(response.body);
-    } catch (e) {
-      _log('Token refresh network error: $e');
-      throw Exception('Token refresh failed: $e');
-    }
-  }
-
-  /// Refreshes and saves auth tokens.
-  Future<void> refreshToken() async {
-    if (_isRefreshingToken) {
-      _log('Token refresh already in progress, waiting...');
-      while (_isRefreshingToken) {
-        await Future.delayed(Duration(milliseconds: 100));
-      }
-      return;
-    }
-
-    _isRefreshingToken = true;
-    _log('Attempting to refresh tokens...');
-
-    try {
-      if (this.newToken == null) {
-        throw Exception("No 'newToken' available to refresh.");
-      }
-
-      final refreshResponse = await _apiRefreshToken(this.newToken!);
-
-      final newToken = refreshResponse['token'];
-      final newNewToken = refreshResponse['newToken']; 
-
-      if (newToken == null || newNewToken == null) {
-        throw Exception("Refresh response did not contain new tokens.");
-      }
-
-      _log('Tokens refreshed successfully.');
-      this.authToken = newToken;
-      this.newToken = newNewToken;
-
-      final creds = await config.readCredentials();
-      if (creds != null) {
-        creds['token'] = newToken;
-        creds['newToken'] = newNewToken;
-        await config.saveCredentials(creds);
-        _log('Refreshed tokens saved to disk.');
-      }
-    } catch (e) {
-      _log('Token refresh failed: $e. User must log in again.');
-      await config.clearCredentials();
-      this.authToken = null;
-      this.newToken = null;
-      this.mnemonic = null;
-      throw Exception("Session expired. Please log in again.");
-    } finally {
-      _isRefreshingToken = false;
-    }
-  }
-
-  /// Central request handler with automatic token refresh.
-  Future<http.Response> _makeRequest(
-    String method,
-    Uri url, {
-    Map<String, String>? headers,
-    dynamic body,
-    bool useAuth = true,
-    bool isNetworkAuth = false,
-    String? networkUser,
-    String? networkPass,
-    bool isAuthRetry = false, // Flag to prevent 401 retry loops
-    int maxRetries = 3,      // Max retries for 5xx/network errors
-    int retryCount = 0,       // Current retry attempt
-  }) async {
-    final requestHeaders = headers ?? {'Content-Type': 'application/json'};
-
-    if (useAuth && this.newToken != null) {
-      requestHeaders['Authorization'] = 'Bearer $newToken';
-    } else if (isNetworkAuth && networkUser != null && networkPass != null) {
-      requestHeaders['Authorization'] =
-          'Basic ${base64Encode(utf8.encode('$networkUser:$networkPass'))}';
-    }
-
-    http.Response response;
-    try {
-      switch (method.toUpperCase()) {
-        case 'GET':
-          response = await http.get(url, headers: requestHeaders);
-          break;
-        case 'POST':
-          response = await http.post(url, headers: requestHeaders, body: body);
-          break;
-        case 'PUT':
-          response = await http.put(url, headers: requestHeaders, body: body);
-          break;
-        case 'PATCH':
-          response = await http.patch(url, headers: requestHeaders, body: body);
-          break;
-        case 'DELETE':
-          final request = http.Request('DELETE', url)
-            ..headers.addAll(requestHeaders)
-            ..body = body ?? '';
-          final streamedResponse = await request.send();
-          response = await http.Response.fromStream(streamedResponse);
-          break;
-        default:
-          throw Exception('Unsupported HTTP method: $method');
-      }
-    } catch (e) {
-      // Catch network-level errors (e.g., DNS, connection refused)
-      _log('Network request failed for $url: $e');
-      if (retryCount < maxRetries) {
-        final delay = Duration(seconds: 1 << retryCount); // 1s, 2s, 4s
-        _log('Network Error. Retrying in ${delay.inSeconds}s... (Attempt ${retryCount + 1}/${maxRetries})');
-        await _wait(delay);
-        return await _makeRequest(
-          method, url,
-          headers: headers, body: body, useAuth: useAuth,
-          isNetworkAuth: isNetworkAuth, networkUser: networkUser, networkPass: networkPass,
-          isAuthRetry: isAuthRetry,
-          maxRetries: maxRetries,
-          retryCount: retryCount + 1, // Increment retry count
-        );
-      }
-      _log('Network Error. Max retries reached.');
-      throw Exception('Network request failed after ${maxRetries + 1} attempts: $e');
-    }
-
-    // --- NEW: 5xx Server Error Retry Logic ---
-    if (response.statusCode >= 500 && response.statusCode < 600) {
-      if (retryCount < maxRetries) {
-        final delay = Duration(seconds: 1 << retryCount); // 1s, 2s, 4s
-        _log('Server Error ${response.statusCode}. Retrying in ${delay.inSeconds}s... (Attempt ${retryCount + 1}/${maxRetries})');
-        await _wait(delay);
-        
-        return await _makeRequest(
-          method, url,
-          headers: headers, body: body, useAuth: useAuth,
-          isNetworkAuth: isNetworkAuth, networkUser: networkUser, networkPass: networkPass,
-          isAuthRetry: isAuthRetry, // Pass auth flag along
-          maxRetries: maxRetries,
-          retryCount: retryCount + 1, // Increment count
-        );
-      } else {
-        _log('Server Error ${response.statusCode}. Max retries reached.');
-        // Fall through to the generic error-throwing logic
-      }
-    }
-
-    // --- Existing: 401 Auth Error Retry Logic ---
-    if (response.statusCode == 401 && useAuth && !isAuthRetry) {
-      _log('Token expired (401). Attempting to refresh...');
-      try {
-        await refreshToken();
-        _log('Retrying original request with new token...');
-        return await _makeRequest(
-          method, url,
-          headers: headers, body: body, useAuth: useAuth,
-          isNetworkAuth: isNetworkAuth, networkUser: networkUser, networkPass: networkPass,
-          isAuthRetry: true, // Set auth flag
-          maxRetries: maxRetries,
-          retryCount: 0, // Reset server retry count for the new token
-        );
-      } catch (refreshError) {
-        _log('Failed to refresh token: $refreshError');
-        throw Exception('Session expired (401). Please log in again.');
-      }
-    }
-
-    // --- Existing: Final Error Check ---
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      _log('API Error ${response.statusCode} for $url: ${response.body}');
-      throw Exception('API Error: ${response.statusCode} - ${response.body}');
-    }
-
-    return response;
-  }
-
-  // --- Auth ---
-
   /// Check if 2FA is needed for an email
   Future<bool> is2faNeeded(String email) async {
     try {
       final url = Uri.parse('$driveApiUrl/auth/login');
       _log('Checking 2FA at: POST $url');
 
-      final response = await _makeRequest(
-        'POST',
+      final response = await http.post(
         url,
+        headers: {'Content-Type': 'application/json'},
         body: json.encode({'email': email}),
-        useAuth: false, // This is a pre-login call
       );
 
       _log('2FA check response code: ${response.statusCode}');
+
+      if (response.statusCode != 200) {
+        _log('2FA check failed with status ${response.statusCode}');
+        _log('2FA check response body: ${response.body}');
+        // If the user doesn't exist, it's not 2FA enabled.
+        return false;
+      }
+
       final data = json.decode(response.body);
       final tfa = data['tfa'] == true;
       _log('2FA enabled: $tfa');
       return tfa;
     } catch (e) {
       _log('2FA check error: $e');
-      return false; // Return false on any failure
+      return false;
     }
   }
 
@@ -1723,12 +1367,20 @@ class InternxtClient {
     final loginUrl = Uri.parse('$driveApiUrl/auth/login/access');
     _log('Login URL: POST $loginUrl');
 
-    final response = await _makeRequest(
-      'POST',
+    final response = await http.post(
       loginUrl,
+      headers: {'Content-Type': 'application/json'},
       body: json.encode(loginPayload),
-      useAuth: false, // Pre-login call
     );
+
+    _log('Login response status: ${response.statusCode}');
+
+    if (response.statusCode != 200) {
+      _log('Login failed!');
+      _log('Response body: ${response.body}');
+      throw Exception(
+          'Login failed: ${response.statusCode} - ${response.body}');
+    }
 
     _log('Login response received successfully');
     final data = json.decode(response.body);
@@ -1784,6 +1436,7 @@ class InternxtClient {
       'mnemonic': mnemonic,
       'userId': userId,
       'rootFolderId': rootFolderId,
+      // We must save bridgeUser and userId for downloads
       'bridgeUser': user['bridgeUser'],
       'userIdForAuth': user['userId'],
       'bucketId': bucketId,
@@ -1794,12 +1447,19 @@ class InternxtClient {
     final url = Uri.parse('$driveApiUrl/auth/login');
     _log('POST $url (for security details)');
 
-    final response = await _makeRequest(
-      'POST',
+    final response = await http.post(
       url,
+      headers: {'Content-Type': 'application/json'},
       body: json.encode({'email': email}),
-      useAuth: false,
     );
+
+    _log('Security details response: ${response.statusCode}');
+
+    if (response.statusCode != 200) {
+      _log('Security details body: ${response.body}');
+      throw Exception(
+          'Failed to get security details: ${response.statusCode} - ${response.body}');
+    }
 
     return json.decode(response.body);
   }
@@ -1808,8 +1468,15 @@ class InternxtClient {
     final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
     _log('GET $url (fetching file metadata)');
 
-    final response = await _makeRequest('GET', url); 
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
 
+    if (response.statusCode != 200) {
+      _log('Get file metadata failed: ${response.body}');
+      throw Exception('Failed to get file metadata: ${response.statusCode}');
+    }
     return json.decode(response.body);
   }
 
@@ -1817,19 +1484,26 @@ class InternxtClient {
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
     _log('GET $url (fetching folder metadata)');
 
-    final response = await _makeRequest('GET', url); 
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
 
+    if (response.statusCode != 200) {
+      _log('Get folder metadata failed: ${response.body}');
+      throw Exception('Failed to get folder metadata: ${response.statusCode}');
+    }
     return json.decode(response.body);
   }
 
-  // --- Crypto Helpers ---
-
+  /// Pass to hash
   Map<String, String> _passToHash(String password, String salt) {
     _log('_passToHash: password length=${password.length}, salt=$salt');
 
     final saltBytes = HEX.decode(salt);
     final passwordBytes = Uint8List.fromList(utf8.encode(password));
 
+    // PBKDF2-HMAC-SHA1, 10000 iterations, 32 bytes output
     final pbkdf2 = PBKDF2KeyDerivator(HMac(SHA1Digest(), 64))
       ..init(Pbkdf2Parameters(Uint8List.fromList(saltBytes), 10000, 32));
 
@@ -1841,9 +1515,11 @@ class InternxtClient {
     return {'salt': salt, 'hash': hashHex};
   }
 
+  /// Generate placeholder keys
   Map<String, dynamic> _generateKeys(String password) {
     _log('_generateKeys: Encrypting with password as key');
 
+    // Use PASSWORD as the key
     final encryptedPk =
         _encryptTextWithKey('placeholder-private-key-for-login', password);
 
@@ -1862,13 +1538,18 @@ class InternxtClient {
     };
   }
 
+  /// Encrypt text with key
+  /// OpenSSL-compatible format: Salted__ + salt + encrypted
+  /// Uses MD5-based key derivation (3 rounds)
   String _encryptTextWithKey(String textToEncrypt, String secret) {
     _log('_encryptTextWithKey: text length=${textToEncrypt.length}');
 
+    // Generate random 8-byte salt
     final random = Random.secure();
     final salt =
         Uint8List.fromList(List.generate(8, (_) => random.nextInt(256)));
 
+    // Get key and IV using MD5-based derivation (OpenSSL format)
     final keyIv = _getKeyAndIvFrom(secret, salt);
     final key = keyIv['key']!;
     final iv = keyIv['iv']!;
@@ -1876,6 +1557,7 @@ class InternxtClient {
     _log(
         '_encryptTextWithKey: salt=${HEX.encode(salt)}, key length=${key.length}, iv length=${iv.length}');
 
+    // Encrypt using AES-256-CBC
     final cipher = PaddedBlockCipherImpl(
       PKCS7Padding(),
       CBCBlockCipher(AESEngine()),
@@ -1892,9 +1574,10 @@ class InternxtClient {
     final textBytes = Uint8List.fromList(utf8.encode(textToEncrypt));
     final encrypted = cipher.process(textBytes);
 
+    // Create OpenSSL format: Salted__ + salt + encrypted
     final result = Uint8List(16 + encrypted.length);
-    result.setAll(0, utf8.encode('Salted__')); 
-    result.setAll(8, salt); 
+    result.setAll(0, utf8.encode('Salted__')); // 8 bytes
+    result.setAll(8, salt); // 8 bytes
     result.setAll(16, encrypted);
 
     final hexResult = HEX.encode(result);
@@ -1903,17 +1586,24 @@ class InternxtClient {
     return hexResult;
   }
 
+  /// Decrypt text with key
   String _decryptTextWithKey(String encryptedText, String secret) {
     _log('_decryptTextWithKey: encrypted length=${encryptedText.length}');
 
+    // Decode from hex
     final cipherBytes = Uint8List.fromList(HEX.decode(encryptedText));
+
+    // Extract salt (bytes 8-16)
     final salt = cipherBytes.sublist(8, 16);
+
     _log('_decryptTextWithKey: salt=${HEX.encode(salt)}');
 
+    // Get key and IV using MD5-based derivation (OpenSSL format)
     final keyIv = _getKeyAndIvFrom(secret, salt);
     final key = keyIv['key']!;
     final iv = keyIv['iv']!;
 
+    // Decrypt using AES-256-CBC
     final cipher = PaddedBlockCipherImpl(
       PKCS7Padding(),
       CBCBlockCipher(AESEngine()),
@@ -1936,10 +1626,13 @@ class InternxtClient {
     return result;
   }
 
+  /// Get key and IV from secret and salt
+  /// Uses MD5-based key derivation (3 rounds) - OpenSSL compatible
   Map<String, Uint8List> _getKeyAndIvFrom(String secret, Uint8List salt) {
     _log(
         '_getKeyAndIvFrom: secret length=${secret.length}, salt length=${salt.length}');
 
+    // Convert secret to Latin-1 bytes
     final secretBytes = latin1.encode(secret);
     final password = Uint8List(secretBytes.length + salt.length);
     password.setAll(0, secretBytes);
@@ -1948,6 +1641,7 @@ class InternxtClient {
     final md5Hashes = <Uint8List>[];
     Uint8List digest = password;
 
+    // MD5 three times
     for (var i = 0; i < 3; i++) {
       final md5 = MD5Digest();
       md5.update(digest, 0, digest.length);
@@ -1955,15 +1649,18 @@ class InternxtClient {
       md5.doFinal(hash, 0);
       md5Hashes.add(hash);
 
+      // For next iteration: hash + password
       digest = Uint8List(hash.length + password.length);
       digest.setAll(0, hash);
       digest.setAll(hash.length, password);
     }
 
+    // key = md5Hashes[0] + md5Hashes[1] (32 bytes)
     final key = Uint8List(32);
     key.setAll(0, md5Hashes[0]);
     key.setAll(16, md5Hashes[1]);
 
+    // iv = md5Hashes[2] (16 bytes)
     final iv = md5Hashes[2];
 
     _log('_getKeyAndIvFrom: key length=${key.length}, iv length=${iv.length}');
@@ -1971,50 +1668,12 @@ class InternxtClient {
     return {'key': key, 'iv': iv};
   }
 
-  // --- Caching ---
-  
-  /// Clears the cache for a specific folder.
-  void _invalidateCache(String folderUuid) {
-    _folderCache.remove(folderUuid);
-    _fileCache.remove(folderUuid);
-    _log('Cache invalidated for folder: $folderUuid');
-  }
-
-  /// Finds an item's parent and clears its cache.
-  Future<void> _clearParentCache(String itemUuid, String itemType) async {
-    String? parentUuid;
-    try {
-      if (itemType == 'file') {
-        final metadata = await getFileMetadata(itemUuid);
-        parentUuid = metadata['folderId'] ?? metadata['folderUuid'];
-      } else {
-        final metadata = await getFolderMetadata(itemUuid);
-        parentUuid = metadata['parentId'] ?? metadata['parentUuid'];
-      }
-      if (parentUuid != null) {
-        _invalidateCache(parentUuid);
-      }
-    } catch (e) {
-      _log(
-          'Could not clear parent cache for $itemUuid (parent: $parentUuid): $e');
-    }
-  }
-
   // --- List Operations ---
 
   Future<List<Map<String, dynamic>>> listFolders(String folderId, {bool detailed = false}) async {
-    // Check cache
-    final cached = _folderCache[folderId];
-    if (cached != null &&
-        DateTime.now().difference(cached.timestamp) < _cacheDuration) {
-      _log('Using cached folder list for $folderId');
-      // Return a copy to prevent mutation
-      return List<Map<String, dynamic>>.from(cached.items);
-    }
-
     final List<Map<String, dynamic>> allItems = [];
     int currentOffset = 0;
-    const int limit = 50; 
+    const int limit = 50; // Match python blueprint default
 
     _log('Fetching all folders for $folderId (paginated)');
 
@@ -2023,15 +1682,21 @@ class InternxtClient {
       _log('  GET $url (offset: $currentOffset, limit: $limit)');
 
       try {
-        final response = await _makeRequest(
-          'GET',
+        final response = await http.get(
           url.replace(queryParameters: {
             'offset': currentOffset.toString(),
             'limit': limit.toString(),
             'sort': 'plainName',
             'direction': 'ASC'
           }),
-        ); 
+          headers: {'Authorization': 'Bearer $newToken'},
+        );
+
+        if (response.statusCode != 200) {
+           _log('  List folders page failed (${response.statusCode}): ${response.body}');
+           // Decide if we should throw or just stop fetching. Let's throw for now.
+          throw Exception('Failed to list folders page (offset $currentOffset): ${response.statusCode}');
+        }
 
         final data = json.decode(response.body);
         final List<dynamic> folders = data['result'] ?? data['folders'] ?? [];
@@ -2042,61 +1707,43 @@ class InternxtClient {
             'name': folder['plainName'] ?? folder['name'],
             'uuid': folder['uuid'] ?? folder['id'],
             'size': 0,
-            // Add all fields for 'detailed'
-            'createdAt': folder['createdAt'],
-            'updatedAt': folder['updatedAt'],
-            'creationTime': folder['creationTime'],
-            'modificationTime': folder['modificationTime'],
-            'parentId': folder['parentId'],
-            'parentUuid': folder['parentUuid'],
-            'userId': folder['userId'],
-            'deleted': folder['deleted'],
-            'removed': folder['removed'],
+            if (detailed) ...{
+              'createdAt': folder['createdAt'],
+              'updatedAt': folder['updatedAt'],
+              'creationTime': folder['creationTime'],
+              'modificationTime': folder['modificationTime'],
+              'parentId': folder['parentId'],
+              'parentUuid': folder['parentUuid'],
+              'userId': folder['userId'],
+              'deleted': folder['deleted'],
+              'removed': folder['removed'],
+            },
           };
           allItems.add(item);
         }
 
+        // Check if we need to fetch the next page (like python)
         if (folders.length < limit) {
           _log('  Fetched last page of folders (${folders.length} items). Total: ${allItems.length}');
-          break; 
+          break; // Exit loop, all items fetched
         } else {
            _log('  Fetched page with $limit folders, requesting next page...');
-          currentOffset += limit;
+          currentOffset += limit; // Prepare for next iteration
         }
       } catch (e) {
+         // Log error and rethrow
          _log('  Error fetching folder page (offset $currentOffset): $e');
          throw e;
       }
-    } 
+    } // End while loop
 
-    // Save to cache
-    _folderCache[folderId] = _CacheEntry(items: allItems, timestamp: DateTime.now());
-    
-    // Filter detailed fields if not requested (after caching full data)
-    if (!detailed) {
-      return allItems.map((item) => {
-        'type': item['type'],
-        'name': item['name'],
-        'uuid': item['uuid'],
-        'size': item['size'],
-      }).toList();
-    }
     return allItems;
   }
 
   Future<List<Map<String, dynamic>>> listFolderFiles(String folderId, {bool detailed = false}) async {
-    // Check cache
-    final cached = _fileCache[folderId];
-    if (cached != null &&
-        DateTime.now().difference(cached.timestamp) < _cacheDuration) {
-      _log('Using cached file list for $folderId');
-      // Return a copy to prevent mutation
-      return List<Map<String, dynamic>>.from(cached.items);
-    }
-    
      final List<Map<String, dynamic>> allItems = [];
     int currentOffset = 0;
-    const int limit = 50; 
+    const int limit = 50; // Match python blueprint default
 
     _log('Fetching all files for $folderId (paginated)');
 
@@ -2105,15 +1752,20 @@ class InternxtClient {
        _log('  GET $url (offset: $currentOffset, limit: $limit)');
 
       try {
-        final response = await _makeRequest(
-          'GET',
+        final response = await http.get(
           url.replace(queryParameters: {
             'offset': currentOffset.toString(),
             'limit': limit.toString(),
             'sort': 'plainName',
             'direction': 'ASC'
           }),
+          headers: {'Authorization': 'Bearer $newToken'},
         );
+
+        if (response.statusCode != 200) {
+          _log('  List files page failed (${response.statusCode}): ${response.body}');
+          throw Exception('Failed to list files page (offset $currentOffset): ${response.statusCode}');
+        }
 
         final data = json.decode(response.body);
         final List<dynamic> files = data['result'] ?? data['files'] ?? [];
@@ -2121,56 +1773,43 @@ class InternxtClient {
         for (var file in files) {
            final item = {
             'type': 'file',
-            'name': file['plainName'] ?? file['name'], 
-            'fileType': file['type'] ?? '', 
+            'name': file['plainName'] ?? file['name'], // plainName
+            'fileType': file['type'] ?? '', // Extension
             'uuid': file['uuid'] ?? file['id'],
             'size': file['size'] is int ? file['size'] : int.tryParse(file['size'].toString()) ?? 0,
             'bucket': file['bucket'],
             'fileId': file['fileId'],
-            // Add all fields for 'detailed'
-            'createdAt': file['createdAt'],
-            'updatedAt': file['updatedAt'],
-            'creationTime': file['creationTime'],
-            'modificationTime': file['modificationTime'],
-            'folderId': file['folderId'],
-            'folderUuid': file['folderUuid'],
-            'userId': file['userId'],
-            'encryptVersion': file['encryptVersion'],
-            'deleted': file['deleted'],
-            'removed': file['removed'],
-            'status': file['status'],
+            if (detailed) ...{
+              'createdAt': file['createdAt'],
+              'updatedAt': file['updatedAt'],
+              'creationTime': file['creationTime'],
+              'modificationTime': file['modificationTime'],
+              'folderId': file['folderId'],
+              'folderUuid': file['folderUuid'],
+              'userId': file['userId'],
+              'encryptVersion': file['encryptVersion'],
+              'deleted': file['deleted'],
+              'removed': file['removed'],
+              'status': file['status'],
+            },
           };
            allItems.add(item);
         }
 
+        // Check if we need to fetch the next page
         if (files.length < limit) {
            _log('  Fetched last page of files (${files.length} items). Total: ${allItems.length}');
-          break;
+          break; // Exit loop
         } else {
           _log('  Fetched page with $limit files, requesting next page...');
-          currentOffset += limit;
+          currentOffset += limit; // Prepare for next iteration
         }
       } catch (e) {
           _log('  Error fetching file page (offset $currentOffset): $e');
           throw e;
       }
-    } 
+    } // End while loop
 
-    // Save to cache
-    _fileCache[folderId] = _CacheEntry(items: allItems, timestamp: DateTime.now());
-
-    // Filter detailed fields if not requested
-    if (!detailed) {
-      return allItems.map((item) => {
-        'type': item['type'],
-        'name': item['name'],
-        'fileType': item['fileType'],
-        'uuid': item['uuid'],
-        'size': item['size'],
-        'bucket': item['bucket'],
-        'fileId': item['fileId'],
-      }).toList();
-    }
     return allItems;
   }
 
@@ -2179,18 +1818,15 @@ class InternxtClient {
       throw Exception("Root folder ID is not set. Please log in.");
     }
     String currentFolderUuid = this.rootFolderId!;
-    String resolvedPathStr = '/';
 
+    // Clean up path
     var cleanPath = path.trim();
     if (cleanPath.startsWith('/')) {
       cleanPath = cleanPath.substring(1);
     }
-    
-    if (cleanPath.endsWith('/')) {
-      cleanPath = cleanPath.substring(0, cleanPath.length - 1);
-    }
 
-    if (cleanPath.isEmpty || cleanPath == '.') {
+    // Handle root path
+    if (cleanPath.isEmpty) {
       return {
         'type': 'folder',
         'uuid': currentFolderUuid,
@@ -2201,14 +1837,13 @@ class InternxtClient {
 
     final pathParts =
         cleanPath.split('/').where((part) => part.isNotEmpty).toList();
-    Map<String, dynamic>? currentMetadata = {'uuid': rootFolderId, 'name': 'Root'};
 
     for (var i = 0; i < pathParts.length; i++) {
       final part = pathParts[i];
       final isLastPart = (i == pathParts.length - 1);
 
-      // Get content of the current folder (uses cache)
-      final folders = await listFolders(currentFolderUuid, detailed: true);
+      // Get content of the current folder
+      final folders = await listFolders(currentFolderUuid);
 
       Map<String, dynamic>? foundFolder;
       for (var folder in folders) {
@@ -2220,7 +1855,7 @@ class InternxtClient {
 
       Map<String, dynamic>? foundFile;
       if (isLastPart) {
-        final files = await listFolderFiles(currentFolderUuid, detailed: true);
+        final files = await listFolderFiles(currentFolderUuid);
         for (var file in files) {
           final plainName = file['name'] ?? '';
           final fileType = file['fileType'] ?? '';
@@ -2235,40 +1870,36 @@ class InternxtClient {
       }
 
       if (foundFolder != null && (!isLastPart || foundFile == null)) {
+        // It's a folder, and we descend
         currentFolderUuid = foundFolder['uuid'];
-        currentMetadata = foundFolder;
-        resolvedPathStr = '$resolvedPathStr$part/'.replaceAll('//', '/');
         if (isLastPart) {
           return {
             'type': 'folder',
             'uuid': foundFolder['uuid'],
             'metadata': foundFolder,
-            'path': resolvedPathStr.substring(0, resolvedPathStr.length - 1) // remove trailing slash
           };
         }
       } else if (foundFile != null && isLastPart) {
-        final plainName = foundFile['name'] ?? '';
-        final fileType = foundFile['fileType'] ?? '';
-        final fullName =
-            fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
-        resolvedPathStr = '$resolvedPathStr$fullName'.replaceAll('//', '/');
+        // It's a file, and it's the last part
         return {
           'type': 'file',
           'uuid': foundFile['uuid'],
           'metadata': foundFile,
-          'path': resolvedPathStr
         };
       } else {
+        // Not found
         final currentPath = '/' + pathParts.sublist(0, i + 1).join('/');
         throw Exception("Path not found: $currentPath");
       }
     }
 
+    // This should only be reached if the path was empty, but we handled that.
+    // Return root just in case.
     return {
       'type': 'folder',
-      'uuid': currentFolderUuid,
-      'metadata': currentMetadata,
-      'path': resolvedPathStr.isEmpty ? '/' : resolvedPathStr
+      'uuid': this.rootFolderId!,
+      'metadata': {'uuid': this.rootFolderId!, 'name': 'Root'},
+      'path': '/'
     };
   }
 
@@ -2285,7 +1916,15 @@ class InternxtClient {
     print('   📋 Fetching file metadata...');
     final metadataUrl = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
 
-    final metadataResponse = await _makeRequest('GET', metadataUrl);
+    final metadataResponse = await http.get(
+      metadataUrl,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+
+    if (metadataResponse.statusCode != 200) {
+      _log('Metadata body: ${metadataResponse.body}');
+      throw Exception('Failed to get metadata: ${metadataResponse.statusCode}');
+    }
 
     final metadata = json.decode(metadataResponse.body);
     final bucketId = metadata['bucket'];
@@ -2299,6 +1938,7 @@ class InternxtClient {
     final fileType = metadata['type'] ?? '';
     final filename = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
 
+    // ADDED: Get timestamps from metadata
     String? modificationTime =
         metadata['modificationTime'] ?? metadata['updatedAt'];
 
@@ -2335,6 +1975,7 @@ class InternxtClient {
 
     final trimmedData = decryptedData.sublist(0, fileSize);
 
+    // Return all info needed
     return {
       'data': trimmedData,
       'filename': filename,
@@ -2348,6 +1989,7 @@ class InternxtClient {
     List<String> include,
     List<String> exclude,
   ) {
+    // If include patterns specified, file must match at least one
     if (include.isNotEmpty) {
       final matchesInclude =
           include.any((pattern) => Glob(pattern).matches(fileName));
@@ -2356,6 +1998,7 @@ class InternxtClient {
       }
     }
 
+    // If exclude patterns specified, file must not match any
     if (exclude.isNotEmpty) {
       final matchesExclude =
           exclude.any((pattern) => Glob(pattern).matches(fileName));
@@ -2367,6 +2010,7 @@ class InternxtClient {
     return true;
   }
 
+  // helper for delays
   Future<void> _wait(Duration duration) => Future.delayed(duration);
 
   Future<void> downloadPath(
@@ -2379,13 +2023,16 @@ class InternxtClient {
     required List<String> exclude,
     required String bridgeUser,
     required String userIdForAuth,
-    required String batchId,
-    Map<String, dynamic>? initialBatchState,
-    required Future<void> Function(Map<String, dynamic>) saveStateCallback,
+    required String batchId, // <-- Added
+    Map<String, dynamic>? initialBatchState, // <-- Added
+    required Future<void> Function(Map<String, dynamic>) saveStateCallback, // <-- Added
   }) async {
+    // 1. Resolve remote path (only needed once)
     final itemInfo = await resolvePath(remotePath);
 
+    // 2. Handle SINGLE FILE download (no batching needed)
     if (itemInfo['type'] == 'file') {
+      // ... (Existing single file download logic is fine here, no need for batch state) ...
         _log('Path resolved to a file. Starting single file download.');
         
         final metadata = itemInfo['metadata'] as Map<String, dynamic>;
@@ -2393,17 +2040,20 @@ class InternxtClient {
         final fileType = metadata['fileType'] ?? '';
         final remoteFilename = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
         
+        // Check filters
         if (!shouldIncludeFile(remoteFilename, include, exclude)) {
           print('🚫 File filtered out by include/exclude patterns: $remoteFilename');
           return;
         }
         
+        // Determine local path
         String localPath;
         if (localDestination != null) {
           final destEntity = FileSystemEntity.typeSync(localDestination);
           if (destEntity == FileSystemEntityType.directory) {
             localPath = p.join(localDestination, remoteFilename);
           } else {
+            // Assume it's a file path or non-existent, use as is
             localPath = localDestination;
           }
         } else {
@@ -2412,11 +2062,13 @@ class InternxtClient {
         
         final localFile = File(localPath);
 
+        // Check conflict
         if (await localFile.exists() && onConflict == 'skip') {
           print('⏭️  File exists, skipping: $localPath');
           return;
         }
         
+        // Download
         final downloadResult = await downloadFile(
           itemInfo['uuid'],
           bridgeUser,
@@ -2424,10 +2076,12 @@ class InternxtClient {
           preserveTimestamps: preserveTimestamps,
         );
         
+        // Save file
         await localFile.parent.create(recursive: true);
         await localFile.writeAsBytes(downloadResult['data']);
         
-        if (preserveTimestamps &&
+        // Preserve timestamps if requested
+        if (downloadResult['preserveTimestamps'] == true &&
             downloadResult['modificationTime'] != null) {
           try {
             final mTime = DateTime.parse(downloadResult['modificationTime']);
@@ -2444,6 +2098,7 @@ class InternxtClient {
         return;
     }
 
+    // 3. Handle FOLDER download (recursive, batching)
     if (itemInfo['type'] == 'folder') {
       if (!recursive) {
         throw Exception("'$remotePath' is a folder. Use -r to download recursively.");
@@ -2451,6 +2106,7 @@ class InternxtClient {
       
       _log('Path resolved to a folder. Starting recursive download.');
       
+      // Determine base destination directory
       String baseDestPath;
       if (localDestination != null) {
           baseDestPath = localDestination;
@@ -2459,7 +2115,7 @@ class InternxtClient {
           baseDestPath = folderName;
         }
       final baseDestDir = Directory(baseDestPath);
-      await baseDestDir.create(recursive: true);
+      await baseDestDir.create(recursive: true); // Ensure base dir exists
 
       print('📂 Downloading folder recursively: $remotePath');
       print('💾 Target directory: ${baseDestDir.path}');
@@ -2474,9 +2130,10 @@ class InternxtClient {
       } else {
         print("🔍 Generating new batch task list...");
         tasks = [];
+        // Helper to recursively list remote files and build tasks
         Future<void> buildDownloadTasks(String currentRemoteFolderUuid, String currentLocalRelPath) async {
-            final files = await listFolderFiles(currentRemoteFolderUuid, detailed: true);
-            final folders = await listFolders(currentRemoteFolderUuid, detailed: true);
+            final files = await listFolderFiles(currentRemoteFolderUuid);
+            final folders = await listFolders(currentRemoteFolderUuid);
 
             for(var fileInfo in files) {
               final plainName = fileInfo['name'] ?? 'file';
@@ -2489,7 +2146,7 @@ class InternxtClient {
                       'remoteUuid': fileInfo['uuid'],
                       'localPath': localFilePath,
                       'status': 'pending',
-                      'remoteModificationTime': fileInfo['modificationTime'] ?? fileInfo['updatedAt'],
+                      'remoteModificationTime': fileInfo['modificationTime'] ?? fileInfo['updatedAt'], // Store for timestamp preservation
                   });
               }
             }
@@ -2497,27 +2154,13 @@ class InternxtClient {
             for(var folderInfo in folders) {
                 final folderName = folderInfo['name'] ?? 'subfolder';
                 final nextLocalRelPath = p.join(currentLocalRelPath, folderName);
-                final localSubDir = Directory(p.join(baseDestPath, nextLocalRelPath));
-                await localSubDir.create(recursive: true);
-
-                if (preserveTimestamps) {
-                  try {
-                    // We can't set directory modification time in Dart.
-                    // Log it if we were to try.
-                    final modTimeStr = folderInfo['modificationTime'] ?? folderInfo['updatedAt'];
-                    if (modTimeStr != null) {
-                      _log('   ℹ️  Cannot set mod time for dir ${folderName} (Dart limitation).');
-                    }
-                  } catch (e) {
-                     _log('   ⚠️  Error during dir timestamp logic for $folderName: $e');
-                  }
-                }
-                
+                // Ensure local subdir exists before recursing into it for tasks
+                await Directory(p.join(baseDestPath, nextLocalRelPath)).create(recursive: true);
                 await buildDownloadTasks(folderInfo['uuid'], nextLocalRelPath);
             }
         }
         
-        await buildDownloadTasks(itemInfo['uuid'], ''); 
+        await buildDownloadTasks(itemInfo['uuid'], ''); // Start from the root of the target folder
         batchState = {
           'operationType': 'download',
           'remotePath': remotePath,
@@ -2528,6 +2171,7 @@ class InternxtClient {
         print("📝 Task list generated with ${tasks.length} files.");
       }
 
+      // 4. Process Download Tasks
       int successCount = 0;
       int skippedCount = 0;
       int errorCount = 0;
@@ -2545,6 +2189,7 @@ class InternxtClient {
               completedPreviously++;
               continue;
           }
+          
           if (status.startsWith('skipped')) {
               _log("⏭️ Previously skipped: $localPath ($status)");
               skippedCount++;
@@ -2553,6 +2198,7 @@ class InternxtClient {
 
           final localFile = File(localPath);
 
+          // Check conflict before downloading
           if (await localFile.exists() && onConflict == 'skip') {
               print('   ⏭️  Skipping existing: ${p.basename(localPath)}');
               skippedCount++;
@@ -2570,9 +2216,10 @@ class InternxtClient {
                 preserveTimestamps: preserveTimestamps,
               );
               
-              await localFile.parent.create(recursive: true);
+              await localFile.parent.create(recursive: true); // Ensure parent exists
               await localFile.writeAsBytes(downloadResult['data']);
               
+              // Preserve timestamps if requested (use time from task list if download didn't return it)
               final modTimeStr = downloadResult['modificationTime'] ?? remoteModTime;
               if (preserveTimestamps && modTimeStr != null) {
                 try {
@@ -2590,9 +2237,10 @@ class InternxtClient {
               errorCount++;
               task['status'] = 'error_download';
           }
-          await saveStateCallback(batchState);
+          await saveStateCallback(batchState); // Save progress
       }
       
+      // 5. Summary
       print("=" * 40);
       print("📊 Batch Download Summary:");
       if (completedPreviously > 0) print("  ✅ Completed (previous run): $completedPreviously");
@@ -2605,60 +2253,134 @@ class InternxtClient {
           throw Exception("Download completed with $errorCount errors. State file kept for inspection/retry.");
       }
     }
-  } 
+  } // End downloadPath
 
-  // --- Upload Operations ---
+  Future<void> _downloadFolderRecursive(
+    String folderUuid,
+    Directory currentDest, {
+    required String bridgeUser,
+    required String userIdForAuth,
+    required String onConflict,
+    required bool preserveTimestamps,
+    required List<String> include,
+    required List<String> exclude,
+  }) async {
+    // 1. Get folder contents
+    final files = await listFolderFiles(folderUuid);
+    final folders = await listFolders(folderUuid);
+
+    // 2. Download files in this folder
+    for (var fileInfo in files) {
+      final plainName = fileInfo['name'] ?? 'file';
+      final fileType = fileInfo['fileType'] ?? '';
+      final fileName = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+
+      // Apply filters
+      if (!shouldIncludeFile(fileName, include, exclude)) {
+        _log('   🚫 Filtered: $fileName');
+        continue;
+      }
+
+      final fileDest = File(p.join(currentDest.path, fileName));
+
+      // Check conflict
+      if (await fileDest.exists() && onConflict == 'skip') {
+        print('   ⏭️  Skipping existing: $fileName');
+        continue;
+      }
+
+      try {
+        print('   -> Downloading: $fileName');
+        final downloadResult = await downloadFile(
+          fileInfo['uuid'],
+          bridgeUser,
+          userIdForAuth,
+          preserveTimestamps: preserveTimestamps,
+        );
+
+        await fileDest.writeAsBytes(downloadResult['data']);
+
+        // Preserve timestamps if requested
+        if (downloadResult['preserveTimestamps'] == true &&
+            downloadResult['modificationTime'] != null) {
+          try {
+            final mTime = DateTime.parse(downloadResult['modificationTime']);
+            await fileDest.setLastModified(mTime);
+            _log('   🕐 Set modification time: $mTime');
+          } catch (e) {
+            _log('   ⚠️  Could not set modification time: $e');
+          }
+        }
+      } catch (e) {
+        print('   -> ❌ Error downloading $fileName: $e');
+      }
+    }
+
+    // 3. Recurse into subfolders
+    for (var folderInfo in folders) {
+      final folderName = folderInfo['name'] ?? 'subfolder';
+      final subfolderDest = Directory(p.join(currentDest.path, folderName));
+      await subfolderDest.create(recursive: true);
+
+      print('📂 Entering folder: $folderName');
+
+      await _downloadFolderRecursive(
+        folderInfo['uuid'],
+        subfolderDest,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        onConflict: onConflict,
+        preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
+      );
+    }
+  }
+
+  // --- UPLOAD / REMOVE LOGIC ---
 
   Future<Map<String, dynamic>> _createFolder(
-      String name, String parentFolderUuid,
-      {String? creationTime, String? modificationTime}) async {
+      String name, String parentFolderUuid) async {
     final url = Uri.parse('$driveApiUrl/folders');
-    final data = <String, dynamic>{
-      'plainName': name,
-      'parentFolderUuid': parentFolderUuid
-    };
-
-    if (creationTime != null) {
-      data['creationTime'] = creationTime;
-      _log("     🕐 Added folder creationTime to payload");
-    }
-    if (modificationTime != null) {
-      data['modificationTime'] = modificationTime;
-      _log("     🕐 Added folder modificationTime to payload");
-    }
-    
+    final data = {'plainName': name, 'parentFolderUuid': parentFolderUuid};
     _log('POST $url (create folder $name)');
 
-    final response = await _makeRequest(
-      'POST',
+    final response = await http.post(
       url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
       body: json.encode(data),
-    ); 
+    );
 
-    _invalidateCache(parentFolderUuid);
-
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log('Create folder failed: ${response.body}');
+      throw Exception('Failed to create folder: ${response.statusCode}');
+    }
     return json.decode(response.body);
   }
 
-  Future<Map<String, dynamic>> createFolderRecursive(String path,
-      {String? creationTime, String? modificationTime}) async {
+  Future<Map<String, dynamic>> createFolderRecursive(String path) async {
     if (this.rootFolderId == null) throw Exception("Not logged in");
     var cleanPath = path.trim().replaceAll(RegExp(r'^/+|/+$'), '');
     if (cleanPath.isEmpty) return {'uuid': rootFolderId, 'plainName': 'Root', 'path': '/'};
     var parts = cleanPath.split('/');
     var currentParentUuid = rootFolderId!;
     var currentPathSoFar = '/';
+    // Start with root info, ensure 'path' is included
     Map<String, dynamic>? currentFolderInfo = {'uuid': rootFolderId, 'plainName': 'Root', 'path': '/'}; 
 
     for (var i = 0; i < parts.length; i++) {
       final part = parts[i];
       if (part.isEmpty) continue;
-      final isLastPart = (i == parts.length - 1);
 
+      // Construct the expected full path for this part
       final partPath = '$currentPathSoFar/$part'.replaceAll('//', '/');
       Map<String, dynamic>? foundFolder = null;
 
       try {
+        // Check if folder exists within the current parent
         final folders = await listFolders(currentParentUuid);
         for (var folder in folders) {
           if (folder['name'] == part) {
@@ -2668,41 +2390,35 @@ class InternxtClient {
         }
 
         if (foundFolder != null) {
+          // Folder exists, update current info and move to next part
           currentParentUuid = foundFolder['uuid'];
           foundFolder['path'] = partPath; 
           currentFolderInfo = foundFolder; 
           currentPathSoFar = partPath;
           _log("  -> Found existing folder: $part in $currentPathSoFar (UUID: ${currentParentUuid.substring(0,8)}...)");
-          
-          if (isLastPart && (creationTime != null || modificationTime != null)) {
-             _log("     ⚠️  Folder exists, cannot update timestamps (API limitation).");
-          }
 
         } else {
+          // Folder doesn't exist, try to create it
           _log("  -> Creating folder: $part in $currentPathSoFar");
           try {
-            final newFolder = await _createFolder(
-              part, 
-              currentParentUuid,
-              creationTime: isLastPart ? creationTime : null,
-              modificationTime: isLastPart ? modificationTime : null,
-            );
+            final newFolder = await _createFolder(part, currentParentUuid);
             currentParentUuid = newFolder['uuid'];
             newFolder['path'] = partPath;
             currentFolderInfo = newFolder;
             currentPathSoFar = partPath;
              _log("     ✅ Created successfully (UUID: ${currentParentUuid.substring(0,8)}...)");
-          
+
           } on Exception catch (e) {
-            if (e.toString().contains(' 409') || e.toString().contains('already exists')) {
+            if (e.toString().contains(' 409')) {
               _log("     ⚠️ Received 409 Conflict, likely created concurrently. Waiting 1s before re-fetching info for '$part'...");
               
               await Future.delayed(Duration(seconds: 1)); 
 
               try {
-                  final parentUuidToList = currentFolderInfo!['uuid'];
+                  // Re-list the parent to find the newly created folder's UUID
+                  // Use the parent's UUID (currentFolderInfo should hold the parent before the conflict)
+                  final parentUuidToList = currentFolderInfo!['uuid']; // Ensure we list the correct parent
                   _log("     Re-fetching folders inside parent UUID: ${parentUuidToList.substring(0,8)}...");
-                  _invalidateCache(parentUuidToList); 
                   final foldersAfterConflict = await listFolders(parentUuidToList); 
                   
                   Map<String, dynamic>? conflictingFolder;
@@ -2730,6 +2446,7 @@ class InternxtClient {
                  throw Exception("Failed to resolve folder '$part' after 409 conflict: $fetchErr");
               }
             } else {
+              // Re-throw other creation errors
               throw e;
             }
           }
@@ -2741,6 +2458,7 @@ class InternxtClient {
      if (currentFolderInfo == null) {
       throw Exception("Failed to resolve or create the final folder in the path.");
     }
+    // Ensure the path is correctly set on the final info map ONLY if it's missing
     if (currentFolderInfo['path'] == null) {
        currentFolderInfo['path'] = currentPathSoFar;
     }
@@ -2750,52 +2468,274 @@ class InternxtClient {
   Future<void> _deleteFilePermanently(String fileUuid) async {
     final url = Uri.parse('$driveApiUrl/files/$fileUuid');
     _log('DELETE $url');
+    final response = await http.delete(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+    if (response.statusCode != 200) {
+      _log('Delete file failed: ${response.body}');
+      // Don't throw, just log. Overwrite should proceed.
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getTrashContent(
+      {int offset = 0, int limit = 50}) async {
+    // GET /storage/trash/paginated?offset=0&limit=50&type=files|folders
+    // We make separate calls for files and folders
+
+    final url = Uri.parse('$driveApiUrl/storage/trash/paginated');
+    final List<Map<String, dynamic>> allItems = [];
+
+    // Fetch Files
     try {
-      await _makeRequest('DELETE', url);
+      _log('GET $url?type=files (listing trash files)');
+      final fileResponse = await http.get(
+        url.replace(queryParameters: {
+          'offset': offset.toString(),
+          'limit': limit.toString(),
+          'type': 'files',
+        }),
+        headers: {'Authorization': 'Bearer $newToken'},
+      );
+
+      if (fileResponse.statusCode != 200) {
+        _log('List trash files failed: ${fileResponse.body}');
+        // Don't throw immediately, try fetching folders too
+      } else {
+        final fileData = json.decode(fileResponse.body);
+        final files = fileData['result'] ?? fileData['items'] ?? [];
+        for (var item in files) {
+          allItems.add({
+            'type': 'file', // Explicitly set type
+            'name': item['plainName'] ?? item['name'],
+            'fileType': item['type'] ?? '', // File extension
+            'uuid': item['uuid'] ?? item['id'],
+            'size': item['size'],
+          });
+        }
+      }
     } catch (e) {
-      _log('Delete file failed (swallowing error): $e');
+      _log('Error fetching trash files: $e');
+    }
+
+    // Fetch Folders
+    try {
+      _log('GET $url?type=folders (listing trash folders)');
+      final folderResponse = await http.get(
+        url.replace(queryParameters: {
+          'offset': offset.toString(),
+          'limit': limit.toString(),
+          'type': 'folders',
+        }),
+        headers: {'Authorization': 'Bearer $newToken'},
+      );
+
+      if (folderResponse.statusCode != 200) {
+        _log('List trash folders failed: ${folderResponse.body}');
+        // Don't throw immediately
+      } else {
+        final folderData = json.decode(folderResponse.body);
+        final folders = folderData['result'] ?? folderData['items'] ?? [];
+        for (var item in folders) {
+          allItems.add({
+            'type': 'folder', // Explicitly set type
+            'name': item['plainName'] ?? item['name'],
+            'fileType': '', // Folders don't have fileType
+            'uuid': item['uuid'] ?? item['id'],
+            'size': null, // Folders don't have size
+          });
+        }
+      }
+    } catch (e) {
+      _log('Error fetching trash folders: $e');
+    }
+
+    // If both calls failed somehow, throw an error now
+    if (allItems.isEmpty && (offset == 0)) {
+      // Only throw if it's the first page and empty
+      _log('Both trash list calls failed or returned empty.');
+      // Check if *any* call failed previously, throw based on that status?
+      // For now, let's just indicate failure if list is empty after trying both.
+      throw Exception(
+          'Failed to list trash content (files and folders). Check debug logs.');
+    }
+
+    return allItems;
+  }
+
+  Future<void> moveFile(String fileUuid, String destinationFolderUuid) async {
+    // PATCH /files/{fileUuid} with {'destinationFolder': destinationFolderUuid}
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid');
+    final payload = {'destinationFolder': destinationFolderUuid};
+    _log('PATCH $url (moving file $fileUuid)');
+
+    final response = await http.patch(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Move file failed: ${response.body}');
+      throw Exception('Failed to move file: ${response.statusCode}');
+    }
+  }
+
+  Future<void> moveFolder(
+      String folderUuid, String destinationFolderUuid) async {
+    // PATCH /folders/{folderUuid} with {'destinationFolder': destinationFolderUuid}
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
+    final payload = {'destinationFolder': destinationFolderUuid};
+    _log('PATCH $url (moving folder $folderUuid)');
+
+    final response = await http.patch(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Move folder failed: ${response.body}');
+      throw Exception('Failed to move folder: ${response.statusCode}');
+    }
+  }
+
+  Future<void> renameFile(
+      String fileUuid, String newPlainName, String? newType) async {
+    // PUT /files/{fileUuid}/meta
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
+    final payload = <String, dynamic>{'plainName': newPlainName};
+    // Only include 'type' if it's not null. API might require null/empty string.
+    if (newType != null) {
+      payload['type'] = newType;
+    } else {
+      payload['type'] = ''; // if no extension
+    }
+    _log('PUT $url (renaming file $fileUuid)');
+
+    final response = await http.put(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Rename file failed: ${response.body}');
+      throw Exception('Failed to rename file: ${response.statusCode}');
+    }
+  }
+
+  Future<void> renameFolder(String folderUuid, String newName) async {
+    // PUT /folders/{folderUuid}/meta
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
+    final payload = {'plainName': newName};
+    _log('PUT $url (renaming folder $folderUuid)');
+
+    final response = await http.put(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200) {
+      _log('Rename folder failed: ${response.body}');
+      throw Exception('Failed to rename folder: ${response.statusCode}');
+    }
+  }
+
+  Future<void> _deleteFolderPermanently(String folderUuid) async {
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
+    _log('DELETE $url');
+    final response = await http.delete(
+      url,
+      headers: {'Authorization': 'Bearer $newToken'},
+    );
+    if (response.statusCode != 200) {
+      _log('Delete folder failed: ${response.body}');
     }
   }
 
   Future<Map<String, dynamic>> _startUpload(
-    String bucketId,
-    int fileSize,
-    String user,
-    String pass, {
-    int maxRetries = 3, // This parameter is no longer used, but kept for signature compatibility
-  }) async {
-    final url =
-        Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
-    final data = {
-      'uploads': [
-        {'index': 0, 'size': fileSize}
-      ]
+    String bucketId, 
+    int fileSize, 
+    String user, 
+    String pass,
+    {int maxRetries = 3}
+  ) async {
+    final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
+    final data = {'uploads': [{'index': 0, 'size': fileSize}]};
+    final headers = {
+      'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
+      'Content-Type': 'application/json',
     };
-    final body = json.encode(data);
 
-    _log('POST $url (start upload)');
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      _log('POST $url (start upload attempt ${attempt + 1}/${maxRetries + 1})');
+      try {
+        final response = await http.post(
+          url,
+          headers: headers,
+          body: json.encode(data),
+        );
 
-    try {
-      // All retry logic (network, 5xx, 401) is now handled inside _makeRequest.
-      // We just make one call.
-      final response = await _makeRequest(
-        'POST',
-        url,
-        body: body,
-        useAuth: false,
-        isNetworkAuth: true,
-        networkUser: user,
-        networkPass: pass,
-      );
+        // Success: check status code and return
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          return json.decode(response.body);
+        }
 
-      return json.decode(response.body);
-      
-    } catch (e) {
-      // If _makeRequest fails after all its retries, it will throw.
-      _log('Start upload failed after all retries: $e');
-      throw Exception(
-          'Failed to start upload after multiple attempts: $e');
+        // Specific Client/Server Errors (4xx, non-retryable 5xx) - Throw immediately
+        if (response.statusCode >= 400 && response.statusCode < 500 || response.statusCode >= 501) {
+          _log('Start upload failed permanently (${response.statusCode}): ${response.body}');
+          throw Exception('Failed to start upload: ${response.statusCode} ${response.body}');
+        }
+        
+        // Retryable Server Errors (500, 502, 503, 504, potentially 429)
+        _log('Start upload attempt failed (${response.statusCode}), will retry: ${response.body}');
+        if (attempt == maxRetries) {
+            throw Exception('Failed to start upload after ${maxRetries + 1} attempts: ${response.statusCode} ${response.body}');
+        }
+        // Wait before retrying (simple exponential backoff: 1s, 2s, 4s)
+        final delay = Duration(seconds: 1 << attempt); // 1, 2, 4 seconds
+        _log('   Waiting ${delay.inSeconds}s before next retry...');
+        await _wait(delay); 
+        // Continue to next iteration
+
+      } on http.ClientException catch (e) {
+        // Network errors (could be temporary)
+        _log('Start upload network error: $e');
+        if (attempt == maxRetries) {
+          throw Exception('Failed to start upload after ${maxRetries + 1} attempts due to network error: $e');
+        }
+        final delay = Duration(seconds: 1 << attempt); 
+        _log('   Waiting ${delay.inSeconds}s before next retry...');
+        await _wait(delay);
+        // Continue to next iteration
+      } catch (e) {
+        // Catch-all for unexpected errors during the request
+        _log('Start upload unexpected error: $e');
+          if (attempt == maxRetries) {
+          throw Exception('Failed to start upload after ${maxRetries + 1} attempts due to unexpected error: $e');
+        }
+        final delay = Duration(seconds: 1 << attempt); 
+        _log('   Waiting ${delay.inSeconds}s before next retry...');
+        await _wait(delay);
+        // Continue to next iteration
+      }
     }
+    // Should not be reachable if maxRetries >= 0
+    throw Exception('Failed to start upload after ${maxRetries + 1} attempts.'); 
   }
 
   Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
@@ -2817,16 +2757,19 @@ class InternxtClient {
     final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
     _log('POST $url (finish upload)');
 
-    final response = await _makeRequest(
-      'POST',
+    final response = await http.post(
       url,
+      headers: {
+        'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
+        'Content-Type': 'application/json',
+      },
       body: json.encode(payload),
-      useAuth: false,
-      isNetworkAuth: true,
-      networkUser: user,
-      networkPass: pass,
     );
 
+    if (response.statusCode != 200) {
+      _log('Finish upload failed: ${response.body}');
+      throw Exception('Failed to finish upload: ${response.statusCode}');
+    }
     return json.decode(response.body);
   }
 
@@ -2835,17 +2778,71 @@ class InternxtClient {
     final url = Uri.parse('$driveApiUrl/files');
     _log('POST $url (create file entry)');
 
-    final response = await _makeRequest(
-      'POST',
+    final response = await http.post(
       url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
       body: json.encode(payload),
     );
-    
-    if (payload['folderUuid'] != null) { 
-      _invalidateCache(payload['folderUuid']);
-    }
 
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log('Create file entry failed: ${response.body}');
+      throw Exception('Failed to create file entry: ${response.statusCode}');
+    }
     return json.decode(response.body);
+  }
+
+  Future<void> trashItems(String uuid, String type) async {
+    final url = Uri.parse('$driveApiUrl/storage/trash/add');
+    final payload = {
+      'items': [
+        {'uuid': uuid, 'type': type}
+      ]
+    };
+    _log('POST $url (trashing item $uuid)');
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      },
+      body: json.encode(payload),
+    );
+
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log('Trash item failed: ${response.body}');
+      throw Exception('Failed to trash item: ${response.statusCode}');
+    }
+  }
+
+  Future<void> deletePermanently(String uuid, String type) async {
+    final url = Uri.parse('$driveApiUrl/storage/trash');
+    final payload = {
+      'items': [
+        {'uuid': uuid, 'type': type}
+      ]
+    };
+    _log('DELETE $url (deleting item $uuid)');
+
+    // http.delete does not natively support a body.
+    // We must build the request manually.
+    final request = http.Request('DELETE', url)
+      ..headers.addAll({
+        'Authorization': 'Bearer $newToken',
+        'Content-Type': 'application/json',
+      })
+      ..body = json.encode(payload);
+
+    final response = await request.send();
+
+    if (response.statusCode != 200) {
+      final responseBody = await response.stream.bytesToString();
+      _log('Delete item failed: $responseBody');
+      throw Exception('Failed to delete item: ${response.statusCode}');
+    }
   }
 
   Future<Map<String, dynamic>> _uploadFile(
@@ -2857,6 +2854,7 @@ class InternxtClient {
     String? creationTime,
     String? modificationTime,
   }) async {
+    // We use the bucketId from credentials
     if (this.bucketId == null) {
       throw Exception(
           "Bucket ID not found in credentials. Please login again.");
@@ -2866,6 +2864,7 @@ class InternxtClient {
     if (this.mnemonic == null) throw Exception("Not logged in");
 
     final networkAuth = _getNetworkAuth(bridgeUser, userIdForAuth);
+    // ... (rest of the function is correct) ...
     final networkUser = networkAuth['user']!;
     final networkPass = networkAuth['pass']!;
 
@@ -2873,27 +2872,26 @@ class InternxtClient {
     final fileSize = fileBytes.length;
 
     print("     📤 Uploading '$remoteFileName' (${formatSize(fileSize)})...");
-    
-    if (creationTime != null || modificationTime != null) {
-       _log("     🕐 Attempting to preserve timestamps:");
-       if (creationTime != null) _log("        Creation: $creationTime");
-       if (modificationTime != null) _log("        Modification: $modificationTime");
-    }
 
+    // 1. Encrypt
     _log("     🔐 Encrypting with exact protocol");
+    // This call will now use the correct bucketId
     final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId);
     final encryptedData = encryptedResult['data']!;
     final fileIndexHex = encryptedResult['index']!;
 
+    // 2. Start
     _log("     🚀 Initializing network upload");
     final startResponse = await _startUpload(
         bucketId, encryptedData.length, networkUser, networkPass);
     final uploadUrl = startResponse['uploads'][0]['url'];
     final fileNetworkUuid = startResponse['uploads'][0]['uuid'];
 
+    // 3. Upload
     _log("     ☁️  Uploading encrypted data");
     await _uploadChunk(uploadUrl, encryptedData);
 
+    // 4. Finish
     _log("     ✅ Finalizing network upload");
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
     final finishPayload = {
@@ -2906,6 +2904,7 @@ class InternxtClient {
         await _finishUpload(bucketId, finishPayload, networkUser, networkPass);
     final networkFileId = finishResponse['id'];
 
+    // 5. Create Entry
     _log("     📋 Creating file metadata");
     final plainName = p.basenameWithoutExtension(remoteFileName);
     final fileType = p.extension(remoteFileName).replaceAll('.', '');
@@ -2919,9 +2918,16 @@ class InternxtClient {
       'fileId': networkFileId,
       'encryptVersion': 'Aes03',
       'name': '',
-      'creationTime': creationTime, 
-      'modificationTime': modificationTime, 
     };
+
+    if (creationTime != null) {
+      fileEntryPayload['creationTime'] = creationTime;
+      _log("     🕐 Added creationTime to payload");
+    }
+    if (modificationTime != null) {
+      fileEntryPayload['modificationTime'] = modificationTime;
+      _log("     🕐 Added modificationTime to payload");
+    }
 
     return await _createFileEntry(fileEntryPayload);
   }
@@ -2969,7 +2975,7 @@ class InternxtClient {
         } else {
           print("  -> 🔄 Overwriting existing file...");
           try {
-            await deletePermanently(existingItemInfo['uuid'], 'file');
+            await _deleteFilePermanently(existingItemInfo['uuid']);
             print("  -> 🗑️  Deleted existing file for overwrite");
           } catch (delErr) {
             print("  -> ❌ Error deleting existing file for overwrite: $delErr");
@@ -2979,6 +2985,7 @@ class InternxtClient {
       }
     }
 
+    // --- Proceed with upload ---
     try {
       String? creationTime;
       String? modificationTime;
@@ -2987,7 +2994,9 @@ class InternxtClient {
         try {
           final stat = await localFile.stat();
           modificationTime = stat.modified.toUtc().toIso8601String();
-          creationTime = stat.changed.toUtc().toIso8601String(); 
+          creationTime = stat.changed
+              .toUtc()
+              .toIso8601String(); // 'changed' is closest to 'creation'
           _log(
               "     🕐 Preserving timestamps: Mod=$modificationTime, Cre=$creationTime");
         } catch (e) {
@@ -3035,50 +3044,32 @@ class InternxtClient {
       print("🔄 Resuming previous batch operation...");
       batchState = initialBatchState;
       tasks = batchState['tasks'] as List<dynamic>;
+      // Optional: Verify target paths match, etc.
     } else {
       print("🔍 Generating new batch task list...");
       tasks = [];
+      // 1. Resolve or Create Target Folder (only needed for generation)
       final targetFolderInfo = await _resolveOrCreateRemoteFolder(targetPath);
+      final targetFolderUuid = targetFolderInfo['uuid'] as String;
       final targetFolderPathStr = targetFolderInfo['path'] as String? ?? targetPath;
 
+      // 2. Generate Task List
       for (final sourceArg in sources) {
         final hasTrailingSlash = sourceArg.endsWith('/') || sourceArg.endsWith('\\');
         final glob = Glob(sourceArg.replaceAll('\\', '/'));
 
         await for (final entity in glob.list()) {
             if (await FileSystemEntity.isDirectory(entity.path)) {
-              if (!recursive) continue; 
+              if (!recursive) continue; // Skip dirs if not recursive
               final localDir = Directory(entity.path);
-
-              // Handle directory timestamps
-              String? dirCreationTime;
-              String? dirModTime;
-              if(preserveTimestamps) {
-                 try {
-                  final stat = await localDir.stat();
-                  dirModTime = stat.modified.toUtc().toIso8601String();
-                  dirCreationTime = stat.changed.toUtc().toIso8601String(); 
-                } catch(e) {
-                  _log("     ⚠️  Could not read dir timestamps for ${localDir.path}: $e");
-                }
-              }
-
-              // Create the root remote dir with timestamps
-              String remoteBase = hasTrailingSlash
-                ? targetFolderPathStr
-                : p.join(targetFolderPathStr, p.basename(localDir.path)).replaceAll('\\', '/');
-              
-              await createFolderRecursive(
-                remoteBase, 
-                creationTime: dirCreationTime, 
-                modificationTime: dirModTime,
-              );
-
               final filesInDir = localDir.list(recursive: true, followLinks: false);
               await for (final fileEntity in filesInDir) {
                   if (fileEntity is File) {
                       final localFile = fileEntity;
                       final relativePath = p.relative(localFile.path, from: localDir.path);
+                      String remoteBase = hasTrailingSlash
+                          ? targetFolderPathStr
+                          : p.join(targetFolderPathStr, p.basename(localDir.path)).replaceAll('\\', '/');
                       final remoteFilePath = p.join(remoteBase, relativePath).replaceAll('\\', '/');
 
                     if (shouldIncludeFile(p.basename(localFile.path), include, exclude)) {
@@ -3106,13 +3097,15 @@ class InternxtClient {
       }
       batchState = {
         'operationType': 'upload',
-        'targetRemotePath': targetPath,
+        'targetRemotePath': targetPath, // Store original target for info
         'tasks': tasks,
       };
-      await saveStateCallback(batchState);
+      await saveStateCallback(batchState); // Save initial state
       print("📝 Task list generated with ${tasks.length} files.");
     }
 
+
+    // 3. Process Tasks
     int successCount = 0;
     int skippedCount = 0;
     int errorCount = 0;
@@ -3128,8 +3121,8 @@ class InternxtClient {
       if (!await localFile.exists()) {
         print("⚠️ Source file no longer exists, skipping: $localPath");
         skippedCount++;
-        task['status'] = 'skipped_missing_source';
-        await saveStateCallback(batchState);
+        task['status'] = 'skipped_missing_source'; // Mark specifically
+        await saveStateCallback(batchState); // Save state update
         continue;
       }
 
@@ -3145,6 +3138,7 @@ class InternxtClient {
         continue;
       }
       
+      // Ensure parent folder exists for the remote path
       final remoteParentPath = p.dirname(remotePath).replaceAll('\\', '/');
       Map<String, dynamic> parentFolderInfo;
       try {
@@ -3154,18 +3148,18 @@ class InternxtClient {
           errorCount++;
           task['status'] = 'error_create_parent';
           await saveStateCallback(batchState);
-          continue; 
+          continue; // Skip this file
       }
 
       final result = await _uploadSingleItem(
           localFile,
-          remoteParentPath,
-          parentFolderInfo['uuid'],
+          remoteParentPath, // Pass the resolved parent path
+          parentFolderInfo['uuid'], // Pass the resolved parent UUID
           onConflict,
           bridgeUser: bridgeUser,
           userIdForAuth: userIdForAuth,
           preserveTimestamps: preserveTimestamps,
-          remoteFileName: p.basename(remotePath),
+          remoteFileName: p.basename(remotePath), // Use the target filename
       );
 
       if (result == "uploaded") {
@@ -3178,9 +3172,10 @@ class InternxtClient {
         errorCount++;
         task['status'] = 'error_upload';
       }
-      await saveStateCallback(batchState);
+      await saveStateCallback(batchState); // Save progress after each file
     }
 
+    // 4. Summary
     print("=" * 40);
     print("📊 Batch Upload Summary:");
     if (completedPreviously > 0) print("  ✅ Completed (previous run): $completedPreviously");
@@ -3194,6 +3189,7 @@ class InternxtClient {
     }
   }
 
+  // Helper function to resolve/create target folder (extracted logic)
   Future<Map<String, dynamic>> _resolveOrCreateRemoteFolder(String targetPath) async {
     Map<String, dynamic> targetFolderInfo;
       try {
@@ -3212,7 +3208,7 @@ class InternxtClient {
             throw Exception("Failed to create target folder '$targetPath': $createErr");
           }
         } else {
-          throw e;
+          throw e; // Re-throw other errors
         }
       }
       return targetFolderInfo;
@@ -3223,20 +3219,27 @@ class InternxtClient {
     final url = Uri.parse('$networkUrl/buckets/$bucketId/files/$fileId/info');
     _log('GET $url');
 
-    final response = await _makeRequest(
-      'GET',
+    final response = await http.get(
       url,
-      headers: {'x-api-version': '2'},
-      useAuth: false,
-      isNetworkAuth: true,
-      networkUser: user,
-      networkPass: pass,
+      headers: {
+        'Authorization': 'Basic ${base64Encode(utf8.encode('$user:$pass'))}',
+        // add required header
+        'x-api-version': '2',
+      },
     );
+
+    if (response.statusCode != 200) {
+      _log('Download links response: ${response.statusCode}');
+      _log('Download links body: ${response.body}');
+      throw Exception('Failed to get download links: ${response.statusCode}');
+    }
 
     return json.decode(response.body);
   }
 
   Map<String, String> _getNetworkAuth(String bridgeUser, String userId) {
+    // Note it does not call an API, it uses credentials from login.
+
     _log('Generating network auth from bridgeUser and userId');
 
     final hashedPassword =
@@ -3248,420 +3251,9 @@ class InternxtClient {
     };
   }
 
-  // --- File/Trash Operations ---
-
-  Future<List<Map<String, dynamic>>> getTrashContent(
-      {int offset = 0, int limit = 50}) async {
-    final url = Uri.parse('$driveApiUrl/storage/trash/paginated');
-    final List<Map<String, dynamic>> allItems = [];
-
-    try {
-      _log('GET $url?type=files (listing trash files)');
-      final fileResponse = await _makeRequest(
-        'GET',
-        url.replace(queryParameters: {
-          'offset': offset.toString(),
-          'limit': limit.toString(),
-          'type': 'files',
-        }),
-      ); 
-
-      final fileData = json.decode(fileResponse.body);
-      final files = fileData['result'] ?? fileData['items'] ?? [];
-      for (var item in files) {
-        allItems.add({
-          'type': 'file', 
-          'name': item['plainName'] ?? item['name'],
-          'fileType': item['type'] ?? '', 
-          'uuid': item['uuid'] ?? item['id'],
-          'size': item['size'],
-        });
-      }
-    } catch (e) {
-      _log('Error fetching trash files: $e');
-    }
-
-    try {
-      _log('GET $url?type=folders (listing trash folders)');
-      final folderResponse = await _makeRequest(
-        'GET',
-        url.replace(queryParameters: {
-          'offset': offset.toString(),
-          'limit': limit.toString(),
-          'type': 'folders',
-        }),
-      );
-
-      final folderData = json.decode(folderResponse.body);
-      final folders = folderData['result'] ?? folderData['items'] ?? [];
-      for (var item in folders) {
-        allItems.add({
-          'type': 'folder', 
-          'name': item['plainName'] ?? item['name'],
-          'fileType': '', 
-          'uuid': item['uuid'] ?? item['id'],
-          'size': null, 
-        });
-      }
-    } catch (e) {
-      _log('Error fetching trash folders: $e');
-    }
-
-    if (allItems.isEmpty && (offset == 0)) {
-      _log('Both trash list calls failed or returned empty.');
-      // Return empty list, don't throw
-    }
-    return allItems;
-  }
-
-  Future<void> moveFile(String fileUuid, String destinationFolderUuid) async {
-    await _clearParentCache(fileUuid, 'file');
-    
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid');
-    final payload = {'destinationFolder': destinationFolderUuid};
-    _log('PATCH $url (moving file $fileUuid)');
-
-    await _makeRequest(
-      'PATCH',
-      url,
-      body: json.encode(payload),
-    );
-    
-    _invalidateCache(destinationFolderUuid);
-  }
-
-  Future<void> moveFolder(
-      String folderUuid, String destinationFolderUuid) async {
-    await _clearParentCache(folderUuid, 'folder');
-
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
-    final payload = {'destinationFolder': destinationFolderUuid};
-    _log('PATCH $url (moving folder $folderUuid)');
-
-    await _makeRequest(
-      'PATCH',
-      url,
-      body: json.encode(payload),
-    );
-    
-    _invalidateCache(destinationFolderUuid);
-  }
-
-  Future<void> renameFile(
-      String fileUuid, String newPlainName, String? newType) async {
-    await _clearParentCache(fileUuid, 'file');
-
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-    final payload = <String, dynamic>{'plainName': newPlainName};
-    if (newType != null) {
-      payload['type'] = newType;
-    } else {
-      payload['type'] = '';
-    }
-    _log('PUT $url (renaming file $fileUuid)');
-
-    await _makeRequest(
-      'PUT',
-      url,
-      body: json.encode(payload),
-    );
-  }
-
-  Future<void> renameFolder(String folderUuid, String newName) async {
-    await _clearParentCache(folderUuid, 'folder');
-
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
-    final payload = {'plainName': newName};
-    _log('PUT $url (renaming folder $folderUuid)');
-
-    await _makeRequest(
-      'PUT',
-      url,
-      body: json.encode(payload),
-    );
-  }
-
-  Future<void> _deleteFolderPermanently(String folderUuid) async {
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
-    _log('DELETE $url');
-    try {
-      await _makeRequest('DELETE', url);
-    } catch(e) {
-      _log('Delete folder failed (swallowing error): $e');
-    }
-  }
-
-  Future<void> trashItems(String uuid, String type) async {
-    await _clearParentCache(uuid, type);
-
-    final url = Uri.parse('$driveApiUrl/storage/trash/add');
-    final payload = {
-      'items': [
-        {'uuid': uuid, 'type': type}
-      ]
-    };
-    _log('POST $url (trashing item $uuid)');
-
-    await _makeRequest(
-      'POST',
-      url,
-      body: json.encode(payload),
-    );
-  }
-
-  Future<void> deletePermanently(String uuid, String type) async {
-    final url = Uri.parse('$driveApiUrl/storage/trash');
-    final payload = {
-      'items': [
-        {'uuid': uuid, 'type': type}
-      ]
-    };
-    _log('DELETE $url (deleting item $uuid)');
-
-    await _makeRequest(
-      'DELETE',
-      url,
-      body: json.encode(payload),
-    );
-  }
-
-  // --- Search / Find ---
-
-  /// Calls the server-side fuzzy search.
-  Future<List<dynamic>> _apiSearchFiles(String query) async {
-    final url = Uri.parse('$driveApiUrl/fuzzy/$query');
-    _log('GET $url (searching)');
-
-    final response = await _makeRequest('GET', url);
-    final data = json.decode(response.body);
-
-    final items = data['data'] ?? data['results'] ?? data;
-    if (items is List) {
-      return items;
-    }
-    return [];
-  }
-
-  /// Gets all parent folders for a given folder UUID.
-  Future<List<dynamic>> _apiGetFolderAncestors(String folderUuid) async {
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/ancestors');
-    _log('GET $url (getting ancestors)');
-
-    final response = await _makeRequest('GET', url);
-    final data = json.decode(response.body);
-    if (data is List) {
-      return data;
-    }
-    return [];
-  }
-
-  /// Builds the full readable path for an item given its metadata and parent UUID.
-  Future<String> _buildFullPath(Map<String, dynamic> item, String? parentUuid) async {
-    String itemName = item['plainName'] ?? 'Unknown';
-    if (item['itemType'] == 'file' && item['type'] != null && item['type'].isNotEmpty) {
-      itemName = '$itemName.${item['type']}';
-    }
-
-    if (parentUuid == null || parentUuid == this.rootFolderId) {
-      return '/$itemName';
-    }
-
-    try {
-      final ancestors = await _apiGetFolderAncestors(parentUuid);
-      final pathParts = ancestors
-          .map((ancestor) => ancestor['plainName'] as String?)
-          .where((name) => name != null && name.toLowerCase() != 'root')
-          .toList();
-
-      final parentPath = '/${pathParts.join('/')}';
-      return '${parentPath.replaceAll('//', '/')}/$itemName';
-    } catch (e) {
-      _log('Could not build full path for $itemName: $e');
-      return '/?/$itemName'; // Best guess path
-    }
-  }
-
-  /// Performs a search and enhances results with full paths.
-  Future<Map<String, List<Map<String, dynamic>>>> search(String query,
-      {bool detailed = false}) async {
-    final results = await _apiSearchFiles(query);
-
-    List<Map<String, dynamic>> folders = [];
-    List<Map<String, dynamic>> files = [];
-
-    for (var item in results) {
-      final isFolder = item['itemType'] == 'folder';
-      final itemMap = {
-        'uuid': item['itemId'] ?? item['id'],
-        'name': item['name'], 
-        'itemType': item['itemType'],
-        'plainName': item['name'],
-        'type': item['type'],
-      };
-
-      if (detailed) {
-        try {
-          Map<String, dynamic> metadata;
-          String? parentUuid;
-          if (isFolder) {
-            metadata = await getFolderMetadata(itemMap['uuid']);
-            parentUuid = metadata['parentUuid'];
-          } else {
-            metadata = await getFileMetadata(itemMap['uuid']);
-            parentUuid = metadata['folderUuid'];
-          }
-          itemMap['fullPath'] = await _buildFullPath(itemMap, parentUuid);
-          itemMap['metadata'] = metadata; 
-        } catch (e) {
-          itemMap['fullPath'] = '/?/${itemMap['name']}';
-          itemMap['metadata'] = {'error': e.toString()};
-        }
-      }
-
-      if (isFolder) {
-        folders.add(itemMap);
-      } else {
-        files.add(itemMap);
-      }
-    }
-    return {'folders': folders, 'files': files};
-  }
-
-  /// Recursively finds files matching a glob pattern, using the cache.
-  Future<List<Map<String, dynamic>>> findFiles(
-    String startPath,
-    String pattern, {
-    int maxDepth = -1,
-  }) async {
-    final glob = Glob(pattern, caseSensitive: false);
-    final List<Map<String, dynamic>> results = [];
-
-    final List<MapEntry<String, int>> pathStack = [MapEntry(startPath, 0)];
-
-    while (pathStack.isNotEmpty) {
-      final entry = pathStack.removeLast();
-      final currentPath = entry.key;
-      final currentDepth = entry.value;
-
-      if (maxDepth != -1 && currentDepth >= maxDepth) {
-        continue;
-      }
-      
-      _log('Finding in: $currentPath (depth $currentDepth)');
-
-      Map<String, dynamic> resolved;
-      try {
-        resolved = await resolvePath(currentPath);
-        if (resolved['type'] != 'folder') continue;
-      } catch (e) {
-        _log('Could not resolve path $currentPath: $e');
-        continue;
-      }
-
-      final currentFolderUuid = resolved['uuid'];
-      
-      try {
-        final files = await listFolderFiles(currentFolderUuid);
-        for (var file in files) {
-          final plainName = file['name'] ?? '';
-          final fileType = file['fileType'] ?? '';
-          final fullName =
-              fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
-          
-          if (glob.matches(fullName)) {
-            final fullPath = '$currentPath/$fullName'.replaceAll('//', '/');
-            results.add({
-              ...file,
-              'fullPath': fullPath,
-              'displayName': fullName,
-            });
-          }
-        }
-      } catch (e) {
-        _log('Could not list files in $currentPath: $e');
-      }
-
-      if (maxDepth == -1 || (currentDepth + 1) < maxDepth) {
-        try {
-          final folders = await listFolders(currentFolderUuid);
-          for (var folder in folders) {
-            final folderName = folder['name'] ?? 'unknown';
-            final subFolderPath = '$currentPath/$folderName'.replaceAll('//', '/');
-            pathStack.add(MapEntry(subFolderPath, currentDepth + 1));
-          }
-        } catch (e) {
-          _log('Could not list folders in $currentPath: $e');
-        }
-      }
-    }
-    return results;
-  }
-
-  /// Recursively builds and prints a tree structure for a given path.
-  Future<void> printTree(
-    String path,
-    void Function(String) printLine, {
-    int maxDepth = 3,
-    int currentDepth = 0, 
-    String prefix = "",    
-  }) async {
-    if (currentDepth >= maxDepth) return;
-
-    Map<String, dynamic> resolved;
-    try {
-      resolved = await resolvePath(path);
-      if (resolved['type'] != 'folder') {
-        printLine("$prefix└── 📄 ${p.basename(path)}");
-        return;
-      }
-    } catch (e) {
-      printLine("$prefix└── ❌ Error reading path: $e");
-      return;
-    }
-
-    try {
-      final folderUuid = resolved['uuid'];
-      final folders = await listFolders(folderUuid);
-      final files = await listFolderFiles(folderUuid);
-      final allItems = [...folders, ...files];
-
-      if (allItems.isEmpty) return; 
-
-      for (var i = 0; i < allItems.length; i++) {
-        final item = allItems[i];
-        final isLastItem = (i == allItems.length - 1);
-        
-        final connector = isLastItem ? "└── " : "├── ";
-        final childPrefix = prefix + (isLastItem ? "    " : "│   ");
-
-        final itemName = item['name'] ?? 'Unknown';
-
-        if (item['type'] == 'folder') {
-          final folderPath = '$path/$itemName'.replaceAll('//', '/');
-          printLine("$prefix$connector📁 $itemName/");
-          
-          await printTree(
-            folderPath,
-            printLine,
-            maxDepth: maxDepth,
-            currentDepth: currentDepth + 1,
-            prefix: childPrefix,
-          );
-        } else {
-          final fileType = item['fileType'] ?? '';
-          final displayName =
-              fileType.isNotEmpty ? '$itemName.$fileType' : itemName;
-          final size = formatSize(item['size'] ?? 0);
-          printLine("$prefix$connector📄 $displayName ($size)");
-        }
-      }
-    } catch (e) {
-      printLine("$prefix└── ❌ Error listing folder: $e");
-    }
-  }
-
   // --- File Crypto ---
 
+  /// Get deterministic key (SHA512)
   Uint8List _getFileDeterministicKey(Uint8List key, Uint8List data) {
     final combined = Uint8List(key.length + data.length);
     combined.setAll(0, key);
@@ -3670,12 +3262,18 @@ class InternxtClient {
     return crypto.sha512.convert(combined).bytes as Uint8List;
   }
 
+  /// Generate file bucket key
   Uint8List _generateFileBucketKey(String mnemonic, String bucketId) {
+    // Convert List<int> from mnemonicToSeed to Uint8List
     final seed = Uint8List.fromList(bip39.mnemonicToSeed(mnemonic));
+
+    // This needs to be Uint8List as well, which HEX.decode returns
     final bucketIdBytes = Uint8List.fromList(HEX.decode(bucketId));
+
     return _getFileDeterministicKey(seed, bucketIdBytes);
   }
 
+  /// Generate file key
   Uint8List _generateFileKey(
       String mnemonic, String bucketId, Uint8List index) {
     final bucketKey = _generateFileBucketKey(mnemonic, bucketId);
@@ -3685,6 +3283,7 @@ class InternxtClient {
     ).sublist(0, 32);
   }
 
+  /// Decrypts file stream (AES-256-CTR)
   Uint8List _decryptStream(
     Uint8List encryptedData,
     String mnemonic,
@@ -3706,12 +3305,18 @@ class InternxtClient {
     String mnemonic,
     String bucketId,
   ) {
+    // Generate 32-byte random index
     final random = Random.secure();
     final index =
         Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
+
+    // Generate file key
     final fileKey = _generateFileKey(mnemonic, bucketId, index);
+
+    // Use first 16 bytes of index as IV
     final iv = index.sublist(0, 16);
 
+    // Encrypt using AES-256-CTR
     final cipher = CTRStreamCipher(AESEngine())
       ..init(true, ParametersWithIV(KeyParameter(fileKey), iv));
 
@@ -3731,29 +3336,32 @@ class InternxtClient {
 class ConfigService {
   late final String configDir;
   late final String credentialsFile;
-  late final String batchStateDir; 
+  late final String batchStateDir; // <-- ADDED
 
   ConfigService() {
     final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
     configDir = p.join(home, '.internxt-cli');
     credentialsFile = p.join(configDir, '.inxtcli-dart-creds.json');
-    batchStateDir = p.join(configDir, 'batch_states'); 
+    batchStateDir = p.join(configDir, 'batch_states'); // <-- ADDED
 
     Directory(configDir).createSync(recursive: true);
-    Directory(batchStateDir).createSync(recursive: true);
+    Directory(batchStateDir).createSync(recursive: true); // <-- Ensure it exists
   }
 
+  // Helper to generate a unique ID for a batch
   String generateBatchId(String operationType, List<String> sources, String target) {
       final input = '$operationType-${sources.join('|')}-$target';
       final bytes = utf8.encode(input);
       final digest = crypto.sha1.convert(bytes);
-      return digest.toString().substring(0, 16);
+      return digest.toString().substring(0, 16); // Use a prefix of SHA1 hash
   }
 
+  // Get the state file path
   String getBatchStateFilePath(String batchId) {
     return p.join(batchStateDir, 'batch_state_$batchId.json');
   }
 
+  // Load state
   Future<Map<String, dynamic>?> loadBatchState(String batchId) async {
     final filePath = getBatchStateFilePath(batchId);
     final file = File(filePath);
@@ -3763,13 +3371,14 @@ class ConfigService {
         return json.decode(content) as Map<String, dynamic>;
       } catch (e) {
         print("⚠️ Warning: Could not read batch state file '$filePath': $e");
-        await deleteBatchState(batchId);
+        await deleteBatchState(batchId); // Delete corrupted state
         return null;
       }
     }
     return null;
   }
 
+  // Save state
   Future<void> saveBatchState(String batchId, Map<String, dynamic> state) async {
      final filePath = getBatchStateFilePath(batchId);
      final file = File(filePath);
@@ -3780,6 +3389,7 @@ class ConfigService {
      }
   }
 
+  // Delete state
   Future<void> deleteBatchState(String batchId) async {
     final filePath = getBatchStateFilePath(batchId);
     final file = File(filePath);
@@ -3806,8 +3416,7 @@ class ConfigService {
     try {
       final contents = await file.readAsString();
       final data = json.decode(contents) as Map<String, dynamic>;
-      // Ensure all values are strings
-      return data.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+      return data.map((k, v) => MapEntry(k, v.toString()));
     } catch (e) {
       return null;
     }
@@ -3829,7 +3438,6 @@ String formatSize(dynamic bytes) {
   if (bytes == null) return 'N/A';
   if (bytes is String) bytes = int.tryParse(bytes) ?? 0;
   if (bytes is! int) return 'N/A';
-  if (bytes == 0) return '0 B';
 
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
