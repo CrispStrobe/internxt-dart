@@ -1,23 +1,28 @@
 # Internxt CLI - Dart Edition 🎯
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[](https://www.gnu.org/licenses/agpl-3.0)
 
-A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart and designed to be compatible with the functionality of an internal Python blueprint. This is nothing offical from Internxt and still work in progress, so use at your own risk, and do not expect everything to work perfectly!
+A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart and designed to be compatible with the functionality of an internal Python blueprint. This is nothing official from Internxt and still a work in progress, so use at your own risk, and do not expect everything to work perfectly.
 
 This tool allows you to manage your Internxt Drive files and folders directly from your terminal, including uploads, downloads, listing, moving, renaming, and trash operations.
 
 ## ✨ Features
 
-* **Authentication:** Login/logout securely.
-* **File Management:** List, upload, download, move, rename files and folders.
-* **Path-Based Operations:** Interact with your drive using familiar file paths (e.g., `/Documents/report.pdf`).
-* **Trash Management:** List trash contents, move items to trash, delete permanently, and restore items.
-* **Recursive Operations:** Upload and download entire directory structures.
-* **Conflict Handling:** Choose whether to overwrite or skip existing files during uploads/downloads.
-* **Wildcard Support:** Use `*` and `?` for uploading multiple files (via shell expansion).
-* **Timestamp Preservation:** Option to preserve original file modification times during uploads/downloads.
-* **Filtering:** Include or exclude files based on patterns during uploads/downloads.
-* **Cross-Platform:** Runs wherever the Dart SDK is available.
+  * **Authentication:** Login/logout securely, with **automatic session refresh**.
+  * **File Management:** List, upload, download, move, rename files and folders.
+  * **Path-Based Operations:** Interact with your drive using familiar file paths (e.g., `/Documents/report.pdf`).
+  * **Search & Discovery:**
+      * Server-side fuzzy search (`search`).
+      * Recursive, pattern-based file search (`find`).
+      * Visual directory `tree` command.
+  * **Performance:** **Local caching** for folder contents dramatically speeds up navigation and repeated commands.
+  * **Resilience:** **Resumable uploads/downloads** (via batch state) and automatic retries on 5xx server errors.
+  * **Trash Management:** List trash contents, move items to trash, delete permanently, and restore items.
+  * **Recursive Operations:** Upload and download entire directory structures.
+  * **Conflict Handling:** Choose whether to overwrite or skip existing files.
+  * **Timestamp Preservation:** Option to preserve original file modification times during uploads/downloads.
+  * **Filtering:** Include or exclude files based on patterns during uploads/downloads.
+  * **Cross-Platform:** Runs wherever the Dart SDK is available.
 
 ## 🛠️ Installation
 
@@ -38,14 +43,15 @@ All commands are run using the Dart executable:
 
 ```bash
 dart cli.dart <command> [arguments...] [options...]
-````
+```
 
 Example:
 
 ```bash
-dart cli.dart list --uuids
-dart cli.dart upload file.txt --target /Documents
+dart cli.dart list /Documents --uuids
+dart cli.dart upload file.txt --target /Documents -p
 dart cli.dart download-path /Documents/file.txt
+dart cli.dart find / "*.pdf"
 ```
 
 ## 📚 Commands
@@ -59,6 +65,7 @@ Here's a list of available commands:
   * **`login`**
 
       * Logs you into your Internxt account. Prompts for email, password, and 2FA code if needed.
+      * Sessions are automatically refreshed, so you only need to log in again if your session fully expires.
       * Usage: `dart cli.dart login`
 
   * **`logout`**
@@ -75,18 +82,18 @@ Here's a list of available commands:
 
 ### File & Folder Operations
 
-  * **`list [folder-uuid]`**
+  * **`list [path]`**
 
-      * Lists the files and folders within a specific folder UUID. Defaults to the root folder if no UUID is provided.
+      * Lists the files and folders at a specific path. Defaults to the root folder (`/`) if no path is provided.
       * Options:
           * `--uuids`: Show full UUIDs instead of truncated ones.
       * Usage:
           * `dart cli.dart list`
-          * `dart cli.dart list <folder-uuid-from-previous-list> --uuids`
+          * `dart cli.dart list /Documents --uuids`
 
   * **`upload <sources...>`**
 
-      * Uploads local files or directories to your Internxt Drive. Supports wildcards via shell expansion (e.g., `images/*.jpg`).
+      * Uploads local files or directories to your Internxt Drive. Supports wildcards via shell expansion (e.g., `images/*.jpg`). Uploads are **resumable**.
       * Options:
           * `-t, --target <path>`: Remote destination path (default: `/`).
           * `-r, --recursive`: Required to upload directories.
@@ -95,7 +102,7 @@ Here's a list of available commands:
           * `--include <pattern>`: Only include files matching the glob pattern. Can be used multiple times.
           * `--exclude <pattern>`: Exclude files matching the glob pattern. Can be used multiple times.
       * Usage:
-          * `dart cli.dart upload file.txt -t /Documents`
+          * `dart cli.dart upload file.txt -t /Documents -p`
           * `dart cli.dart upload "assets/*.png" -t /Images --on-conflict overwrite`
           * `dart cli.dart upload my_folder/ -t /Backup -r -p --exclude "*.tmp"`
 
@@ -106,7 +113,7 @@ Here's a list of available commands:
 
   * **`download-path <path>`**
 
-      * Downloads a file or folder using its remote path (e.g., `/Documents/report.pdf`).
+      * Downloads a file or folder using its remote path (e.g., `/Documents/report.pdf`). Downloads are **resumable**.
       * Options:
           * `-t, --target <local_path>`: Local destination path/directory. If omitted, downloads to the current directory.
           * `-r, --recursive`: Required to download folders.
@@ -115,7 +122,7 @@ Here's a list of available commands:
           * `--include <pattern>`: Only include files matching the glob pattern (when downloading recursively).
           * `--exclude <pattern>`: Exclude files matching the glob pattern (when downloading recursively).
       * Usage:
-          * `dart cli.dart download-path /Documents/file.txt`
+          * `dart cli.dart download-path /Documents/file.txt -p`
           * `dart cli.dart download-path /Backup -r -t ./local_backup --include "*.jpg"`
 
   * **`mkdir-path <path>`**
@@ -138,6 +145,37 @@ Here's a list of available commands:
       * Usage:
           * `dart cli.dart rename-path /Documents/report.pdf final_report.pdf`
           * `dart cli.dart rename-path /Archive OldArchive`
+
+-----
+
+### Search & Discovery
+
+  * **`search <query>`**
+
+      * Performs a fast, server-side search for files and folders matching a query.
+      * Options:
+          * `--uuids`: Show full metadata and paths (slower).
+      * Usage:
+          * `dart cli.dart search "report"`
+          * `dart cli.dart search "invoice.pdf" --uuids`
+
+  * **`find <path> <pattern>`**
+
+      * Recursively finds files matching a glob pattern (e.g., `*.pdf`). The pattern is case-insensitive.
+      * Options:
+          * `--maxdepth <l>`: Limit the search to `l` levels deep. `-1` for infinite (default).
+      * Usage:
+          * `dart cli.dart find / "*.jpg"`
+          * `dart cli.dart find /Documents "*.docx" --maxdepth 2`
+
+  * **`tree [path]`**
+
+      * Displays the folder structure as a visual tree. Defaults to root (`/`).
+      * Options:
+          * `-l, --depth <l>`: Maximum depth to display (default: 3).
+      * Usage:
+          * `dart cli.dart tree`
+          * `dart cli.dart tree /Backup -l 4`
 
 -----
 
@@ -208,4 +246,4 @@ Here's a list of available commands:
 
 ## 📄 License
 
-This project is licensed under the **GNU Affero General Public License v3.0**. See the [LICENSE.txt](LICENSE.txt) file for details.
+This project is licensed under the **GNU Affero General Public License v3.0**. See the [LICENSE.txt](https://www.google.com/search?q=LICENSE.txt) file for details.
