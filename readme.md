@@ -2,7 +2,7 @@
 
 [](https://www.gnu.org/licenses/agpl-3.0)
 
-A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart and designed to be compatible with the functionality of an internal Python blueprint. This is nothing official from Internxt and still a work in progress, so use at your own risk, and do not expect everything to work perfectly.
+A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart. This is nothing official from Internxt and still a work in progress, so use at your own risk, and do not expect everything to work perfectly.
 
 This tool allows you to manage your Internxt Drive files and folders directly from your terminal, including uploads, downloads, listing, moving, renaming, and trash operations.
 
