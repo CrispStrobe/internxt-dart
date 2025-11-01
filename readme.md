@@ -25,6 +25,16 @@ This tool allows you to manage your Internxt Drive files and folders directly fr
   * **Filtering:** Include or exclude files based on patterns during uploads/downloads.
   * **Cross-Platform:** Runs wherever the Dart SDK is available.
 
+### 🔄 Resumable Uploads & Downloads
+
+This CLI is built to be resilient against network failures. When you start a large upload or download (`upload` or `download-path`), the tool first generates a "batch plan" and saves it to a state file in your config directory (e.g., `~/.internxt-cli/batch_states/`).
+
+* **What it does:** It processes one file at a time and updates the state file as each file completes.
+* **How it helps:** If your connection drops or you cancel the operation (Ctrl+C), you can simply **run the exact same command again**. The CLI will find the saved state file, see which files were already completed, and pick up right where it left off.
+* **Cleanup:** The state file is automatically deleted *only* after the entire batch has completed successfully. If an error occurs, the file is kept so you can retry.
+
+This should help that you do not e.g. have to re-upload or re-download an entire 10GB folder just because one file failed near the end.
+
 ## 🛠️ Installation
 
 1.  **Install Dart SDK:** Follow the instructions on the [official Dart website](https://dart.dev/get-dart).
