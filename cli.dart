@@ -1,7 +1,8 @@
 #!/usr/bin/env dart
 
-import 'dart:convert'; // Required for latin1 and json
-import 'dart:io';
+import 'dart:convert'; // Required for latin1, json, utf8, base64
+import 'dart:async'; // For TimeoutException
+import 'dart:io' as io; // Use a prefix for dart:io
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:args/args.dart';
@@ -13,6 +14,13 @@ import 'package:hex/hex.dart';
 import 'package:path/path.dart' as p;
 import 'package:glob/glob.dart';
 import 'package:glob/list_local_fs.dart';
+
+// WebDAV Imports
+import 'package:shelf/shelf_io.dart' as shelf_io;
+import 'package:shelf_dav/shelf_dav.dart';
+import 'package:file/file.dart' hide File, Directory; // Use interface
+import 'package:file/local.dart'; // Use concrete for temp dir
+import 'webdav_filesystem.dart'; // Our custom implementation
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -55,13 +63,14 @@ class InternxtCLI {
       ..addMultiOption('exclude', help: 'Exclude files matching pattern')
       ..addFlag('force',
           abbr: 'f', help: 'Skip confirmation for destructive actions')
-      // --depth for 'tree'
       ..addOption('depth',
           abbr: 'l', help: 'Maximum depth to show for tree', defaultsTo: '3')
-      // --maxdepth for 'find'
       ..addOption('maxdepth',
-          help: 'Limit find to N levels deep (-1 for infinite)', defaultsTo: '-1');
-
+          help: 'Limit find to N levels deep (-1 for infinite)', defaultsTo: '-1')
+      ..addFlag('background',
+          abbr: 'b', help: 'Run WebDAV server in background')
+      ..addOption('port', 
+          help: 'Port for WebDAV server (default: 8080)', defaultsTo: '8080');
 
     final argResults = parser.parse(arguments);
     debugMode = argResults['debug'];
@@ -132,7 +141,6 @@ class InternxtCLI {
         case 'rename-path':
           await handleRenamePath(argResults);
           break;
-        // --- NEW COMMANDS ---
         case 'search':
           await handleSearch(argResults);
           break;
@@ -142,24 +150,41 @@ class InternxtCLI {
         case 'tree':
           await handleTree(argResults);
           break;
-        // --- END NEW COMMANDS ---
+        case 'webdav-start':
+          await handleWebdavStart(argResults);
+          break;
+        case 'webdav-stop':
+          await handleWebdavStop(argResults);
+          break;
+        case 'webdav-status':
+          await handleWebdavStatus(argResults);
+          break;
+        case 'webdav-mount':
+          await handleWebdavMount(argResults);
+          break;
+        case 'webdav-test':
+          await handleWebdavTest(argResults);
+          break;
+        case 'webdav-config':
+          await handleWebdavConfig(argResults);
+          break;
         case 'help':
         case '--help':
         case '-h':
           printHelp();
           break;
         default:
-          stderr.writeln('❌ Unknown command: $command');
-          stderr.writeln('💡 Use "dart cli.dart help" for available commands');
-          exit(1);
+          io.stderr.writeln('❌ Unknown command: $command');
+          io.stderr.writeln('💡 Use "dart cli.dart help" for available commands');
+          io.exit(1);
       }
     } catch (e, stackTrace) {
-      stderr.writeln('❌ Error: $e');
+      io.stderr.writeln('❌ Error: $e');
       if (debugMode) {
-        stderr.writeln('\nStack trace:');
-        stderr.writeln(stackTrace);
+        io.stderr.writeln('\nStack trace:');
+        io.stderr.writeln(stackTrace);
       }
-      exit(1);
+      io.exit(1);
     }
   }
 
@@ -193,7 +218,15 @@ class InternxtCLI {
     print('  find <path> <pattern> Recursively find files (e.g., "*.pdf")');
     print('  tree [path]        Show folder structure as a tree');
 
-    print('  config             Show configuration');
+    print('\n  WebDAV Server:');
+    print('  webdav-start       Start WebDAV server (mount as local drive)');
+    print('  webdav-stop        Stop background WebDAV server');
+    print('  webdav-status      Check WebDAV server status');
+    print('  webdav-mount       Show mount instructions for your OS');
+    print('  webdav-test        Test connection to running WebDAV server');
+    print('  webdav-config      Show WebDAV configuration');
+
+    print('\n  config             Show configuration');
     print('  test               Run crypto tests');
     print('  help               Show this help message');
     print('');
@@ -206,6 +239,10 @@ class InternxtCLI {
         '  -l, --depth <l>    Maximum depth for "tree" command (default: 3)');
     print(
         '  --maxdepth <l>   Limit "find" to N levels deep (-1 for infinite)');
+
+    print('  --port <port>      WebDAV server port (default: 8080)');
+    print('  -b, --background   Run WebDAV server in background');
+
     print('');
     print('Upload/Download Options:');
     print('  -t, --target <path>  Remote destination path (default: /)');
@@ -232,6 +269,243 @@ class InternxtCLI {
     printWelcome();
   }
 
+  Future<void> handleWebdavStart(ArgResults argResults) async {
+    final bool background = argResults['background'];
+    final int port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    
+    final existingPid = await config.readWebdavPid();
+    if (existingPid != null) {
+      io.stderr.writeln('❌ WebDAV server may already be running (PID: $existingPid).');
+      io.stderr.writeln('💡 Run "dart cli.dart webdav-stop" to clear it.');
+      io.exit(1);
+    }
+    
+    if (background) {
+      print('🚀 Starting WebDAV server in background...');
+      try {
+        final process = await io.Process.start(
+          io.Platform.executable, 
+          [
+            io.Platform.script.toFilePath(), 
+            'webdav-start',
+            '--port=$port',
+          ],
+          mode: io.ProcessStartMode.detached, 
+          runInShell: true,
+        );
+        
+        await config.saveWebdavPid(process.pid);
+        
+        print('✅ WebDAV server started in background (PID: ${process.pid})');
+        print('   URL: http://localhost:$port/');
+        print('   User: internxt');
+        print('   Pass: internxt-webdav');
+        print('\n💡 Use "dart cli.dart webdav-status" to check');
+        print('💡 Use "dart cli.dart webdav-stop" to stop');
+        io.exit(0); 
+        
+      } catch (e) {
+        io.stderr.writeln('❌ Failed to start background process: $e');
+        await config.clearWebdavPid();
+        io.exit(1);
+      }
+    }
+    
+    print('🚀 Starting WebDAV server in foreground...');
+    print('   (Press Ctrl+C to stop)');
+    
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
+      }
+      // FIX: creds is Map<String, String>? but setAuth expects Map<String, String?>
+      // We can safely cast here because creds is non-null
+      client.setAuth(creds as Map<String, String?>);
+
+      final fs = InternxtFileSystem(client: client);
+
+      final davConfig = DAVConfig(
+        root: fs.directory('/'),
+        prefix: '/',
+        authenticationProvider: BasicAuthenticationProvider.plaintext(
+          realm: 'Internxt WebDAV',
+          users: {'internxt': 'internxt-webdav'},
+        ),
+        authorizationProvider: RoleBasedAuthorizationProvider(
+          readWriteUsers: {'internxt'},
+          allowAnonymousRead: false,
+        ),
+        enableLocking: true,
+      );
+      
+      final dav = ShelfDAV.withConfig(davConfig);
+      final server = await shelf_io.serve(
+        dav.handler,
+        'localhost', 
+        port,
+      );
+
+      print('✅ WebDAV server running!');
+      print('   URL: http://${server.address.host}:${server.port}/');
+      print('   User: internxt');
+      print('   Pass: internxt-webdav');
+      
+      io.ProcessSignal.sigint.watch().listen((_) async { 
+        print('\n🛑 Stopping WebDAV server...');
+        await server.close(force: true);
+        await config.clearWebdavPid();
+        io.exit(0);
+      });
+      
+    } catch (e) {
+      if (e.toString().contains('Address already in use')) {
+        io.stderr.writeln('❌ Error: Port $port is already in use.');
+      } else {
+        io.stderr.writeln('❌ Failed to start WebDAV server: $e');
+      }
+      await config.clearWebdavPid(); 
+      io.exit(1);
+    }
+  }
+
+  Future<void> handleWebdavStop(ArgResults argResults) async {
+    print('🛑 Stopping WebDAV server...');
+    final pid = await config.readWebdavPid();
+    
+    if (pid == null) {
+      print('❌ Server does not appear to be running (no PID file).');
+      await config.clearWebdavPid();
+      io.exit(1);
+    }
+    
+    try {
+      // FIX: pid is int?, killPid needs int
+      final success = io.Process.killPid(pid); 
+      if (success) {
+        print('✅ Server process (PID: $pid) terminated.');
+      } else {
+        print('⚠️  Could not terminate process (PID: $pid). It may already be stopped.');
+      }
+    } catch (e) {
+      print('⚠️  Error terminating process: $e. It may already be stopped.');
+    }
+    
+    await config.clearWebdavPid();
+  }
+
+  Future<void> handleWebdavStatus(ArgResults argResults) async {
+    final pid = await config.readWebdavPid();
+    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    
+    if (pid == null) {
+      print('❌ WebDAV server is not running (no PID file).');
+      print('💡 Start with: dart cli.dart webdav-start');
+      io.exit(1);
+    }
+    
+    print('✅ WebDAV server appears to be running in background.');
+    print('   PID: $pid');
+    print('   URL: http://localhost:$port/');
+    print('   User: internxt');
+    print('   Pass: internxt-webdav');
+    print('\n💡 Use "dart cli.dart webdav-test" to verify connection.');
+    print('💡 Use "dart cli.dart webdav-stop" to stop it.');
+  }
+
+  Future<void> handleWebdavMount(ArgResults argResults) async {
+    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final url = 'http://localhost:$port/';
+    
+    print('🗂️  Mount Instructions for Internxt Drive');
+    print('=' * 50);
+    print('Server URL: $url');
+    print('Username:   internxt');
+    print('Password:   internxt-webdav');
+    
+    print('\n--- macOS ---');
+    print('1. Open Finder');
+    print('2. Press Cmd+K (Go > Connect to Server)');
+    print('3. Enter: $url');
+    print('4. Connect, then enter username and password.');
+    
+    print('\n--- Windows ---');
+    print('1. Open File Explorer');
+    print('2. Right-click "This PC" > "Map network drive..."');
+    print('3. Enter: $url');
+    print('4. Check "Connect using different credentials"');
+    print('5. Connect, then enter username and password.');
+
+    print('\n--- Linux (davfs2) ---');
+    print('sudo apt install davfs2');
+    print('sudo mkdir -p /mnt/internxt');
+    print('sudo mount -t davfs $url /mnt/internxt');
+    print('(You will be prompted for username and password)');
+  }
+
+  Future<void> handleWebdavTest(ArgResults argResults) async {
+    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final url = Uri.parse('http://localhost:$port/');
+    
+    print('🧪 Testing WebDAV server connection at $url ...');
+    
+    final propfindBody = '''
+    <?xml version="1.0" encoding="utf-8"?>
+    <D:propfind xmlns:D="DAV:">
+        <D:prop>
+            <D:resourcetype/>
+        </D:prop>
+    </D:propfind>
+    ''';
+    
+    final basicAuth =
+        'Basic ${base64Encode(utf8.encode('internxt:internxt-webdav'))}';
+    
+    try {
+      final request = http.Request('PROPFIND', url)
+        ..headers['Authorization'] = basicAuth
+        ..headers['Depth'] = '0'
+        ..headers['Content-Type'] = 'application/xml'
+        ..body = propfindBody;
+        
+      final response = await http.Client().send(request).timeout(Duration(seconds: 10));
+
+      final responseBody = await response.stream.bytesToString();
+      
+      if (response.statusCode == 207 && responseBody.contains('<?xml')) {
+        print('✅ Connection successful! (Received 207 Multi-Status)');
+        print('   Server is running and authentication is working.');
+      } else {
+        print('❌ Connection failed.');
+        print('   Server returned status: ${response.statusCode}');
+        print('   Response: ${responseBody.substring(0, min(100, responseBody.length))}...');
+      }
+      
+    } catch (e) {
+      if (e is io.SocketException) { // <-- FIX: Use io.SocketException
+        print('❌ Connection failed: Server is not running or unreachable at $url');
+      } else if (e is TimeoutException) { // <-- FIX: Use imported TimeoutException
+         print('❌ Connection timed out. Is the server running?');
+      } else {
+        print('❌ Connection test failed: $e');
+      }
+    }
+  }
+
+  Future<void> handleWebdavConfig(ArgResults argResults) async {
+    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    
+    print('⚙️  WebDAV Server Configuration');
+    print('=' * 40);
+    print('   Host: localhost');
+    print('   Port: $port');
+    print('   User: internxt');
+    print('   Pass: internxt-webdav');
+    print('   Protocol: http (SSL not implemented in this version)');
+    print('   Background PID File: ${config.webdavPidFile}');
+  }
+
   Future<void> handleLogin(List<String> args) async {
     if (debugMode) {
       print('🔍 Debug mode enabled\n');
@@ -242,49 +516,42 @@ class InternxtCLI {
       print('');
     }
 
-    // Prompt for email
-    stdout.write('What is your email? ');
-    final email = stdin.readLineSync()?.trim() ?? '';
+    io.stdout.write('What is your email? ');
+    final email = io.stdin.readLineSync()?.trim() ?? '';
     if (email.isEmpty) {
-      stderr.writeln('❌ Email is required');
-      exit(1);
+      io.stderr.writeln('❌ Email is required');
+      io.exit(1);
     }
 
-    // Prompt for password
-    stdout.write('What is your password? ');
-    stdin.echoMode = false;
-    final password = stdin.readLineSync()?.trim() ?? '';
-    stdin.echoMode = true;
+    io.stdout.write('What is your password? ');
+    io.stdin.echoMode = false;
+    final password = io.stdin.readLineSync()?.trim() ?? '';
+    io.stdin.echoMode = true;
     print('');
 
     if (password.isEmpty) {
-      stderr.writeln('❌ Password is required');
-      exit(1);
+      io.stderr.writeln('❌ Password is required');
+      io.exit(1);
     }
 
-    // Check 2FA requirements
     print('🔍 Checking 2FA requirements...');
-    // This call is now refactored
     final needs2fa = await client.is2faNeeded(email);
 
     String? tfaCode;
     if (needs2fa) {
       print('🔐 Two-factor authentication is enabled');
-      stdout.write('Enter your 2FA code (6 digits): ');
-      tfaCode = stdin.readLineSync()?.trim();
+      io.stdout.write('Enter your 2FA code (6 digits): ');
+      tfaCode = io.stdin.readLineSync()?.trim();
       if (tfaCode == null || tfaCode.isEmpty) {
-        stderr.writeln('❌ 2FA code is required');
-        exit(1);
+        io.stderr.writeln('❌ 2FA code is required');
+        io.exit(1);
       }
     }
 
-    // Perform login
     print('🔐 Logging in...');
     try {
-      // This call is now refactored
       final credentials = await client.login(email, password, tfaCode: tfaCode);
 
-      // Save credentials
       await config.saveCredentials(credentials);
 
       print('✅ Login successful!');
@@ -292,8 +559,8 @@ class InternxtCLI {
       print('🆔 User ID: ${credentials['userId']}');
       print('📁 Root Folder ID: ${credentials['rootFolderId']}');
     } catch (e) {
-      stderr.writeln('❌ Login failed: $e');
-      exit(1);
+      io.stderr.writeln('❌ Login failed: $e');
+      io.exit(1);
     }
   }
 
@@ -301,8 +568,8 @@ class InternxtCLI {
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
 
       print('╔════════════════════════════════════════╗');
@@ -312,8 +579,8 @@ class InternxtCLI {
       print('🆔 User ID: ${creds['userId']}');
       print('📁 Root Folder: ${creds['rootFolderId']}');
     } catch (e) {
-      stderr.writeln('❌ Error: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error: $e');
+      io.exit(1);
     }
   }
 
@@ -322,39 +589,37 @@ class InternxtCLI {
       await config.clearCredentials();
       print('✅ Logged out successfully');
     } catch (e) {
-      stderr.writeln('❌ Error: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleMkdirPath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart mkdir-path <path>');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart mkdir-path <path>');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final path = args[0];
       print("📁 Creating folder(s): $path");
 
-      // This call is now refactored to use timestamps (which are null here)
-      // and cache invalidation
       final createdFolder = await client.createFolderRecursive(path);
 
       print("✅ Folder created successfully!");
       print("   Name: ${createdFolder['plainName']}");
       print("   UUID: ${createdFolder['uuid']}");
     } catch (e) {
-      stderr.writeln('❌ Error creating folder: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error creating folder: $e');
+      io.exit(1);
     }
   }
 
@@ -362,14 +627,13 @@ class InternxtCLI {
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       print('🗑️  Listing trash contents...\n');
 
-      // This call is now refactored for token refresh
       final trashItems = await client
           .getTrashContent(); 
 
@@ -378,7 +642,6 @@ class InternxtCLI {
         return;
       }
 
-      // ... (rest of the method logic is unchanged) ...
       final bool showFullUUIDs = argResults['uuids'];
       if (showFullUUIDs) {
         print(
@@ -432,26 +695,26 @@ class InternxtCLI {
       print(
           '\n💡 Use "restore-path <name> -t /dest" or "restore-uuid <uuid> -t /dest" to restore.');
     } catch (e) {
-      stderr.writeln('❌ Error listing trash: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error listing trash: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleRestoreUuid(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln(
+      io.stderr.writeln(
           '❌ Usage: dart cli.dart restore-uuid <item-uuid> [-t /destination/path]');
-      exit(1);
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final itemUuid = args[0];
       final destinationPath =
@@ -459,7 +722,6 @@ class InternxtCLI {
       final force = argResults['force'] as bool;
 
       print("🔍 Resolving destination path: $destinationPath");
-      // This call is now refactored (token refresh, cache)
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
         throw Exception("Destination path '$destinationPath' is not a folder.");
@@ -470,7 +732,7 @@ class InternxtCLI {
           '❓ Restore item "$itemUuid" to "$destinationPath"? (Type unknown, will try file then folder)';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
-        exit(0);
+        io.exit(0);
       }
 
       print("🚀 Restoring item (trying file first)...");
@@ -492,34 +754,33 @@ class InternxtCLI {
         }
       }
     } catch (e) {
-      stderr.writeln('❌ Error restoring item: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error restoring item: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleRestorePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln(
+      io.stderr.writeln(
           '❌ Usage: dart cli.dart restore-path <item-name-in-trash> [-t /destination/path]');
-      exit(1);
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final itemNameInTrash = args[0];
       final destinationPath =
-          argResults['target'] as String? ?? '/'; 
+          argResults['target'] as String? ?? '/';
       final force = argResults['force'] as bool; 
 
       print("🔍 Resolving destination path: $destinationPath");
-      // Refactored call
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
         throw Exception("Destination path '$destinationPath' is not a folder.");
@@ -527,11 +788,9 @@ class InternxtCLI {
       final destinationFolderUuid = destFolderInfo['uuid'] as String;
 
       print("🔍 Finding item(s) named '$itemNameInTrash' in trash...");
-      // Refactored call
       final trashItems = await client.getTrashContent(limit: 1000);
 
       final matchingItems = trashItems.where((item) {
-        // ... (matching logic unchanged) ...
         final plainName = item['name'] ?? 'Unknown';
         final fileType = item['fileType'] ?? '';
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
@@ -543,15 +802,15 @@ class InternxtCLI {
       if (matchingItems.isEmpty) {
         throw Exception("Item named '$itemNameInTrash' not found in trash.");
       }
+
       if (matchingItems.length > 1) {
-        // ... (error logic unchanged) ...
-        stderr.writeln(
+        io.stderr.writeln(
             "❌ Error: Multiple items named '$itemNameInTrash' found in trash.");
-        stderr.writeln("   Please use 'restore-uuid' with the specific UUID:");
+        io.stderr.writeln("   Please use 'restore-uuid' with the specific UUID:");
         for (var item in matchingItems) {
-          stderr.writeln("   - ${item['type']} ${item['uuid']}");
+          io.stderr.writeln("   - ${item['type']} ${item['uuid']}");
         }
-        exit(1);
+        io.exit(1);
       }
 
       final itemToRestore = matchingItems.first;
@@ -564,11 +823,10 @@ class InternxtCLI {
           '❓ Restore ${itemType} "$itemNameInTrash" ($itemUuid) to "$destinationPath"?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
-        exit(0);
+        io.exit(0);
       }
 
       print("🚀 Restoring item...");
-      // Refactored calls
       if (itemType == 'file') {
         await client.moveFile(itemUuid, destinationFolderUuid);
       } else if (itemType == 'folder') {
@@ -579,41 +837,39 @@ class InternxtCLI {
 
       print("✅ Item restored successfully to: $destinationPath");
     } catch (e) {
-      stderr.writeln('❌ Error restoring item: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error restoring item: $e');
+      io.exit(1);
     }
   }
 
 Future<void> handleMovePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.length < 2) {
-      stderr.writeln(
+      io.stderr.writeln(
           '❌ Usage: dart cli.dart move-path <source-path> <destination-path>');
-      exit(1);
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final sourcePath = args[0];
       final destinationPath = args[1];
       final force = argResults['force'] as bool; 
 
       print("🔍 Resolving source path: $sourcePath");
-      // Refactored call
       final sourceInfo = await client.resolvePath(sourcePath);
       final sourceUuid = sourceInfo['uuid'] as String;
       final sourceType = sourceInfo['type'] as String;
       final sourceName =
-          sourceInfo['metadata']?['name'] ?? sourcePath; 
+          (sourceInfo['metadata'] as Map)['name'] ?? sourcePath; 
 
       print("🔍 Resolving destination path: $destinationPath");
-      // Refactored call
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
         throw Exception("Destination path '$destinationPath' is not a folder.");
@@ -624,11 +880,10 @@ Future<void> handleMovePath(ArgResults argResults) async {
           '❓ Move ${sourceType} "$sourceName" to "$destinationPath"?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
-        exit(0);
+        io.exit(0);
       }
 
       print("🚀 Moving item...");
-      // Refactored calls
       if (sourceType == 'file') {
         await client.moveFile(sourceUuid, destinationFolderUuid);
       } else if (sourceType == 'folder') {
@@ -639,45 +894,43 @@ Future<void> handleMovePath(ArgResults argResults) async {
 
       print("✅ Item moved successfully to: $destinationPath");
     } catch (e) {
-      stderr.writeln('❌ Error moving item: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error moving item: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleRenamePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.length < 2) {
-      stderr.writeln('❌ Usage: dart cli.dart rename-path <path> <new-name>');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart rename-path <path> <new-name>');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final path = args[0];
       final newName = args[1];
       final force = argResults['force'] as bool;
 
       print("🔍 Resolving path: $path");
-      // Refactored call
       final itemInfo = await client.resolvePath(path);
       final itemUuid = itemInfo['uuid'] as String;
       final itemType = itemInfo['type'] as String;
-      final oldName = itemInfo['metadata']?['name'] ?? path;
+      final oldName = (itemInfo['metadata'] as Map)['name'] ?? path;
 
       final prompt = '❓ Rename ${itemType} "$oldName" to "$newName"?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
-        exit(0);
+        io.exit(0);
       }
 
       print("🚀 Renaming item...");
-      // Refactored calls
       if (itemType == 'file') {
         final String newPlainName;
         final String? newFileType;
@@ -698,30 +951,29 @@ Future<void> handleMovePath(ArgResults argResults) async {
 
       print("✅ Item renamed successfully to: $newName");
     } catch (e) {
-      stderr.writeln('❌ Error renaming item: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error renaming item: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleResolve(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart resolve <path>');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart resolve <path>');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final path = args[0];
       print("🔍 Resolving path: $path");
 
-      // Refactored call
       final resolved = await client.resolvePath(path);
 
       print("\n✅ Path resolved successfully!");
@@ -734,8 +986,8 @@ Future<void> handleMovePath(ArgResults argResults) async {
       });
       print("=" * 40);
     } catch (e) {
-      stderr.writeln('❌ Error resolving path: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error resolving path: $e');
+      io.exit(1);
     }
   }
 
@@ -744,69 +996,66 @@ Future<void> handleMovePath(ArgResults argResults) async {
     if (force) {
       return true;
     }
-    stdout.write('$prompt [y/N]: ');
-    final response = stdin.readLineSync()?.toLowerCase().trim();
+    io.stdout.write('$prompt [y/N]: ');
+    final response = io.stdin.readLineSync()?.toLowerCase().trim();
     return response == 'y' || response == 'yes';
   }
 
   Future<void> handleTrashPath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart trash-path <path> [--force]');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart trash-path <path> [--force]');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final path = args[0];
       final force = argResults['force'] as bool;
 
       print("🔍 Resolving path: $path");
-      // Refactored call
       final resolved = await client.resolvePath(path);
 
       final prompt = '❓ Move ${resolved['type']} "$path" to trash?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
-        exit(0);
+        io.exit(0);
       }
 
-      // Refactored call
       await client.trashItems(resolved['uuid'], resolved['type']);
 
       print("✅ Item moved to trash: $path");
     } catch (e) {
-      stderr.writeln('❌ Error trashing item: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error trashing item: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleDeletePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart delete-path <path> [--force]');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart delete-path <path> [--force]');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final path = args[0];
       final force = argResults['force'] as bool;
 
       print("🔍 Resolving path: $path");
-      // Refactored call
       final resolved = await client.resolvePath(path);
 
       print(
@@ -814,16 +1063,15 @@ Future<void> handleMovePath(ArgResults argResults) async {
       final prompt = '❓ Permanently delete ${resolved['type']} "$path"?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
-        exit(0);
+        io.exit(0);
       }
 
-      // Refactored call
       await client.deletePermanently(resolved['uuid'], resolved['type']);
 
       print("✅ Item permanently deleted: $path");
     } catch (e) {
-      stderr.writeln('❌ Error deleting item: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error deleting item: $e');
+      io.exit(1);
     }
   }
 
@@ -831,32 +1079,30 @@ Future<void> handleMovePath(ArgResults argResults) async {
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final commandRestArgs = argResults.rest.sublist(1);
       final pathToList = commandRestArgs.isNotEmpty ? commandRestArgs[0] : '/';
       final bool showFullUUIDs = argResults['uuids'];
 
       print("🔍 Resolving path: $pathToList");
-      // Refactored call (now uses cache)
       final resolvedInfo = await client.resolvePath(pathToList);
 
       if (resolvedInfo['type'] != 'folder') {
-        stderr.writeln("❌ Error: Path '$pathToList' is a file, not a folder.");
-        exit(1);
+        io.stderr.writeln("❌ Error: Path '$pathToList' is a file, not a folder.");
+        io.exit(1);
       }
       final folderId = resolvedInfo['uuid'] as String;
       final resolvedPathDisplay = resolvedInfo['path'] ?? pathToList;
 
       print('📂 Listing folder: $resolvedPathDisplay (UUID: $folderId)\n');
 
-      // Refactored calls (now use cache)
       final folders = await client.listFolders(folderId);
       final files = await client.listFolderFiles(folderId);
-
+      
       final items = [...folders, ...files];
 
        if (items.isEmpty) {
@@ -864,7 +1110,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
         return;
       }
       
-      // ... (rest of the printing logic is unchanged) ...
       if (showFullUUIDs) {
         print('╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
         print('║  Type    Name                                    Size            UUID                                 ║');
@@ -900,27 +1145,28 @@ Future<void> handleMovePath(ArgResults argResults) async {
 
     } catch (e) {
       if (e.toString().contains("Path not found")) {
-         stderr.writeln('❌ Error: Path not found.');
+         io.stderr.writeln('❌ Error: Path not found.');
       } else {
-        stderr.writeln('❌ Error listing folder: $e');
+        io.stderr.writeln('❌ Error listing folder: $e');
       }
-      exit(1);
+      io.exit(1);
     }
   }
 
-  // NOTE: This method 'handleListUUID' seems redundant given 'handleList'
+  // NOTE: This method 'handleListUUID' will probably be soon redundant given 'handleList'
   // now supports paths. I'm keeping it for compatibility, but note
   // that 'handleList' is the primary method.
   Future<void> handleListUUID(ArgResults argResults) async {
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final commandRestArgs = argResults.rest.sublist(1);
+
       final folderId = commandRestArgs.isNotEmpty
           ? commandRestArgs[0]
           : creds['rootFolderId']!;
@@ -939,7 +1185,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
         return;
       }
 
-      // ... (rest of the printing logic is unchanged) ...
       if (showFullUUIDs) {
         print(
             '╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
@@ -984,25 +1229,25 @@ Future<void> handleMovePath(ArgResults argResults) async {
       print(
           '\n📊 Total: ${items.length} items (${folders.length} folders, ${files.length} files)');
     } catch (e) {
-      stderr.writeln('❌ Error: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleUpload(ArgResults argResults) async {
     final sources = argResults.rest.sublist(1);
     if (sources.isEmpty) {
-      stderr.writeln('❌ No source files or directories specified.');
-      exit(1);
+      io.stderr.writeln('❌ No source files or directories specified.');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>);
 
       final bridgeUser = creds['bridgeUser'];
       final userIdForAuth = creds['userIdForAuth'];
@@ -1014,7 +1259,6 @@ Future<void> handleMovePath(ArgResults argResults) async {
       final targetPath = argResults['target'] as String? ?? '/';
       final recursive = argResults['recursive'] as bool;
       final onConflict = argResults['on-conflict'] as String;
-      // This is now read and passed to the client
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
@@ -1023,13 +1267,12 @@ Future<void> handleMovePath(ArgResults argResults) async {
       print("🔄 Batch ID: $batchId");
       var batchState = await config.loadBatchState(batchId);
 
-      // This call is now refactored (token refresh, timestamps, cache)
       await client.upload(
         sources,
         targetPath,
         recursive: recursive,
         onConflict: onConflict,
-        preserveTimestamps: preserveTimestamps, // <-- Passed
+        preserveTimestamps: preserveTimestamps,
         include: include,
         exclude: exclude,
         bridgeUser: bridgeUser,
@@ -1043,31 +1286,30 @@ Future<void> handleMovePath(ArgResults argResults) async {
       print("✅ Batch completed.");
 
     } catch (e) {
-      stderr.writeln('❌ Upload failed: $e');
-      exit(1);
+      io.stderr.writeln('❌ Upload failed: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleDownloadPath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart download-path <path>');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart download-path <path>');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
-
+      client.setAuth(creds as Map<String, String?>);
+      
       final remotePath = args[0];
       final localDestination = argResults['target'] as String?;
       final recursive = argResults['recursive'] as bool;
       final onConflict = argResults['on-conflict'] as String;
-      // This is now read and passed to the client
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
@@ -1086,13 +1328,12 @@ Future<void> handleMovePath(ArgResults argResults) async {
       
       print('⬇️  Downloading from path: $remotePath');
 
-      // This call is now refactored (token refresh, timestamps, cache)
       await client.downloadPath(
         remotePath,
         localDestination: localDestination,
         recursive: recursive,
         onConflict: onConflict,
-        preserveTimestamps: preserveTimestamps, // <-- Passed
+        preserveTimestamps: preserveTimestamps,
         include: include,
         exclude: exclude,
         bridgeUser: bridgeUser,
@@ -1105,25 +1346,25 @@ Future<void> handleMovePath(ArgResults argResults) async {
       await config.deleteBatchState(batchId);
       print("✅ Batch completed.");
     } catch (e) {
-      stderr.writeln('❌ Download failed: $e');
-      exit(1);
+      io.stderr.writeln('❌ Download failed: $e');
+      io.exit(1);
     }
   }
 
 Future<void> handleDownload(List<String> args) async {
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart download <file-uuid>');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart download <file-uuid>');
+      io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-
-      client.setAuth(creds);
+      
+      client.setAuth(creds as Map<String, String?>);
 
       final fileUuid = args[0];
       final bridgeUser = creds['bridgeUser'];
@@ -1136,20 +1377,19 @@ Future<void> handleDownload(List<String> args) async {
 
       print('⬇️  Downloading file: $fileUuid\n');
 
-      // This call is now refactored for token refresh
       final result =
           await client.downloadFile(fileUuid, bridgeUser, userIdForAuth);
       final data = result['data'] as Uint8List;
       final filename = result['filename'] as String;
 
-      final file = File(filename);
+      final file = io.File(filename); // <-- FIX: Use io.File
       await file.writeAsBytes(data);
 
       print('\n✅ Downloaded successfully: $filename');
       print('📊 Size: ${formatSize(data.length)}');
     } catch (e) {
-      stderr.writeln('❌ Error: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error: $e');
+      io.exit(1);
     }
   }
 
@@ -1240,26 +1480,25 @@ Future<void> handleDownload(List<String> args) async {
   Future<void> handleSearch(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.isEmpty) {
-      stderr.writeln('❌ Usage: dart cli.dart search <query>');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart search <query>');
+      io.exit(1);
     }
     final query = args[0];
-    final detailed = argResults['uuids']; // Re-use --uuids as --detailed
+    final detailed = argResults['uuids']; // We'll re-use --uuids as --detailed
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>); // FIX: Cast to correct type
 
       print("🔍 Searching for '$query' across your drive...");
       if (detailed) {
         print("   (Fetching full paths, this may take a moment...)");
       }
 
-      // This call is new
       final results = await client.search(query, detailed: detailed);
       final folders = results['folders']!;
       final files = results['files']!;
@@ -1293,37 +1532,35 @@ Future<void> handleDownload(List<String> args) async {
       print("\n💡 Use 'download-path' or 'list-path' with the full path.");
 
     } catch (e) {
-      stderr.writeln('❌ Error during search: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error during search: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleFind(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.length < 2) {
-      stderr.writeln('❌ Usage: dart cli.dart find <path> <pattern>');
-      stderr.writeln('   Example: dart cli.dart find / "*.pdf"');
-      exit(1);
+      io.stderr.writeln('❌ Usage: dart cli.dart find <path> <pattern>');
+      io.stderr.writeln('   Example: dart cli.dart find / "*.pdf"');
+      io.exit(1);
     }
     final path = args[0];
     final pattern = args[1];
-    // Read the new --maxdepth option
     final maxDepth = int.tryParse(argResults['maxdepth'] ?? '-1') ?? -1;
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>); // FIX: Cast to correct type
 
       print("🔍 Finding files matching '$pattern' in '$path'...");
       if (maxDepth != -1) {
         print("   (Limiting search to $maxDepth levels deep)");
       }
       
-      // This call is new and passes maxDepth
       final results = await client.findFiles(
         path, 
         pattern,
@@ -1345,42 +1582,39 @@ Future<void> handleDownload(List<String> args) async {
       print("\n💡 Use 'download-path' with the full path.");
 
     } catch (e) {
-      stderr.writeln('❌ Error during find: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error during find: $e');
+      io.exit(1);
     }
   }
 
   Future<void> handleTree(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     final path = args.isNotEmpty ? args[0] : '/';
-    // Read the --depth option
     final maxDepth = int.tryParse(argResults['depth'] ?? '3') ?? 3;
 
     try {
       final creds = await config.readCredentials();
       if (creds == null) {
-        stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        exit(1);
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
       }
-      client.setAuth(creds);
+      client.setAuth(creds as Map<String, String?>); // FIX: Cast to correct type
 
       print("\n🌳 Folder tree starting from: $path");
       print("=" * 60);
-      // Print the root of the tree itself
       print(path == '/' ? '📁 /' : '📁 ${p.basename(path)}');
       
-      // Call the new client method
       await client.printTree(
         path,
-        (line) => print(line), // Pass the standard print function
+        (line) => print(line), 
         maxDepth: maxDepth,
       );
 
       print("\n(Showing maximum $maxDepth levels deep)");
 
     } catch (e) {
-      stderr.writeln('❌ Error generating tree: $e');
-      exit(1);
+      io.stderr.writeln('❌ Error generating tree: $e');
+      io.exit(1);
     }
   }
 }
@@ -1417,7 +1651,7 @@ class InternxtClient {
 
   InternxtClient({required this.config});
 
-  void _log(String message) {
+  void log(String message) {
     if (debugMode) {
       print('🔍 [DEBUG] $message');
     }
@@ -1438,7 +1672,7 @@ class InternxtClient {
   /// Calls the API to get new tokens.
   Future<Map<String, dynamic>> _apiRefreshToken(String currentNewToken) async {
     final url = Uri.parse('$driveApiUrl/users/refresh');
-    _log('GET $url (refreshing token)'); // Note: Python blueprint uses GET
+    log('GET $url (refreshing token)'); // Note: Python blueprint uses GET
 
     try {
       final response = await http.get(
@@ -1450,13 +1684,13 @@ class InternxtClient {
       );
 
       if (response.statusCode != 200) {
-        _log('Token refresh failed: ${response.body}');
+        log('Token refresh failed: ${response.body}');
         throw Exception('Token refresh failed: ${response.statusCode}');
       }
 
       return json.decode(response.body);
     } catch (e) {
-      _log('Token refresh network error: $e');
+      log('Token refresh network error: $e');
       throw Exception('Token refresh failed: $e');
     }
   }
@@ -1464,7 +1698,7 @@ class InternxtClient {
   /// Refreshes and saves auth tokens.
   Future<void> refreshToken() async {
     if (_isRefreshingToken) {
-      _log('Token refresh already in progress, waiting...');
+      log('Token refresh already in progress, waiting...');
       while (_isRefreshingToken) {
         await Future.delayed(Duration(milliseconds: 100));
       }
@@ -1472,7 +1706,7 @@ class InternxtClient {
     }
 
     _isRefreshingToken = true;
-    _log('Attempting to refresh tokens...');
+    log('Attempting to refresh tokens...');
 
     try {
       if (this.newToken == null) {
@@ -1488,7 +1722,7 @@ class InternxtClient {
         throw Exception("Refresh response did not contain new tokens.");
       }
 
-      _log('Tokens refreshed successfully.');
+      log('Tokens refreshed successfully.');
       this.authToken = newToken;
       this.newToken = newNewToken;
 
@@ -1497,10 +1731,10 @@ class InternxtClient {
         creds['token'] = newToken;
         creds['newToken'] = newNewToken;
         await config.saveCredentials(creds);
-        _log('Refreshed tokens saved to disk.');
+        log('Refreshed tokens saved to disk.');
       }
     } catch (e) {
-      _log('Token refresh failed: $e. User must log in again.');
+      log('Token refresh failed: $e. User must log in again.');
       await config.clearCredentials();
       this.authToken = null;
       this.newToken = null;
@@ -1522,7 +1756,7 @@ class InternxtClient {
     String? networkUser,
     String? networkPass,
     bool isAuthRetry = false, // Flag to prevent 401 retry loops
-    int maxRetries = 3,      // Max retries for 5xx/network errors
+    int maxRetries = 3,     // Max retries for 5xx/network errors
     int retryCount = 0,       // Current retry attempt
   }) async {
     final requestHeaders = headers ?? {'Content-Type': 'application/json'};
@@ -1561,10 +1795,10 @@ class InternxtClient {
       }
     } catch (e) {
       // Catch network-level errors (e.g., DNS, connection refused)
-      _log('Network request failed for $url: $e');
+      log('Network request failed for $url: $e');
       if (retryCount < maxRetries) {
         final delay = Duration(seconds: 1 << retryCount); // 1s, 2s, 4s
-        _log('Network Error. Retrying in ${delay.inSeconds}s... (Attempt ${retryCount + 1}/${maxRetries})');
+        log('Network Error. Retrying in ${delay.inSeconds}s... (Attempt ${retryCount + 1}/${maxRetries})');
         await _wait(delay);
         return await _makeRequest(
           method, url,
@@ -1575,7 +1809,7 @@ class InternxtClient {
           retryCount: retryCount + 1, // Increment retry count
         );
       }
-      _log('Network Error. Max retries reached.');
+      log('Network Error. Max retries reached.');
       throw Exception('Network request failed after ${maxRetries + 1} attempts: $e');
     }
 
@@ -1583,7 +1817,7 @@ class InternxtClient {
     if (response.statusCode >= 500 && response.statusCode < 600) {
       if (retryCount < maxRetries) {
         final delay = Duration(seconds: 1 << retryCount); // 1s, 2s, 4s
-        _log('Server Error ${response.statusCode}. Retrying in ${delay.inSeconds}s... (Attempt ${retryCount + 1}/${maxRetries})');
+        log('Server Error ${response.statusCode}. Retrying in ${delay.inSeconds}s... (Attempt ${retryCount + 1}/${maxRetries})');
         await _wait(delay);
         
         return await _makeRequest(
@@ -1595,17 +1829,17 @@ class InternxtClient {
           retryCount: retryCount + 1, // Increment count
         );
       } else {
-        _log('Server Error ${response.statusCode}. Max retries reached.');
+        log('Server Error ${response.statusCode}. Max retries reached.');
         // Fall through to the generic error-throwing logic
       }
     }
 
     // --- Existing: 401 Auth Error Retry Logic ---
     if (response.statusCode == 401 && useAuth && !isAuthRetry) {
-      _log('Token expired (401). Attempting to refresh...');
+      log('Token expired (401). Attempting to refresh...');
       try {
         await refreshToken();
-        _log('Retrying original request with new token...');
+        log('Retrying original request with new token...');
         return await _makeRequest(
           method, url,
           headers: headers, body: body, useAuth: useAuth,
@@ -1615,14 +1849,14 @@ class InternxtClient {
           retryCount: 0, // Reset server retry count for the new token
         );
       } catch (refreshError) {
-        _log('Failed to refresh token: $refreshError');
+        log('Failed to refresh token: $refreshError');
         throw Exception('Session expired (401). Please log in again.');
       }
     }
 
     // --- Existing: Final Error Check ---
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      _log('API Error ${response.statusCode} for $url: ${response.body}');
+      log('API Error ${response.statusCode} for $url: ${response.body}');
       throw Exception('API Error: ${response.statusCode} - ${response.body}');
     }
 
@@ -1635,7 +1869,7 @@ class InternxtClient {
   Future<bool> is2faNeeded(String email) async {
     try {
       final url = Uri.parse('$driveApiUrl/auth/login');
-      _log('Checking 2FA at: POST $url');
+      log('Checking 2FA at: POST $url');
 
       final response = await _makeRequest(
         'POST',
@@ -1644,13 +1878,13 @@ class InternxtClient {
         useAuth: false, // This is a pre-login call
       );
 
-      _log('2FA check response code: ${response.statusCode}');
+      log('2FA check response code: ${response.statusCode}');
       final data = json.decode(response.body);
       final tfa = data['tfa'] == true;
-      _log('2FA enabled: $tfa');
+      log('2FA enabled: $tfa');
       return tfa;
     } catch (e) {
-      _log('2FA check error: $e');
+      log('2FA check error: $e');
       return false; // Return false on any failure
     }
   }
@@ -1658,49 +1892,49 @@ class InternxtClient {
   /// Login to Internxt
   Future<Map<String, String?>> login(String email, String password,
       {String? tfaCode}) async {
-    _log('========================================');
-    _log('Starting login process');
-    _log('Email: $email');
-    _log('Has TFA code: ${tfaCode != null}');
-    _log('========================================');
+    log('========================================');
+    log('Starting login process');
+    log('Email: $email');
+    log('Has TFA code: ${tfaCode != null}');
+    log('========================================');
 
     // Step 1: Get security details
-    _log('STEP 1: Getting security details');
+    log('STEP 1: Getting security details');
     final securityDetails = await _getSecurityDetails(email);
-    _log('Security details received: ${securityDetails.keys}');
+    log('Security details received: ${securityDetails.keys}');
 
     final encryptedSalt = securityDetails['sKey'];
     if (encryptedSalt == null) {
       throw Exception(
           'Did not receive encryptedSalt (sKey) from security details');
     }
-    _log(
+    log(
         'Encrypted salt (sKey) received: ${encryptedSalt.substring(0, 20)}...');
 
     // Step 2: Perform client-side crypto operations
-    _log('');
-    _log('STEP 2: Performing client-side crypto operations');
-    _log('   2.1: Decrypting salt...');
+    log('');
+    log('STEP 2: Performing client-side crypto operations');
+    log('   2.1: Decrypting salt...');
     final salt = _decryptTextWithKey(encryptedSalt, appCryptoSecret);
-    _log('   Salt decrypted: $salt');
+    log('   Salt decrypted: $salt');
 
-    _log('   2.2: Hashing password with PBKDF2-SHA1...');
+    log('   2.2: Hashing password with PBKDF2-SHA1...');
     final hashObj = _passToHash(password, salt);
-    _log('   Password hash: ${hashObj['hash']!.substring(0, 32)}...');
+    log('   Password hash: ${hashObj['hash']!.substring(0, 32)}...');
 
-    _log('   2.3: Encrypting password hash...');
+    log('   2.3: Encrypting password hash...');
     final encryptedPasswordHash =
         _encryptTextWithKey(hashObj['hash']!, appCryptoSecret);
-    _log(
+    log(
         '   Encrypted password hash: ${encryptedPasswordHash.substring(0, 32)}...');
 
-    _log('   2.4: Generating placeholder PGP keys...');
+    log('   2.4: Generating placeholder PGP keys...');
     final keysPayload = _generateKeys(password);
-    _log('   Keys generated successfully');
+    log('   Keys generated successfully');
 
     // Step 3: Construct login payload
-    _log('');
-    _log('STEP 3: Constructing login payload');
+    log('');
+    log('STEP 3: Constructing login payload');
     final loginPayload = {
       'email': email.toLowerCase(),
       'password': encryptedPasswordHash,
@@ -1718,10 +1952,10 @@ class InternxtClient {
     };
 
     // Step 4: Make login request
-    _log('');
-    _log('STEP 4: Making login request');
+    log('');
+    log('STEP 4: Making login request');
     final loginUrl = Uri.parse('$driveApiUrl/auth/login/access');
-    _log('Login URL: POST $loginUrl');
+    log('Login URL: POST $loginUrl');
 
     final response = await _makeRequest(
       'POST',
@@ -1730,29 +1964,29 @@ class InternxtClient {
       useAuth: false, // Pre-login call
     );
 
-    _log('Login response received successfully');
+    log('Login response received successfully');
     final data = json.decode(response.body);
-    _log('Response data keys: ${data.keys}');
+    log('Response data keys: ${data.keys}');
 
     final authToken = data['token'];
     final newToken = data['newToken'];
-    _log(
+    log(
         'Tokens extracted: token=${authToken != null}, newToken=${newToken != null}');
 
     // Step 5: Extract and decrypt user data
-    _log('');
-    _log('STEP 5: Processing user data');
+    log('');
+    log('STEP 5: Processing user data');
     final user = data['user'];
     final userEmail = user['email'];
     final userId = user['userId'] ?? user['uuid'];
     final rootFolderId = user['rootFolderId'];
     final bucketId = user['bucket'];
 
-    _log('User info extracted:');
-    _log('   Email: $userEmail');
-    _log('   User ID: $userId');
-    _log('   Root Folder ID: $rootFolderId');
-    _log('   Bucket ID: $bucketId');
+    log('User info extracted:');
+    log('   Email: $userEmail');
+    log('   User ID: $userId');
+    log('   Root Folder ID: $rootFolderId');
+    log('   Bucket ID: $bucketId');
 
     final encryptedMnemonic = user['mnemonic'];
     if (encryptedMnemonic == null) {
@@ -1760,22 +1994,22 @@ class InternxtClient {
     }
 
     // Step 6: Decrypt mnemonic
-    _log('');
-    _log('STEP 6: Decrypting mnemonic');
+    log('');
+    log('STEP 6: Decrypting mnemonic');
     final mnemonic = _decryptTextWithKey(encryptedMnemonic, password);
 
     // Step 7: Validate mnemonic
-    _log('');
-    _log('STEP 7: Validating mnemonic');
+    log('');
+    log('STEP 7: Validating mnemonic');
     if (!bip39.validateMnemonic(mnemonic)) {
       throw Exception('Decrypted mnemonic is invalid');
     }
-    _log('Mnemonic validated successfully');
+    log('Mnemonic validated successfully');
 
-    _log('');
-    _log('========================================');
-    _log('Login completed successfully!');
-    _log('========================================');
+    log('');
+    log('========================================');
+    log('Login completed successfully!');
+    log('========================================');
 
     return {
       'email': userEmail,
@@ -1792,7 +2026,7 @@ class InternxtClient {
 
   Future<Map<String, dynamic>> _getSecurityDetails(String email) async {
     final url = Uri.parse('$driveApiUrl/auth/login');
-    _log('POST $url (for security details)');
+    log('POST $url (for security details)');
 
     final response = await _makeRequest(
       'POST',
@@ -1806,7 +2040,7 @@ class InternxtClient {
 
   Future<Map<String, dynamic>> getFileMetadata(String fileUuid) async {
     final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-    _log('GET $url (fetching file metadata)');
+    log('GET $url (fetching file metadata)');
 
     final response = await _makeRequest('GET', url); 
 
@@ -1815,7 +2049,7 @@ class InternxtClient {
 
   Future<Map<String, dynamic>> getFolderMetadata(String folderUuid) async {
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
-    _log('GET $url (fetching folder metadata)');
+    log('GET $url (fetching folder metadata)');
 
     final response = await _makeRequest('GET', url); 
 
@@ -1825,7 +2059,7 @@ class InternxtClient {
   // --- Crypto Helpers ---
 
   Map<String, String> _passToHash(String password, String salt) {
-    _log('_passToHash: password length=${password.length}, salt=$salt');
+    log('_passToHash: password length=${password.length}, salt=$salt');
 
     final saltBytes = HEX.decode(salt);
     final passwordBytes = Uint8List.fromList(utf8.encode(password));
@@ -1836,13 +2070,13 @@ class InternxtClient {
     final hashBytes = pbkdf2.process(passwordBytes);
     final hashHex = HEX.encode(hashBytes);
 
-    _log('_passToHash: hash length=${hashHex.length}');
+    log('_passToHash: hash length=${hashHex.length}');
 
     return {'salt': salt, 'hash': hashHex};
   }
 
   Map<String, dynamic> _generateKeys(String password) {
-    _log('_generateKeys: Encrypting with password as key');
+    log('_generateKeys: Encrypting with password as key');
 
     final encryptedPk =
         _encryptTextWithKey('placeholder-private-key-for-login', password);
@@ -1863,7 +2097,7 @@ class InternxtClient {
   }
 
   String _encryptTextWithKey(String textToEncrypt, String secret) {
-    _log('_encryptTextWithKey: text length=${textToEncrypt.length}');
+    log('_encryptTextWithKey: text length=${textToEncrypt.length}');
 
     final random = Random.secure();
     final salt =
@@ -1873,7 +2107,7 @@ class InternxtClient {
     final key = keyIv['key']!;
     final iv = keyIv['iv']!;
 
-    _log(
+    log(
         '_encryptTextWithKey: salt=${HEX.encode(salt)}, key length=${key.length}, iv length=${iv.length}');
 
     final cipher = PaddedBlockCipherImpl(
@@ -1898,17 +2132,17 @@ class InternxtClient {
     result.setAll(16, encrypted);
 
     final hexResult = HEX.encode(result);
-    _log('_encryptTextWithKey: result length=${hexResult.length}');
+    log('_encryptTextWithKey: result length=${hexResult.length}');
 
     return hexResult;
   }
 
   String _decryptTextWithKey(String encryptedText, String secret) {
-    _log('_decryptTextWithKey: encrypted length=${encryptedText.length}');
+    log('_decryptTextWithKey: encrypted length=${encryptedText.length}');
 
     final cipherBytes = Uint8List.fromList(HEX.decode(encryptedText));
     final salt = cipherBytes.sublist(8, 16);
-    _log('_decryptTextWithKey: salt=${HEX.encode(salt)}');
+    log('_decryptTextWithKey: salt=${HEX.encode(salt)}');
 
     final keyIv = _getKeyAndIvFrom(secret, salt);
     final key = keyIv['key']!;
@@ -1931,13 +2165,13 @@ class InternxtClient {
     final decrypted = cipher.process(contentsToDecrypt);
 
     final result = utf8.decode(decrypted);
-    _log('_decryptTextWithKey: decrypted length=${result.length}');
+    log('_decryptTextWithKey: decrypted length=${result.length}');
 
     return result;
   }
 
   Map<String, Uint8List> _getKeyAndIvFrom(String secret, Uint8List salt) {
-    _log(
+    log(
         '_getKeyAndIvFrom: secret length=${secret.length}, salt length=${salt.length}');
 
     final secretBytes = latin1.encode(secret);
@@ -1966,7 +2200,7 @@ class InternxtClient {
 
     final iv = md5Hashes[2];
 
-    _log('_getKeyAndIvFrom: key length=${key.length}, iv length=${iv.length}');
+    log('_getKeyAndIvFrom: key length=${key.length}, iv length=${iv.length}');
 
     return {'key': key, 'iv': iv};
   }
@@ -1977,7 +2211,7 @@ class InternxtClient {
   void _invalidateCache(String folderUuid) {
     _folderCache.remove(folderUuid);
     _fileCache.remove(folderUuid);
-    _log('Cache invalidated for folder: $folderUuid');
+    log('Cache invalidated for folder: $folderUuid');
   }
 
   /// Finds an item's parent and clears its cache.
@@ -1995,7 +2229,7 @@ class InternxtClient {
         _invalidateCache(parentUuid);
       }
     } catch (e) {
-      _log(
+      log(
           'Could not clear parent cache for $itemUuid (parent: $parentUuid): $e');
     }
   }
@@ -2007,7 +2241,7 @@ class InternxtClient {
     final cached = _folderCache[folderId];
     if (cached != null &&
         DateTime.now().difference(cached.timestamp) < _cacheDuration) {
-      _log('Using cached folder list for $folderId');
+      log('Using cached folder list for $folderId');
       // Return a copy to prevent mutation
       return List<Map<String, dynamic>>.from(cached.items);
     }
@@ -2016,11 +2250,11 @@ class InternxtClient {
     int currentOffset = 0;
     const int limit = 50; 
 
-    _log('Fetching all folders for $folderId (paginated)');
+    log('Fetching all folders for $folderId (paginated)');
 
     while (true) {
       final url = Uri.parse('$driveApiUrl/folders/content/$folderId/folders');
-      _log('  GET $url (offset: $currentOffset, limit: $limit)');
+      log('  GET $url (offset: $currentOffset, limit: $limit)');
 
       try {
         final response = await _makeRequest(
@@ -2057,14 +2291,14 @@ class InternxtClient {
         }
 
         if (folders.length < limit) {
-          _log('  Fetched last page of folders (${folders.length} items). Total: ${allItems.length}');
+          log('  Fetched last page of folders (${folders.length} items). Total: ${allItems.length}');
           break; 
         } else {
-           _log('  Fetched page with $limit folders, requesting next page...');
+           log('  Fetched page with $limit folders, requesting next page...');
           currentOffset += limit;
         }
       } catch (e) {
-         _log('  Error fetching folder page (offset $currentOffset): $e');
+         log('  Error fetching folder page (offset $currentOffset): $e');
          throw e;
       }
     } 
@@ -2089,7 +2323,7 @@ class InternxtClient {
     final cached = _fileCache[folderId];
     if (cached != null &&
         DateTime.now().difference(cached.timestamp) < _cacheDuration) {
-      _log('Using cached file list for $folderId');
+      log('Using cached file list for $folderId');
       // Return a copy to prevent mutation
       return List<Map<String, dynamic>>.from(cached.items);
     }
@@ -2098,11 +2332,11 @@ class InternxtClient {
     int currentOffset = 0;
     const int limit = 50; 
 
-    _log('Fetching all files for $folderId (paginated)');
+    log('Fetching all files for $folderId (paginated)');
 
     while (true) {
       final url = Uri.parse('$driveApiUrl/folders/content/$folderId/files');
-       _log('  GET $url (offset: $currentOffset, limit: $limit)');
+       log('  GET $url (offset: $currentOffset, limit: $limit)');
 
       try {
         final response = await _makeRequest(
@@ -2144,14 +2378,14 @@ class InternxtClient {
         }
 
         if (files.length < limit) {
-           _log('  Fetched last page of files (${files.length} items). Total: ${allItems.length}');
+           log('  Fetched last page of files (${files.length} items). Total: ${allItems.length}');
           break;
         } else {
-          _log('  Fetched page with $limit files, requesting next page...');
+          log('  Fetched page with $limit files, requesting next page...');
           currentOffset += limit;
         }
       } catch (e) {
-          _log('  Error fetching file page (offset $currentOffset): $e');
+          log('  Error fetching file page (offset $currentOffset): $e');
           throw e;
       }
     } 
@@ -2280,7 +2514,7 @@ class InternxtClient {
     String userIdForAuth, {
     bool preserveTimestamps = false,
   }) async {
-    _log('Starting file download: $fileUuid');
+    log('Starting file download: $fileUuid');
 
     print('   📋 Fetching file metadata...');
     final metadataUrl = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
@@ -2386,7 +2620,7 @@ class InternxtClient {
     final itemInfo = await resolvePath(remotePath);
 
     if (itemInfo['type'] == 'file') {
-        _log('Path resolved to a file. Starting single file download.');
+        log('Path resolved to a file. Starting single file download.');
         
         final metadata = itemInfo['metadata'] as Map<String, dynamic>;
         final plainName = metadata['name'] ?? 'file';
@@ -2400,8 +2634,8 @@ class InternxtClient {
         
         String localPath;
         if (localDestination != null) {
-          final destEntity = FileSystemEntity.typeSync(localDestination);
-          if (destEntity == FileSystemEntityType.directory) {
+          final destEntity = io.FileSystemEntity.typeSync(localDestination); 
+          if (destEntity == io.FileSystemEntityType.directory) { 
             localPath = p.join(localDestination, remoteFilename);
           } else {
             localPath = localDestination;
@@ -2410,7 +2644,7 @@ class InternxtClient {
           localPath = remoteFilename;
         }
         
-        final localFile = File(localPath);
+        final localFile = io.File(localPath); 
 
         if (await localFile.exists() && onConflict == 'skip') {
           print('⏭️  File exists, skipping: $localPath');
@@ -2431,7 +2665,7 @@ class InternxtClient {
             downloadResult['modificationTime'] != null) {
           try {
             final mTime = DateTime.parse(downloadResult['modificationTime']);
-            await localFile.setLastModified(mTime);
+            await localFile.setLastModified(mTime); 
             print('   🕐 Set modification time: $mTime');
           } catch (e) {
             print('   ⚠️  Could not set modification time: $e');
@@ -2449,7 +2683,7 @@ class InternxtClient {
         throw Exception("'$remotePath' is a folder. Use -r to download recursively.");
       }
       
-      _log('Path resolved to a folder. Starting recursive download.');
+      log('Path resolved to a folder. Starting recursive download.');
       
       String baseDestPath;
       if (localDestination != null) {
@@ -2458,7 +2692,7 @@ class InternxtClient {
           final folderName = itemInfo['metadata']?['name'] ?? 'download';
           baseDestPath = folderName;
         }
-      final baseDestDir = Directory(baseDestPath);
+      final baseDestDir = io.Directory(baseDestPath); 
       await baseDestDir.create(recursive: true);
 
       print('📂 Downloading folder recursively: $remotePath');
@@ -2497,19 +2731,17 @@ class InternxtClient {
             for(var folderInfo in folders) {
                 final folderName = folderInfo['name'] ?? 'subfolder';
                 final nextLocalRelPath = p.join(currentLocalRelPath, folderName);
-                final localSubDir = Directory(p.join(baseDestPath, nextLocalRelPath));
+                final localSubDir = io.Directory(p.join(baseDestPath, nextLocalRelPath)); 
                 await localSubDir.create(recursive: true);
 
                 if (preserveTimestamps) {
                   try {
-                    // We can't set directory modification time in Dart.
-                    // Log it if we were to try.
                     final modTimeStr = folderInfo['modificationTime'] ?? folderInfo['updatedAt'];
                     if (modTimeStr != null) {
-                      _log('   ℹ️  Cannot set mod time for dir ${folderName} (Dart limitation).');
+                      log('   ℹ️  Cannot set mod time for dir ${folderName} (Dart limitation).');
                     }
                   } catch (e) {
-                     _log('   ⚠️  Error during dir timestamp logic for $folderName: $e');
+                     log('   ⚠️  Error during dir timestamp logic for $folderName: $e');
                   }
                 }
                 
@@ -2541,17 +2773,17 @@ class InternxtClient {
           final remoteModTime = task['remoteModificationTime'] as String?;
 
           if (status == 'completed') {
-              _log("✅ Already completed: $localPath");
+              log("✅ Already completed: $localPath");
               completedPreviously++;
               continue;
           }
           if (status.startsWith('skipped')) {
-              _log("⏭️ Previously skipped: $localPath ($status)");
+              log("⏭️ Previously skipped: $localPath ($status)");
               skippedCount++;
               continue;
           }
 
-          final localFile = File(localPath);
+          final localFile = io.File(localPath); 
 
           if (await localFile.exists() && onConflict == 'skip') {
               print('   ⏭️  Skipping existing: ${p.basename(localPath)}');
@@ -2577,10 +2809,10 @@ class InternxtClient {
               if (preserveTimestamps && modTimeStr != null) {
                 try {
                   final mTime = DateTime.parse(modTimeStr);
-                  await localFile.setLastModified(mTime);
-                  _log('   🕐 Set modification time: $mTime');
+                  await localFile.setLastModified(mTime); 
+                  log('   🕐 Set modification time: $mTime');
                 } catch (e) {
-                  _log('   ⚠️  Could not set modification time: $e');
+                  log('   ⚠️  Could not set modification time: $e');
                 }
               }
               successCount++;
@@ -2605,7 +2837,7 @@ class InternxtClient {
           throw Exception("Download completed with $errorCount errors. State file kept for inspection/retry.");
       }
     }
-  } 
+  }
 
   // --- Upload Operations ---
 
@@ -2620,14 +2852,14 @@ class InternxtClient {
 
     if (creationTime != null) {
       data['creationTime'] = creationTime;
-      _log("     🕐 Added folder creationTime to payload");
+      log("     🕐 Added folder creationTime to payload");
     }
     if (modificationTime != null) {
       data['modificationTime'] = modificationTime;
-      _log("     🕐 Added folder modificationTime to payload");
+      log("     🕐 Added folder modificationTime to payload");
     }
     
-    _log('POST $url (create folder $name)');
+    log('POST $url (create folder $name)');
 
     final response = await _makeRequest(
       'POST',
@@ -2672,14 +2904,14 @@ class InternxtClient {
           foundFolder['path'] = partPath; 
           currentFolderInfo = foundFolder; 
           currentPathSoFar = partPath;
-          _log("  -> Found existing folder: $part in $currentPathSoFar (UUID: ${currentParentUuid.substring(0,8)}...)");
+          log("  -> Found existing folder: $part in $currentPathSoFar (UUID: ${currentParentUuid.substring(0,8)}...)");
           
           if (isLastPart && (creationTime != null || modificationTime != null)) {
-             _log("     ⚠️  Folder exists, cannot update timestamps (API limitation).");
+             log("     ⚠️  Folder exists, cannot update timestamps (API limitation).");
           }
 
         } else {
-          _log("  -> Creating folder: $part in $currentPathSoFar");
+          log("  -> Creating folder: $part in $currentPathSoFar");
           try {
             final newFolder = await _createFolder(
               part, 
@@ -2691,17 +2923,17 @@ class InternxtClient {
             newFolder['path'] = partPath;
             currentFolderInfo = newFolder;
             currentPathSoFar = partPath;
-             _log("     ✅ Created successfully (UUID: ${currentParentUuid.substring(0,8)}...)");
+             log("     ✅ Created successfully (UUID: ${currentParentUuid.substring(0,8)}...)");
           
           } on Exception catch (e) {
             if (e.toString().contains(' 409') || e.toString().contains('already exists')) {
-              _log("     ⚠️ Received 409 Conflict, likely created concurrently. Waiting 1s before re-fetching info for '$part'...");
+              log("     ⚠️ Received 409 Conflict, likely created concurrently. Waiting 1s before re-fetching info for '$part'...");
               
               await Future.delayed(Duration(seconds: 1)); 
 
               try {
                   final parentUuidToList = currentFolderInfo!['uuid'];
-                  _log("     Re-fetching folders inside parent UUID: ${parentUuidToList.substring(0,8)}...");
+                  log("     Re-fetching folders inside parent UUID: ${parentUuidToList.substring(0,8)}...");
                   _invalidateCache(parentUuidToList); 
                   final foldersAfterConflict = await listFolders(parentUuidToList); 
                   
@@ -2719,14 +2951,14 @@ class InternxtClient {
                       conflictingFolder['path'] = partPath; 
                       currentFolderInfo = conflictingFolder;
                       currentPathSoFar = partPath;
-                      _log("     ✅ Re-fetched successfully after 409 (UUID: ${currentParentUuid.substring(0,8)}...)");
+                      log("     ✅ Re-fetched successfully after 409 (UUID: ${currentParentUuid.substring(0,8)}...)");
                   } else {
-                     _log("     ❌ Re-fetch failed: Folder '$part' not found in parent ${parentUuidToList.substring(0,8)}... after 409.");
+                     log("     ❌ Re-fetch failed: Folder '$part' not found in parent ${parentUuidToList.substring(0,8)}... after 409.");
                      throw Exception("Folder '$part' conflict (409) but could not re-fetch it.");
                   }
 
               } catch (fetchErr) {
-                 _log("     ❌ Failed during re-fetch attempt for '$part' after 409: $fetchErr");
+                 log("     ❌ Failed during re-fetch attempt for '$part' after 409: $fetchErr");
                  throw Exception("Failed to resolve folder '$part' after 409 conflict: $fetchErr");
               }
             } else {
@@ -2749,11 +2981,11 @@ class InternxtClient {
 
   Future<void> _deleteFilePermanently(String fileUuid) async {
     final url = Uri.parse('$driveApiUrl/files/$fileUuid');
-    _log('DELETE $url');
+    log('DELETE $url');
     try {
       await _makeRequest('DELETE', url);
     } catch (e) {
-      _log('Delete file failed (swallowing error): $e');
+      log('Delete file failed (swallowing error): $e');
     }
   }
 
@@ -2773,7 +3005,7 @@ class InternxtClient {
     };
     final body = json.encode(data);
 
-    _log('POST $url (start upload)');
+    log('POST $url (start upload)');
 
     try {
       // All retry logic (network, 5xx, 401) is now handled inside _makeRequest.
@@ -2792,14 +3024,14 @@ class InternxtClient {
       
     } catch (e) {
       // If _makeRequest fails after all its retries, it will throw.
-      _log('Start upload failed after all retries: $e');
+      log('Start upload failed after all retries: $e');
       throw Exception(
           'Failed to start upload after multiple attempts: $e');
     }
   }
 
   Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
-    _log('PUT $uploadUrl (uploading chunk)');
+    log('PUT $uploadUrl (uploading chunk)');
     final response = await http.put(
       Uri.parse(uploadUrl),
       headers: {'Content-Type': 'application/octet-stream'},
@@ -2807,7 +3039,7 @@ class InternxtClient {
     );
 
     if (response.statusCode != 200) {
-      _log('Upload chunk failed: ${response.body}');
+      log('Upload chunk failed: ${response.body}');
       throw Exception('Failed to upload chunk: ${response.statusCode}');
     }
   }
@@ -2815,7 +3047,7 @@ class InternxtClient {
   Future<Map<String, dynamic>> _finishUpload(String bucketId,
       Map<String, dynamic> payload, String user, String pass) async {
     final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
-    _log('POST $url (finish upload)');
+    log('POST $url (finish upload)');
 
     final response = await _makeRequest(
       'POST',
@@ -2833,7 +3065,7 @@ class InternxtClient {
   Future<Map<String, dynamic>> _createFileEntry(
       Map<String, dynamic> payload) async {
     final url = Uri.parse('$driveApiUrl/files');
-    _log('POST $url (create file entry)');
+    log('POST $url (create file entry)');
 
     final response = await _makeRequest(
       'POST',
@@ -2849,7 +3081,7 @@ class InternxtClient {
   }
 
   Future<Map<String, dynamic>> _uploadFile(
-    File localFile,
+    io.File localFile, // Note we use io.File
     String destinationFolderUuid,
     String remoteFileName, {
     required String bridgeUser,
@@ -2875,26 +3107,26 @@ class InternxtClient {
     print("     📤 Uploading '$remoteFileName' (${formatSize(fileSize)})...");
     
     if (creationTime != null || modificationTime != null) {
-       _log("     🕐 Attempting to preserve timestamps:");
-       if (creationTime != null) _log("        Creation: $creationTime");
-       if (modificationTime != null) _log("        Modification: $modificationTime");
+       log("     🕐 Attempting to preserve timestamps:");
+       if (creationTime != null) log("        Creation: $creationTime");
+       if (modificationTime != null) log("        Modification: $modificationTime");
     }
 
-    _log("     🔐 Encrypting with exact protocol");
+    log("     🔐 Encrypting with exact protocol");
     final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId);
     final encryptedData = encryptedResult['data']!;
     final fileIndexHex = encryptedResult['index']!;
 
-    _log("     🚀 Initializing network upload");
+    log("     🚀 Initializing network upload");
     final startResponse = await _startUpload(
         bucketId, encryptedData.length, networkUser, networkPass);
     final uploadUrl = startResponse['uploads'][0]['url'];
     final fileNetworkUuid = startResponse['uploads'][0]['uuid'];
 
-    _log("     ☁️  Uploading encrypted data");
+    log("     ☁️  Uploading encrypted data");
     await _uploadChunk(uploadUrl, encryptedData);
 
-    _log("     ✅ Finalizing network upload");
+    log("     ✅ Finalizing network upload");
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
     final finishPayload = {
       'index': fileIndexHex,
@@ -2906,7 +3138,7 @@ class InternxtClient {
         await _finishUpload(bucketId, finishPayload, networkUser, networkPass);
     final networkFileId = finishResponse['id'];
 
-    _log("     📋 Creating file metadata");
+    log("     📋 Creating file metadata");
     final plainName = p.basenameWithoutExtension(remoteFileName);
     final fileType = p.extension(remoteFileName).replaceAll('.', '');
 
@@ -2926,8 +3158,8 @@ class InternxtClient {
     return await _createFileEntry(fileEntryPayload);
   }
 
-  Future<String> _uploadSingleItem(
-    File localFile,
+  Future<String> uploadSingleItem(
+    io.File localFile,
     String targetRemoteParentPath,
     String targetFolderUuid,
     String onConflict, {
@@ -2988,10 +3220,10 @@ class InternxtClient {
           final stat = await localFile.stat();
           modificationTime = stat.modified.toUtc().toIso8601String();
           creationTime = stat.changed.toUtc().toIso8601String(); 
-          _log(
+          log( // <-- FIX: Use public log
               "     🕐 Preserving timestamps: Mod=$modificationTime, Cre=$creationTime");
         } catch (e) {
-          _log("     ⚠️  Could not read timestamps: $e");
+          log("     ⚠️  Could not read timestamps: $e"); // <-- FIX: Use public log
         }
       }
 
@@ -3046,11 +3278,10 @@ class InternxtClient {
         final glob = Glob(sourceArg.replaceAll('\\', '/'));
 
         await for (final entity in glob.list()) {
-            if (await FileSystemEntity.isDirectory(entity.path)) {
+            if (await io.FileSystemEntity.isDirectory(entity.path)) {
               if (!recursive) continue; 
-              final localDir = Directory(entity.path);
+              final localDir = io.Directory(entity.path);
 
-              // Handle directory timestamps
               String? dirCreationTime;
               String? dirModTime;
               if(preserveTimestamps) {
@@ -3059,11 +3290,10 @@ class InternxtClient {
                   dirModTime = stat.modified.toUtc().toIso8601String();
                   dirCreationTime = stat.changed.toUtc().toIso8601String(); 
                 } catch(e) {
-                  _log("     ⚠️  Could not read dir timestamps for ${localDir.path}: $e");
+                  log("     ⚠️  Could not read dir timestamps for ${localDir.path}: $e");
                 }
               }
 
-              // Create the root remote dir with timestamps
               String remoteBase = hasTrailingSlash
                 ? targetFolderPathStr
                 : p.join(targetFolderPathStr, p.basename(localDir.path)).replaceAll('\\', '/');
@@ -3076,7 +3306,7 @@ class InternxtClient {
 
               final filesInDir = localDir.list(recursive: true, followLinks: false);
               await for (final fileEntity in filesInDir) {
-                  if (fileEntity is File) {
+                  if (fileEntity is io.File) { // <-- FIX
                       final localFile = fileEntity;
                       final relativePath = p.relative(localFile.path, from: localDir.path);
                       final remoteFilePath = p.join(remoteBase, relativePath).replaceAll('\\', '/');
@@ -3090,8 +3320,8 @@ class InternxtClient {
                     }
                   }
               }
-            } else if (await FileSystemEntity.isFile(entity.path)) {
-              final localFile = File(entity.path);
+            } else if (await io.FileSystemEntity.isFile(entity.path)) {
+              final localFile = io.File(entity.path); // <-- FIX
               final remoteFilePath = p.join(targetFolderPathStr, p.basename(localFile.path)).replaceAll('\\', '/');
 
               if (shouldIncludeFile(p.basename(localFile.path), include, exclude)) {
@@ -3124,7 +3354,7 @@ class InternxtClient {
       final remotePath = task['remotePath'] as String;
       final status = task['status'] as String;
 
-      final localFile = File(localPath);
+      final localFile = io.File(localPath); // <-- FIX
       if (!await localFile.exists()) {
         print("⚠️ Source file no longer exists, skipping: $localPath");
         skippedCount++;
@@ -3134,13 +3364,13 @@ class InternxtClient {
       }
 
       if (status == 'completed') {
-        _log("✅ Already completed: ${p.basename(localPath)}");
+        log("✅ Already completed: ${p.basename(localPath)}");
         completedPreviously++;
         continue;
       }
 
       if (status.startsWith('skipped')) {
-        _log("⏭️ Previously skipped: ${p.basename(localPath)} ($status)");
+        log("⏭️ Previously skipped: ${p.basename(localPath)} ($status)");
         skippedCount++;
         continue;
       }
@@ -3157,7 +3387,7 @@ class InternxtClient {
           continue; 
       }
 
-      final result = await _uploadSingleItem(
+      final result = await uploadSingleItem(
           localFile,
           remoteParentPath,
           parentFolderInfo['uuid'],
@@ -3201,13 +3431,13 @@ class InternxtClient {
         if (targetFolderInfo['type'] != 'folder') {
           throw Exception("Target path '$targetPath' exists but is not a folder.");
         }
-        _log("✅ Target folder exists: '${targetFolderInfo['path'] ?? targetPath}'");
+        log("✅ Target folder exists: '${targetFolderInfo['path'] ?? targetPath}'");
       } on Exception catch (e) {
         if (e.toString().contains("Path not found")) {
-          _log("⏳ Target path '$targetPath' not found. Attempting to create...");
+          log("⏳ Target path '$targetPath' not found. Attempting to create...");
           try {
             targetFolderInfo = await createFolderRecursive(targetPath);
-            _log("✅ Created target folder '$targetPath'");
+            log("✅ Created target folder '$targetPath'");
           } catch (createErr) {
             throw Exception("Failed to create target folder '$targetPath': $createErr");
           }
@@ -3221,7 +3451,7 @@ class InternxtClient {
   Future<Map<String, dynamic>> _getDownloadLinks(
       String bucketId, String fileId, String user, String pass) async {
     final url = Uri.parse('$networkUrl/buckets/$bucketId/files/$fileId/info');
-    _log('GET $url');
+    log('GET $url');
 
     final response = await _makeRequest(
       'GET',
@@ -3237,7 +3467,7 @@ class InternxtClient {
   }
 
   Map<String, String> _getNetworkAuth(String bridgeUser, String userId) {
-    _log('Generating network auth from bridgeUser and userId');
+    log('Generating network auth from bridgeUser and userId');
 
     final hashedPassword =
         crypto.sha256.convert(utf8.encode(userId)).toString();
@@ -3256,7 +3486,7 @@ class InternxtClient {
     final List<Map<String, dynamic>> allItems = [];
 
     try {
-      _log('GET $url?type=files (listing trash files)');
+      log('GET $url?type=files (listing trash files)');
       final fileResponse = await _makeRequest(
         'GET',
         url.replace(queryParameters: {
@@ -3278,11 +3508,11 @@ class InternxtClient {
         });
       }
     } catch (e) {
-      _log('Error fetching trash files: $e');
+      log('Error fetching trash files: $e');
     }
 
     try {
-      _log('GET $url?type=folders (listing trash folders)');
+      log('GET $url?type=folders (listing trash folders)');
       final folderResponse = await _makeRequest(
         'GET',
         url.replace(queryParameters: {
@@ -3304,11 +3534,11 @@ class InternxtClient {
         });
       }
     } catch (e) {
-      _log('Error fetching trash folders: $e');
+      log('Error fetching trash folders: $e');
     }
 
     if (allItems.isEmpty && (offset == 0)) {
-      _log('Both trash list calls failed or returned empty.');
+      log('Both trash list calls failed or returned empty.');
       // Return empty list, don't throw
     }
     return allItems;
@@ -3319,7 +3549,7 @@ class InternxtClient {
     
     final url = Uri.parse('$driveApiUrl/files/$fileUuid');
     final payload = {'destinationFolder': destinationFolderUuid};
-    _log('PATCH $url (moving file $fileUuid)');
+    log('PATCH $url (moving file $fileUuid)');
 
     await _makeRequest(
       'PATCH',
@@ -3336,7 +3566,7 @@ class InternxtClient {
 
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
     final payload = {'destinationFolder': destinationFolderUuid};
-    _log('PATCH $url (moving folder $folderUuid)');
+    log('PATCH $url (moving folder $folderUuid)');
 
     await _makeRequest(
       'PATCH',
@@ -3358,7 +3588,7 @@ class InternxtClient {
     } else {
       payload['type'] = '';
     }
-    _log('PUT $url (renaming file $fileUuid)');
+    log('PUT $url (renaming file $fileUuid)');
 
     await _makeRequest(
       'PUT',
@@ -3372,7 +3602,7 @@ class InternxtClient {
 
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
     final payload = {'plainName': newName};
-    _log('PUT $url (renaming folder $folderUuid)');
+    log('PUT $url (renaming folder $folderUuid)');
 
     await _makeRequest(
       'PUT',
@@ -3381,13 +3611,55 @@ class InternxtClient {
     );
   }
 
+  Future<Map<String, dynamic>> _apiUpdateFileMetadata(
+      String fileUuid, Map<String, dynamic> payload) async {
+    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
+    log('PUT $url (updating file metadata)');
+
+    final response = await _makeRequest(
+      'PUT',
+      url,
+      body: json.encode(payload),
+    );
+    return json.decode(response.body);
+  }
+
+  Future<Map<String, dynamic>> _apiUpdateFolderMetadata(
+      String folderUuid, Map<String, dynamic> payload) async {
+    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
+    log('PUT $url (updating folder metadata)');
+
+    final response = await _makeRequest(
+      'PUT',
+      url,
+      body: json.encode(payload),
+    );
+    return json.decode(response.body);
+  }
+
+  Future<void> setFileTimestamp(String fileUuid, DateTime mTime) async {
+    final isoTimestamp = mTime.toUtc().toIso8601String();
+    log('WebDAV: Setting file timestamp for $fileUuid -> $isoTimestamp');
+    await _apiUpdateFileMetadata(
+        fileUuid, {'modificationTime': isoTimestamp});
+    // No cache invalidation needed, as list content hasn't changed
+  }
+
+  Future<void> setFolderTimestamp(String folderUuid, DateTime mTime) async {
+    final isoTimestamp = mTime.toUtc().toIso8601String();
+    log('WebDAV: Setting folder timestamp for $folderUuid -> $isoTimestamp');
+    await _apiUpdateFolderMetadata(
+        folderUuid, {'modificationTime': isoTimestamp});
+    // No cache invalidation needed, as list content hasn't changed
+  }
+
   Future<void> _deleteFolderPermanently(String folderUuid) async {
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
-    _log('DELETE $url');
+    log('DELETE $url');
     try {
       await _makeRequest('DELETE', url);
     } catch(e) {
-      _log('Delete folder failed (swallowing error): $e');
+      log('Delete folder failed (swallowing error): $e');
     }
   }
 
@@ -3400,7 +3672,7 @@ class InternxtClient {
         {'uuid': uuid, 'type': type}
       ]
     };
-    _log('POST $url (trashing item $uuid)');
+    log('POST $url (trashing item $uuid)');
 
     await _makeRequest(
       'POST',
@@ -3416,7 +3688,7 @@ class InternxtClient {
         {'uuid': uuid, 'type': type}
       ]
     };
-    _log('DELETE $url (deleting item $uuid)');
+    log('DELETE $url (deleting item $uuid)');
 
     await _makeRequest(
       'DELETE',
@@ -3430,7 +3702,7 @@ class InternxtClient {
   /// Calls the server-side fuzzy search.
   Future<List<dynamic>> _apiSearchFiles(String query) async {
     final url = Uri.parse('$driveApiUrl/fuzzy/$query');
-    _log('GET $url (searching)');
+    log('GET $url (searching)');
 
     final response = await _makeRequest('GET', url);
     final data = json.decode(response.body);
@@ -3445,7 +3717,7 @@ class InternxtClient {
   /// Gets all parent folders for a given folder UUID.
   Future<List<dynamic>> _apiGetFolderAncestors(String folderUuid) async {
     final url = Uri.parse('$driveApiUrl/folders/$folderUuid/ancestors');
-    _log('GET $url (getting ancestors)');
+    log('GET $url (getting ancestors)');
 
     final response = await _makeRequest('GET', url);
     final data = json.decode(response.body);
@@ -3476,7 +3748,7 @@ class InternxtClient {
       final parentPath = '/${pathParts.join('/')}';
       return '${parentPath.replaceAll('//', '/')}/$itemName';
     } catch (e) {
-      _log('Could not build full path for $itemName: $e');
+      log('Could not build full path for $itemName: $e');
       return '/?/$itemName'; // Best guess path
     }
   }
@@ -3547,14 +3819,14 @@ class InternxtClient {
         continue;
       }
       
-      _log('Finding in: $currentPath (depth $currentDepth)');
+      log('Finding in: $currentPath (depth $currentDepth)');
 
       Map<String, dynamic> resolved;
       try {
         resolved = await resolvePath(currentPath);
         if (resolved['type'] != 'folder') continue;
       } catch (e) {
-        _log('Could not resolve path $currentPath: $e');
+        log('Could not resolve path $currentPath: $e');
         continue;
       }
 
@@ -3578,7 +3850,7 @@ class InternxtClient {
           }
         }
       } catch (e) {
-        _log('Could not list files in $currentPath: $e');
+        log('Could not list files in $currentPath: $e');
       }
 
       if (maxDepth == -1 || (currentDepth + 1) < maxDepth) {
@@ -3590,7 +3862,7 @@ class InternxtClient {
             pathStack.add(MapEntry(subFolderPath, currentDepth + 1));
           }
         } catch (e) {
-          _log('Could not list folders in $currentPath: $e');
+          log('Could not list folders in $currentPath: $e');
         }
       }
     }
@@ -3732,15 +4004,47 @@ class ConfigService {
   late final String configDir;
   late final String credentialsFile;
   late final String batchStateDir; 
+  late final String webdavPidFile;
 
   ConfigService() {
-    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
+    final home = io.Platform.environment['HOME'] ?? io.Platform.environment['USERPROFILE'] ?? '.';
     configDir = p.join(home, '.internxt-cli');
     credentialsFile = p.join(configDir, '.inxtcli-dart-creds.json');
     batchStateDir = p.join(configDir, 'batch_states'); 
+    webdavPidFile = p.join(configDir, 'webdav.pid');
 
-    Directory(configDir).createSync(recursive: true);
-    Directory(batchStateDir).createSync(recursive: true);
+    io.Directory(configDir).createSync(recursive: true); 
+    io.Directory(batchStateDir).createSync(recursive: true);
+  }
+
+  Future<void> saveWebdavPid(int pid) async {
+    try {
+      await io.File(webdavPidFile).writeAsString(pid.toString());
+    } catch (e) {
+      print('⚠️  Warning: Could not save WebDAV PID file: $e');
+    }
+  }
+
+  Future<int?> readWebdavPid() async {
+    try {
+      if (await io.File(webdavPidFile).exists()) {
+        final content = await io.File(webdavPidFile).readAsString();
+        return int.tryParse(content.trim());
+      }
+    } catch (e) {
+      print('⚠️  Warning: Could not read WebDAV PID file: $e');
+    }
+    return null;
+  }
+
+  Future<void> clearWebdavPid() async {
+    try {
+      if (await io.File(webdavPidFile).exists()) {
+        await io.File(webdavPidFile).delete();
+      }
+    } catch (e) {
+      print('⚠️  Warning: Could not clear WebDAV PID file: $e');
+    }
   }
 
   String generateBatchId(String operationType, List<String> sources, String target) {
@@ -3756,7 +4060,7 @@ class ConfigService {
 
   Future<Map<String, dynamic>?> loadBatchState(String batchId) async {
     final filePath = getBatchStateFilePath(batchId);
-    final file = File(filePath);
+    final file = io.File(filePath);
     if (await file.exists()) {
       try {
         final content = await file.readAsString();
@@ -3772,7 +4076,7 @@ class ConfigService {
 
   Future<void> saveBatchState(String batchId, Map<String, dynamic> state) async {
      final filePath = getBatchStateFilePath(batchId);
-     final file = File(filePath);
+     final file = io.File(filePath);
      try {
         await file.writeAsString(json.encode(state));
      } catch (e) {
@@ -3782,7 +4086,7 @@ class ConfigService {
 
   Future<void> deleteBatchState(String batchId) async {
     final filePath = getBatchStateFilePath(batchId);
-    final file = File(filePath);
+    final file = io.File(filePath);
     if (await file.exists()) {
       try {
         await file.delete();
@@ -3793,12 +4097,12 @@ class ConfigService {
   }
 
   Future<void> saveCredentials(Map<String, String?> credentials) async {
-    final file = File(credentialsFile);
+    final file = io.File(credentialsFile);
     await file.writeAsString(json.encode(credentials));
   }
 
   Future<Map<String, String>?> readCredentials() async {
-    final file = File(credentialsFile);
+    final file = io.File(credentialsFile);
     if (!await file.exists()) {
       return null;
     }
@@ -3806,7 +4110,6 @@ class ConfigService {
     try {
       final contents = await file.readAsString();
       final data = json.decode(contents) as Map<String, dynamic>;
-      // Ensure all values are strings
       return data.map((k, v) => MapEntry(k, v?.toString() ?? ''));
     } catch (e) {
       return null;
@@ -3814,7 +4117,7 @@ class ConfigService {
   }
 
   Future<void> clearCredentials() async {
-    final file = File(credentialsFile);
+    final file = io.File(credentialsFile);
     if (await file.exists()) {
       await file.delete();
     }
