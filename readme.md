@@ -4,11 +4,12 @@
 
 A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart. This is nothing official from Internxt and still a work in progress, so use at your own risk, and do not expect everything to work perfectly.
 
-This tool allows you to manage your Internxt Drive files and folders directly from your terminal, including uploads, downloads, listing, moving, renaming, and trash operations.
+This tool allows you to manage your Internxt Drive files and folders directly from your terminal, including uploads, downloads, listing, moving, renaming, and trash operations. It also includes a **WebDAV server** to mount your Internxt Drive as a local disk.
 
 ## ✨ Features
 
   * **Authentication:** Login/logout securely, with **automatic session refresh**.
+  * **WebDAV Server:** Mount your Internxt Drive as a local disk on macOS, Windows, or Linux.
   * **File Management:** List, upload, download, move, rename files and folders.
   * **Path-Based Operations:** Interact with your drive using familiar file paths (e.g., `/Documents/report.pdf`).
   * **Search & Discovery:**
@@ -48,10 +49,20 @@ dart cli.dart <command> [arguments...] [options...]
 Example:
 
 ```bash
+# List files
 dart cli.dart list /Documents --uuids
+
+# Upload a file and preserve its timestamp
 dart cli.dart upload file.txt --target /Documents -p
+
+# Download a file by its path
 dart cli.dart download-path /Documents/file.txt
+
+# Find all PDFs on your drive
 dart cli.dart find / "*.pdf"
+
+# Start the WebDAV server
+dart cli.dart webdav-start
 ```
 
 ## 📚 Commands
@@ -220,6 +231,47 @@ Here's a list of available commands:
 
 -----
 
+### WebDAV Server
+
+  * **`webdav-start`**
+
+      * Starts a local WebDAV server to mount your Internxt Drive as a network drive.
+      * Options:
+          * `--port <port>`: Port to run on (default: 8080).
+          * `-b, --background`: Run the server in the background (detached).
+      * Usage:
+          * `dart cli.dart webdav-start` (Runs in foreground)
+          * `dart cli.dart webdav-start -b --port 8888` (Runs in background on port 8888)
+          * Note this provides a pure WebDAV server and no built-in directory browser which would serve a webpage. So you would need a WebDAV client to use it. E.g. in macOS: In Finder, press Cmd+K and type in http://localhost:8080. Or in Windows Explorer, click "Map network drive" and enter http://localhost:8080.
+          
+
+  * **`webdav-stop`**
+
+      * Stops the background WebDAV server process.
+      * Usage: `dart cli.dart webdav-stop`
+
+  * **`webdav-status`**
+
+      * Checks if a background WebDAV server process is running.
+      * Usage: `dart cli.dart webdav-status`
+
+  * **`webdav-mount`**
+
+      * Displays platform-specific instructions for mounting the WebDAV drive in your OS.
+      * Usage: `dart cli.dart webdav-mount`
+
+  * **`webdav-test`**
+
+      * Tests the connection to a *running* WebDAV server.
+      * Usage: `dart cli.dart webdav-test`
+
+  * **`webdav-config`**
+
+      * Shows the WebDAV server configuration (port, user, pid file path).
+      * Usage: `dart cli.dart webdav-config`
+
+-----
+
 ### Utility Commands
 
   * **`resolve <path>`**
@@ -246,4 +298,4 @@ Here's a list of available commands:
 
 ## 📄 License
 
-This project is licensed under the **GNU Affero General Public License v3.0**. See the [LICENSE.txt](https://www.google.com/search?q=LICENSE.txt) file for details.
+This project is licensed under the **GNU Affero General Public License v3.0**. See the `LICENSE` file for details.
