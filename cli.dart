@@ -614,7 +614,7 @@ class InternxtCLI {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final path = args[0];
       print("📁 Creating folder(s): $path");
@@ -637,7 +637,7 @@ class InternxtCLI {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       print('🗑️  Listing trash contents...\n');
 
@@ -721,7 +721,7 @@ class InternxtCLI {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final itemUuid = args[0];
       final destinationPath =
@@ -780,7 +780,7 @@ class InternxtCLI {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final itemNameInTrash = args[0];
       final destinationPath =
@@ -849,33 +849,23 @@ class InternxtCLI {
     }
   }
 
-Future<void> handleMovePath(ArgResults argResults) async {
+  Future<void> handleMovePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.length < 2) {
-      io.stderr.writeln(
-          '❌ Usage: dart cli.dart move-path <source-path> <destination-path>');
+      io.stderr.writeln('❌ Usage: dart cli.dart move-path "<source-pattern>" <destination-path>');
       io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
-      if (creds == null) {
-        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
-        io.exit(1);
-      }
-      client.setAuth(creds as Map<String, String?>);
+      if (creds == null) throw Exception("Not logged in.");
+      client.setAuth(creds);
 
-      final sourcePath = args[0];
-      final destinationPath = args[1];
-      final force = argResults['force'] as bool; 
+      final String sourcePattern = args[0];
+      final String destinationPath = args[1];
+      final bool force = argResults['force'] as bool;
 
-      print("🔍 Resolving source path: $sourcePath");
-      final sourceInfo = await client.resolvePath(sourcePath);
-      final sourceUuid = sourceInfo['uuid'] as String;
-      final sourceType = sourceInfo['type'] as String;
-      final sourceName =
-          (sourceInfo['metadata'] as Map)['name'] ?? sourcePath; 
-
+      // 1. Resolve Destination first
       print("🔍 Resolving destination path: $destinationPath");
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
@@ -883,25 +873,70 @@ Future<void> handleMovePath(ArgResults argResults) async {
       }
       final destinationFolderUuid = destFolderInfo['uuid'] as String;
 
-      final prompt =
-          '❓ Move ${sourceType} "$sourceName" to "$destinationPath"?';
-      if (!_confirmAction(prompt, force)) {
-        print("❌ Cancelled");
-        io.exit(0);
-      }
+      // 2. Handle Wildcards/Globs
+      List<Map<String, dynamic>> itemsToMove = [];
 
-      print("🚀 Moving item...");
-      if (sourceType == 'file') {
-        await client.moveFile(sourceUuid, destinationFolderUuid);
-      } else if (sourceType == 'folder') {
-        await client.moveFolder(sourceUuid, destinationFolderUuid);
+      if (sourcePattern.contains('*')) {
+        print("🌐 Pattern detected, performing server-side expansion...");
+        final parentPath = p.dirname(sourcePattern);
+        final pattern = p.basename(sourcePattern);
+        final glob = Glob(pattern);
+
+        final parentInfo = await client.resolvePath(parentPath);
+        final folders = await client.listFolders(parentInfo['uuid']);
+        final files = await client.listFolderFiles(parentInfo['uuid']);
+        
+        for (var item in [...folders, ...files]) {
+          final name = item['name'] ?? '';
+          if (glob.matches(name)) {
+            itemsToMove.add(item);
+          }
+        }
       } else {
-        throw Exception("Unknown item type: $sourceType");
+        final sourceInfo = await client.resolvePath(sourcePattern);
+        itemsToMove.add({
+          'uuid': sourceInfo['uuid'],
+          'type': sourceInfo['type'],
+          'name': (sourceInfo['metadata'] as Map)['name'] ?? sourcePattern,
+        });
       }
 
-      print("✅ Item moved successfully to: $destinationPath");
+      if (itemsToMove.isEmpty) {
+        print("⚠️ No items matched the pattern '$sourcePattern'");
+        return;
+      }
+
+      // 3. Confirm Batch
+      if (itemsToMove.length > 1 && !force) {
+        io.stdout.write('❓ Move ${itemsToMove.length} items to "$destinationPath"? [y/N]: ');
+        final res = io.stdin.readLineSync()?.toLowerCase();
+        if (res != 'y' && res != 'yes') {
+          print("❌ Cancelled");
+          return;
+        }
+      }
+
+      // 4. Execution Loop
+      for (var item in itemsToMove) {
+        final uuid = item['uuid'] as String;
+        final type = item['type'] as String;
+        final name = item['name'] as String;
+
+        print("🚀 Moving $type: $name...");
+        try {
+          if (type == 'file') {
+            await client.moveFile(uuid, destinationFolderUuid);
+          } else {
+            await client.moveFolder(uuid, destinationFolderUuid);
+          }
+        } catch (e) {
+          print("  ❌ Failed to move $name: $e");
+        }
+      }
+
+      print("✅ Operation complete.");
     } catch (e) {
-      io.stderr.writeln('❌ Error moving item: $e');
+      io.stderr.writeln('❌ Error: $e');
       io.exit(1);
     }
   }
@@ -919,7 +954,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final path = args[0];
       final newName = args[1];
@@ -976,7 +1011,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final path = args[0];
       print("🔍 Resolving path: $path");
@@ -1021,7 +1056,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final path = args[0];
       final force = argResults['force'] as bool;
@@ -1057,7 +1092,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final path = args[0];
       final force = argResults['force'] as bool;
@@ -1170,7 +1205,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final commandRestArgs = argResults.rest.sublist(1);
 
@@ -1254,7 +1289,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final bridgeUser = creds['bridgeUser'];
       final userIdForAuth = creds['userIdForAuth'];
@@ -1311,7 +1346,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
       
       final remotePath = args[0];
       final localDestination = argResults['target'] as String?;
@@ -1371,7 +1406,7 @@ Future<void> handleDownload(List<String> args) async {
         io.exit(1);
       }
       
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final fileUuid = args[0];
       final bridgeUser = creds['bridgeUser'];
@@ -1499,7 +1534,7 @@ Future<void> handleDownload(List<String> args) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>); // FIX: Cast to correct type
+      client.setAuth(creds); // FIX: Cast to correct type
 
       print("🔍 Searching for '$query' across your drive...");
       if (detailed) {
@@ -1561,7 +1596,7 @@ Future<void> handleDownload(List<String> args) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>); // FIX: Cast to correct type
+      client.setAuth(creds); // FIX: Cast to correct type
 
       print("🔍 Finding files matching '$pattern' in '$path'...");
       if (maxDepth != -1) {
@@ -1605,7 +1640,7 @@ Future<void> handleDownload(List<String> args) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>); // FIX: Cast to correct type
+      client.setAuth(creds); // FIX: Cast to correct type
 
       print("\n🌳 Folder tree starting from: $path");
       print("=" * 60);
