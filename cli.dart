@@ -322,7 +322,7 @@ class InternxtCLI {
       }
       // FIX: creds is Map<String, String>? but setAuth expects Map<String, String?>
       // We can safely cast here because creds is non-null
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds); // InternxtClient.setAuth already accepts Map<String, dynamic>
 
       final fs = InternxtFileSystem(client: client);
 
@@ -517,7 +517,7 @@ class InternxtCLI {
     }
 
     io.stdout.write('What is your email? ');
-    final email = io.stdin.readLineSync()?.trim() ?? '';
+    final email = io.stdin.readLineSync()?.trim().toLowerCase() ?? '';
     if (email.isEmpty) {
       io.stderr.writeln('❌ Email is required');
       io.exit(1);
@@ -534,30 +534,37 @@ class InternxtCLI {
       io.exit(1);
     }
 
-    print('🔍 Checking 2FA requirements...');
-    final needs2fa = await client.is2faNeeded(email);
-
-    String? tfaCode;
-    if (needs2fa) {
-      print('🔐 Two-factor authentication is enabled');
-      io.stdout.write('Enter your 2FA code (6 digits): ');
-      tfaCode = io.stdin.readLineSync()?.trim();
-      if (tfaCode == null || tfaCode.isEmpty) {
-        io.stderr.writeln('❌ 2FA code is required');
-        io.exit(1);
-      }
-    }
-
-    print('🔐 Logging in...');
     try {
+      print('🔍 Checking 2FA requirements...');
+      final needs2fa = await client.is2faNeeded(email);
+
+      String? tfaCode;
+      if (needs2fa) {
+        print('🔐 Two-factor authentication is enabled');
+        io.stdout.write('Enter your 2FA code (6 digits): ');
+        tfaCode = io.stdin.readLineSync()?.trim();
+        if (tfaCode == null || tfaCode.isEmpty) {
+          io.stderr.writeln('❌ 2FA code is required');
+          io.exit(1);
+        }
+      }
+
+      print('🔐 Logging in...');
       final credentials = await client.login(email, password, tfaCode: tfaCode);
 
+      // CRITICAL: Update the client's internal state with hydrated info (bucketId, etc.)
+      client.setAuth(credentials);
+
+      // Save to disk
       await config.saveCredentials(credentials);
 
       print('✅ Login successful!');
       print('👤 User: ${credentials['email']}');
       print('🆔 User ID: ${credentials['userId']}');
       print('📁 Root Folder ID: ${credentials['rootFolderId']}');
+      if (debugMode) {
+        print('🪣 Bucket ID: ${credentials['bucketId']}');
+      }
     } catch (e) {
       io.stderr.writeln('❌ Login failed: $e');
       io.exit(1);
@@ -1082,7 +1089,7 @@ Future<void> handleMovePath(ArgResults argResults) async {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
-      client.setAuth(creds as Map<String, String?>);
+      client.setAuth(creds);
 
       final commandRestArgs = argResults.rest.sublist(1);
       final pathToList = commandRestArgs.isNotEmpty ? commandRestArgs[0] : '/';
@@ -1424,11 +1431,11 @@ Future<void> handleDownload(List<String> args) async {
 
     print('Test 2: API URLs validation');
     print('   NETWORK_URL: ${InternxtClient.networkUrl}');
-    assert(InternxtClient.networkUrl == 'https://api.internxt.com',
-        'NETWORK_URL mismatch!');
+    assert(InternxtClient.networkUrl == 'https://gateway.internxt.com/network',
+      'NETWORK_URL mismatch! Expected gateway.internxt.com/network');
     print('   DRIVE_API_URL: ${InternxtClient.driveApiUrl}');
-    assert(InternxtClient.driveApiUrl == 'https://api.internxt.com/drive',
-        'DRIVE_API_URL mismatch!');
+    assert(InternxtClient.driveApiUrl == 'https://gateway.internxt.com/drive',
+      'DRIVE_API_URL mismatch! Expected gateway.internxt.com/drive');
     print('   ✅ PASS\n');
 
     print('Test 3: Encryption/Decryption (OpenSSL compat)');
@@ -1624,10 +1631,8 @@ Future<void> handleDownload(List<String> args) async {
 // ============================================================================
 
 class InternxtClient {
-  static const String driveWebUrl = 'https://drive.internxt.com';
-  static const String networkUrl = 'https://api.internxt.com';
-  static const String driveApiUrl = 'https://api.internxt.com/drive';
-
+  static const String networkUrl = 'https://gateway.internxt.com/network';
+  static const String driveApiUrl = 'https://gateway.internxt.com/drive';
   static const String appCryptoSecret = '6KYQBP847D4ATSFA';
 
   bool debugMode = false;
@@ -1657,16 +1662,19 @@ class InternxtClient {
     }
   }
 
-  void setAuth(Map<String, String?> creds) {
-    authToken = creds['token'];
-    newToken = creds['newToken'];
-    mnemonic = creds['mnemonic'];
-    userEmail = creds['email'];
-    userId = creds['userId'];
-    rootFolderId = creds['rootFolderId'];
-    bucketId = creds['bucketId'];
+  void setAuth(Map<String, dynamic> creds) {
+    log("🔑 TRACE: Updating client session state from credentials");
+    // Use .toString() or ?.toString() to safely convert ints/strings from JSON
+    authToken    = creds['token']?.toString();
+    newToken     = creds['newToken']?.toString();
+    mnemonic     = creds['mnemonic']?.toString();
+    userEmail    = creds['email']?.toString();
+    userId       = creds['userId']?.toString();
+    rootFolderId = creds['rootFolderId']?.toString();
+    bucketId     = creds['bucketId']?.toString(); 
+    
+    log("📊 TRACE: Session loaded for $userEmail (Bucket: $bucketId)");
   }
-
   // --- Token Refresh ---
 
   /// Calls the API to get new tokens.
@@ -1697,49 +1705,41 @@ class InternxtClient {
 
   /// Refreshes and saves auth tokens.
   Future<void> refreshToken() async {
-    if (_isRefreshingToken) {
-      log('Token refresh already in progress, waiting...');
-      while (_isRefreshingToken) {
-        await Future.delayed(Duration(milliseconds: 100));
-      }
-      return;
-    }
-
+    if (_isRefreshingToken) return;
     _isRefreshingToken = true;
-    log('Attempting to refresh tokens...');
-
+    
     try {
-      if (this.newToken == null) {
-        throw Exception("No 'newToken' available to refresh.");
+      log("🔄 TRACE: Refreshing tokens and rotating Bridge Auth...");
+      final currentCreds = await config.readCredentials();
+      if (currentCreds == null || currentCreds['newToken'] == null) {
+        throw Exception("No valid credentials found to refresh.");
       }
 
-      final refreshResponse = await _apiRefreshToken(this.newToken!);
+      // Call /refresh with the existing newToken
+      final resp = await _apiRefreshToken(currentCreds['newToken']);
+      final user = resp['user'];
+      
+      // Re-compute bridge password in case metadata changed
+      final bridgePass = crypto.sha256.convert(utf8.encode(user['userId'].toString())).toString();
 
-      final newToken = refreshResponse['token'];
-      final newNewToken = refreshResponse['newToken']; 
+      final updatedCreds = {
+        ...currentCreds,
+        'token': resp['token'],
+        'newToken': resp['newToken'],
+        'bridgeUser': user['bridgeUser'],
+        'userIdForAuth': user['userId'],
+        'bridgePass': bridgePass,
+      };
 
-      if (newToken == null || newNewToken == null) {
-        throw Exception("Refresh response did not contain new tokens.");
-      }
-
-      log('Tokens refreshed successfully.');
-      this.authToken = newToken;
-      this.newToken = newNewToken;
-
-      final creds = await config.readCredentials();
-      if (creds != null) {
-        creds['token'] = newToken;
-        creds['newToken'] = newNewToken;
-        await config.saveCredentials(creds);
-        log('Refreshed tokens saved to disk.');
-      }
+      // Update class state
+      setAuth(updatedCreds);
+      
+      // Save to disk using the updated dynamic-friendly method
+      await config.saveCredentials(updatedCreds);
+      log("✅ TRACE: Token rotation successful.");
     } catch (e) {
-      log('Token refresh failed: $e. User must log in again.');
-      await config.clearCredentials();
-      this.authToken = null;
-      this.newToken = null;
-      this.mnemonic = null;
-      throw Exception("Session expired. Please log in again.");
+      log("❌ TRACE: Token rotation failed: $e");
+      rethrow;
     } finally {
       _isRefreshingToken = false;
     }
@@ -1759,13 +1759,23 @@ class InternxtClient {
     int maxRetries = 3,     // Max retries for 5xx/network errors
     int retryCount = 0,       // Current retry attempt
   }) async {
-    final requestHeaders = headers ?? {'Content-Type': 'application/json'};
+    final requestHeaders = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'internxt-client': 'cli',          // MANDATORY: Proven by your curl test
+      'User-Agent': 'InternxtCLI/1.0.0 (Dart)',
+      ...?headers,
+    };
 
-    if (useAuth && this.newToken != null) {
+    if (useAuth && newToken != null) {
       requestHeaders['Authorization'] = 'Bearer $newToken';
-    } else if (isNetworkAuth && networkUser != null && networkPass != null) {
-      requestHeaders['Authorization'] =
-          'Basic ${base64Encode(utf8.encode('$networkUser:$networkPass'))}';
+    }
+
+    log('📡 [DEBUG] Sending $method to $url');
+    // Verbose logging to match your request
+    if (debugMode) {
+       log('📡 [DEBUG] Headers: ${json.encode(requestHeaders)}');
+       if (body != null) log('📡 [DEBUG] Payload: $body');
     }
 
     http.Response response;
@@ -1867,175 +1877,149 @@ class InternxtClient {
 
   /// Check if 2FA is needed for an email
   Future<bool> is2faNeeded(String email) async {
+    final cleanEmail = email.toLowerCase().trim();
+    final url = Uri.parse('$driveApiUrl/auth/login');
+    
     try {
-      final url = Uri.parse('$driveApiUrl/auth/login');
-      log('Checking 2FA at: POST $url');
-
       final response = await _makeRequest(
         'POST',
         url,
-        body: json.encode({'email': email}),
-        useAuth: false, // This is a pre-login call
+        body: json.encode({'email': cleanEmail}),
+        useAuth: false,
       );
 
-      log('2FA check response code: ${response.statusCode}');
       final data = json.decode(response.body);
-      final tfa = data['tfa'] == true;
-      log('2FA enabled: $tfa');
-      return tfa;
+      return data['tfa'] == true;
     } catch (e) {
-      log('2FA check error: $e');
-      return false; // Return false on any failure
+      log('⚠️ 2FA check error: $e');
+      return false;
     }
   }
 
-  /// Login to Internxt
-  Future<Map<String, String?>> login(String email, String password,
-      {String? tfaCode}) async {
-    log('========================================');
-    log('Starting login process');
-    log('Email: $email');
-    log('Has TFA code: ${tfaCode != null}');
-    log('========================================');
+  /// Encrypts the password hash using the modern Internxt protocol.
+  /// Flow: Decrypt server-salt -> PBKDF2 hash password with salt -> Encrypt result.
+  String _encryptPasswordHash(String password, String encryptedSalt) {
+    log("🔐 TRACE: Starting modern password hash encryption...");
+    
+    // 1. Decrypt the salt (sKey) using the fixed App Crypto Secret
+    final saltHex = _decryptTextWithKey(encryptedSalt, appCryptoSecret);
+    
+    // 2. Compute the PBKDF2-SHA1 hash (10,000 iterations)
+    final hashObj = _passToHash(password, saltHex);
+    final masterHash = hashObj['hash']!;
+    
+    // 3. Re-encrypt the hash with the app secret for the login payload
+    final encryptedHash = _encryptTextWithKey(masterHash, appCryptoSecret);
+    
+    log("✅ TRACE: Password hash encryption complete.");
+    return encryptedHash;
+  }
 
-    // Step 1: Get security details
-    log('STEP 1: Getting security details');
-    final securityDetails = await _getSecurityDetails(email);
-    log('Security details received: ${securityDetails.keys}');
-
-    final encryptedSalt = securityDetails['sKey'];
-    if (encryptedSalt == null) {
-      throw Exception(
-          'Did not receive encryptedSalt (sKey) from security details');
-    }
-    log(
-        'Encrypted salt (sKey) received: ${encryptedSalt.substring(0, 20)}...');
-
-    // Step 2: Perform client-side crypto operations
-    log('');
-    log('STEP 2: Performing client-side crypto operations');
-    log('   2.1: Decrypting salt...');
-    final salt = _decryptTextWithKey(encryptedSalt, appCryptoSecret);
-    log('   Salt decrypted: $salt');
-
-    log('   2.2: Hashing password with PBKDF2-SHA1...');
-    final hashObj = _passToHash(password, salt);
-    log('   Password hash: ${hashObj['hash']!.substring(0, 32)}...');
-
-    log('   2.3: Encrypting password hash...');
-    final encryptedPasswordHash =
-        _encryptTextWithKey(hashObj['hash']!, appCryptoSecret);
-    log(
-        '   Encrypted password hash: ${encryptedPasswordHash.substring(0, 32)}...');
-
-    log('   2.4: Generating placeholder PGP keys...');
-    final keysPayload = _generateKeys(password);
-    log('   Keys generated successfully');
-
-    // Step 3: Construct login payload
-    log('');
-    log('STEP 3: Constructing login payload');
-    final loginPayload = {
-      'email': email.toLowerCase(),
-      'password': encryptedPasswordHash,
-      'tfa': tfaCode,
-      'keys': {
-        'ecc': {
-          'publicKey': keysPayload['ecc']['publicKey'],
-          'privateKey': keysPayload['ecc']['privateKeyEncrypted'],
-        },
-        'kyber': keysPayload['kyber'],
-      },
-      'privateKey': keysPayload['privateKeyEncrypted'],
-      'publicKey': keysPayload['publicKey'],
-      'revocationKey': keysPayload['revocationCertificate'],
+  /// Computes the Bridge Auth (Basic Auth) credentials.
+  /// The password is the SHA256 hash of the UserID string.
+  Map<String, String> _computeBridgeAuth(String bridgeUser, String userId) {
+    log("🔐 DEBUG: Computing Bridge Auth for UserID: $userId");
+    // Bridge password is sha256(userId)
+    final bridgePass = crypto.sha256.convert(utf8.encode(userId.toString())).toString();
+    return {
+      'user': bridgeUser,
+      'pass': bridgePass,
     };
+  }
 
-    // Step 4: Make login request
-    log('');
-    log('STEP 4: Making login request');
-    final loginUrl = Uri.parse('$driveApiUrl/auth/login/access');
-    log('Login URL: POST $loginUrl');
+  /// Login to Internxt
+  Future<Map<String, dynamic>> login(String email, String password, {String? tfaCode}) async {
+    final cleanEmail = email.toLowerCase().trim();
+    log("🚀 TRACE: Starting Hydrated Login for $cleanEmail");
 
-    final response = await _makeRequest(
-      'POST',
-      loginUrl,
-      body: json.encode(loginPayload),
-      useAuth: false, // Pre-login call
+    // STEP 1: Salt Retrieval (sKey) - EXACT match to your successful curl
+    final secRes = await _makeRequest(
+      'POST', Uri.parse('$driveApiUrl/auth/login'),
+      body: json.encode({'email': cleanEmail}), 
+      useAuth: false,
+    );
+    final secDetails = json.decode(secRes.body);
+    final sKey = secDetails['sKey'];
+    if (sKey == null) throw Exception("Login failed: Salt (sKey) missing.");
+    log("💧 Step 1: Salt received.");
+
+    // STEP 2: Crypto (Mirroring Python crypto_service)
+    final salt = _decryptTextWithKey(sKey, appCryptoSecret);
+    final masterHash = _passToHash(password, salt)['hash']!;
+    final encryptedHash = _encryptTextWithKey(masterHash, appCryptoSecret);
+    final keysPayload = _generateKeys(password);
+
+    // STEP 3: Initial Access Call
+    log("🔐 Step 3: Requesting session token via /auth/login/access...");
+    final accessRes = await _makeRequest(
+      'POST', Uri.parse('$driveApiUrl/auth/login/access'),
+      body: json.encode({
+        'email': cleanEmail,
+        'password': encryptedHash,
+        'tfa': tfaCode,
+        'keys': {
+          'ecc': {
+            'publicKey': keysPayload['ecc']['publicKey'],
+            'privateKey': keysPayload['ecc']['privateKeyEncrypted'],
+          }
+        },
+        'privateKey': keysPayload['privateKeyEncrypted'],
+        'publicKey': keysPayload['publicKey'],
+      }), 
+      useAuth: false,
+    );
+    final tempToken = json.decode(accessRes.body)['newToken'];
+
+    // STEP 4: Mandatory Hydration (Refresh) - Mirroring Python AuthService.login
+    log("💧 Step 4: Hydrating session metadata via /users/refresh...");
+    final hydrationRes = await http.get(
+      Uri.parse('$driveApiUrl/users/refresh'),
+      headers: {
+        'Authorization': 'Bearer $tempToken',
+        'internxt-client': 'cli', // Keep consistency
+        'Content-Type': 'application/json',
+      },
     );
 
-    log('Login response received successfully');
-    final data = json.decode(response.body);
-    log('Response data keys: ${data.keys}');
-
-    final authToken = data['token'];
-    final newToken = data['newToken'];
-    log(
-        'Tokens extracted: token=${authToken != null}, newToken=${newToken != null}');
-
-    // Step 5: Extract and decrypt user data
-    log('');
-    log('STEP 5: Processing user data');
-    final user = data['user'];
-    final userEmail = user['email'];
-    final userId = user['userId'] ?? user['uuid'];
-    final rootFolderId = user['rootFolderId'];
-    final bucketId = user['bucket'];
-
-    log('User info extracted:');
-    log('   Email: $userEmail');
-    log('   User ID: $userId');
-    log('   Root Folder ID: $rootFolderId');
-    log('   Bucket ID: $bucketId');
-
-    final encryptedMnemonic = user['mnemonic'];
-    if (encryptedMnemonic == null) {
-      throw Exception('Mnemonic not found in user data');
+    if (hydrationRes.statusCode != 200) {
+      throw Exception("Hydration failed: ${hydrationRes.statusCode}");
     }
 
-    // Step 6: Decrypt mnemonic
-    log('');
-    log('STEP 6: Decrypting mnemonic');
-    final mnemonic = _decryptTextWithKey(encryptedMnemonic, password);
+    final hydrated = json.decode(hydrationRes.body);
+    final user = hydrated['user'];
 
-    // Step 7: Validate mnemonic
-    log('');
-    log('STEP 7: Validating mnemonic');
-    if (!bip39.validateMnemonic(mnemonic)) {
-      throw Exception('Decrypted mnemonic is invalid');
-    }
-    log('Mnemonic validated successfully');
-
-    log('');
-    log('========================================');
-    log('Login completed successfully!');
-    log('========================================');
+    // Step 5: Bridge Credentials (SHA256 of UserID)
+    final bridgePass = crypto.sha256.convert(utf8.encode(user['userId'].toString())).toString();
 
     return {
-      'email': userEmail,
-      'token': authToken,
-      'newToken': newToken,
-      'mnemonic': mnemonic,
-      'userId': userId,
-      'rootFolderId': rootFolderId,
+      'email': user['email'],
+      'token': hydrated['token'],
+      'newToken': hydrated['newToken'],
+      'mnemonic': _decryptTextWithKey(user['mnemonic'], password),
+      'userId': user['userId'],
+      'rootFolderId': user['rootFolderId'],
       'bridgeUser': user['bridgeUser'],
-      'userIdForAuth': user['userId'],
-      'bucketId': bucketId,
+      'bridgePass': bridgePass,
+      'bucketId': user['bucket'], // This is your storage container ID
     };
   }
 
   Future<Map<String, dynamic>> _getSecurityDetails(String email) async {
     final url = Uri.parse('$driveApiUrl/auth/login');
-    log('POST $url (for security details)');
+    log('💧 TRACE: Fetching security details (salt) for $email');
 
     final response = await _makeRequest(
       'POST',
       url,
-      body: json.encode({'email': email}),
+      body: json.encode({'email': email.toLowerCase().trim()}),
       useAuth: false,
     );
 
-    return json.decode(response.body);
+    final data = json.decode(response.body);
+    if (data['sKey'] == null) {
+      throw Exception("Security details failed: sKey missing from response.");
+    }
+    return data;
   }
 
   Future<Map<String, dynamic>> getFileMetadata(String fileUuid) async {
@@ -3467,14 +3451,11 @@ class InternxtClient {
   }
 
   Map<String, String> _getNetworkAuth(String bridgeUser, String userId) {
-    log('Generating network auth from bridgeUser and userId');
-
-    final hashedPassword =
-        crypto.sha256.convert(utf8.encode(userId)).toString();
-
+    log("🔑 TRACE: Generating Network Auth using SHA256 of UserID");
+    final bridgePass = crypto.sha256.convert(utf8.encode(userId.toString())).toString();
     return {
       'user': bridgeUser,
-      'pass': hashedPassword,
+      'pass': bridgePass,
     };
   }
 
@@ -4000,23 +3981,33 @@ class InternxtClient {
 // CONFIG SERVICE
 // ============================================================================
 
+/// Handles persistent storage for credentials, batch states, and WebDAV metadata.
+
 class ConfigService {
-  late final String configDir;
+  late final String internxtCliDataDir;
+  late final String internxtCliLogsDir;
   late final String credentialsFile;
   late final String batchStateDir; 
   late final String webdavPidFile;
 
   ConfigService() {
     final home = io.Platform.environment['HOME'] ?? io.Platform.environment['USERPROFILE'] ?? '.';
-    configDir = p.join(home, '.internxt-cli');
-    credentialsFile = p.join(configDir, '.inxtcli-dart-creds.json');
-    batchStateDir = p.join(configDir, 'batch_states'); 
-    webdavPidFile = p.join(configDir, 'webdav.pid');
+    internxtCliDataDir = p.join(home, '.internxt-cli');
+    internxtCliLogsDir = p.join(internxtCliDataDir, 'logs');
+    batchStateDir = p.join(internxtCliDataDir, 'batch_states'); 
+    credentialsFile = p.join(internxtCliDataDir, '.inxtcli-dart-creds.json');
+    webdavPidFile = p.join(internxtCliDataDir, 'webdav.pid');
 
-    io.Directory(configDir).createSync(recursive: true); 
+    // Ensure directories exist
+    io.Directory(internxtCliDataDir).createSync(recursive: true); 
+    io.Directory(internxtCliLogsDir).createSync(recursive: true);
     io.Directory(batchStateDir).createSync(recursive: true);
   }
 
+  // Getter for the config handleConfig method
+  String get configDir => internxtCliDataDir;
+
+  // --- WebDAV PID Management ---
   Future<void> saveWebdavPid(int pid) async {
     try {
       await io.File(webdavPidFile).writeAsString(pid.toString());
@@ -4047,6 +4038,7 @@ class ConfigService {
     }
   }
 
+  // --- Batch State Management ---
   String generateBatchId(String operationType, List<String> sources, String target) {
       final input = '$operationType-${sources.join('|')}-$target';
       final bytes = utf8.encode(input);
@@ -4096,21 +4088,18 @@ class ConfigService {
     }
   }
 
-  Future<void> saveCredentials(Map<String, String?> credentials) async {
+  // --- Hydrated Credentials Management ---
+  Future<void> saveCredentials(Map<String, dynamic> credentials) async {
     final file = io.File(credentialsFile);
-    await file.writeAsString(json.encode(credentials));
+    await file.writeAsString(json.encode(credentials), flush: true);
   }
 
-  Future<Map<String, String>?> readCredentials() async {
+  Future<Map<String, dynamic>?> readCredentials() async {
     final file = io.File(credentialsFile);
-    if (!await file.exists()) {
-      return null;
-    }
-
+    if (!await file.exists()) return null;
     try {
       final contents = await file.readAsString();
-      final data = json.decode(contents) as Map<String, dynamic>;
-      return data.map((k, v) => MapEntry(k, v?.toString() ?? ''));
+      return json.decode(contents) as Map<String, dynamic>;
     } catch (e) {
       return null;
     }

@@ -45,7 +45,6 @@ class _VirtualFileStat implements io.FileStat {
 }
 
 // --- Helper: Streaming File Sink ---
-// --- Helper: Streaming File Sink ---
 class InternxtFileSink implements io.IOSink {
   final InternxtFile internxtFile;
   final InternxtClient client; 
