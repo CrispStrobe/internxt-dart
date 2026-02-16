@@ -1289,13 +1289,17 @@ class InternxtCLI {
         io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
         io.exit(1);
       }
+      
+      // Load session into client
       client.setAuth(creds);
 
-      final bridgeUser = creds['bridgeUser'];
-      final userIdForAuth = creds['userIdForAuth'];
+      // Extract Bridge Metadata (Matching Hydrated JSON keys)
+      final bridgeUser = creds['bridgeUser']?.toString();
+      final userIdForAuth = creds['userId']?.toString(); // Fix: changed from userIdForAuth
+
       if (bridgeUser == null || userIdForAuth == null) {
         throw Exception(
-            'Credentials file is missing bridgeUser or userId. Please login again.');
+            'Credentials file is missing bridgeUser or userId. Please login again to re-hydrate the session.');
       }
 
       final targetPath = argResults['target'] as String? ?? '/';
@@ -1356,8 +1360,8 @@ class InternxtCLI {
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
 
-      final bridgeUser = creds['bridgeUser'];
-      final userIdForAuth = creds['userIdForAuth'];
+      final bridgeUser = creds['bridgeUser']?.toString();
+      final userIdForAuth = creds['userId']?.toString();
       if (bridgeUser == null || userIdForAuth == null) {
         throw Exception(
             'Credentials file is missing bridgeUser or userId. Please login again.');
@@ -1409,8 +1413,8 @@ Future<void> handleDownload(List<String> args) async {
       client.setAuth(creds);
 
       final fileUuid = args[0];
-      final bridgeUser = creds['bridgeUser'];
-      final userIdForAuth = creds['userIdForAuth'];
+      final bridgeUser = creds['bridgeUser']?.toString();
+      final userIdForAuth = creds['userId']?.toString();
 
       if (bridgeUser == null || userIdForAuth == null) {
         throw Exception(
@@ -1699,14 +1703,13 @@ class InternxtClient {
 
   void setAuth(Map<String, dynamic> creds) {
     log("🔑 TRACE: Updating client session state from credentials");
-    // Use .toString() or ?.toString() to safely convert ints/strings from JSON
     authToken    = creds['token']?.toString();
     newToken     = creds['newToken']?.toString();
     mnemonic     = creds['mnemonic']?.toString();
     userEmail    = creds['email']?.toString();
-    userId       = creds['userId']?.toString();
+    userId       = creds['userId']?.toString();      // Hydrated field
     rootFolderId = creds['rootFolderId']?.toString();
-    bucketId     = creds['bucketId']?.toString(); 
+    bucketId     = creds['bucketId']?.toString();    // Hydrated field
     
     log("📊 TRACE: Session loaded for $userEmail (Bucket: $bucketId)");
   }
@@ -1802,7 +1805,12 @@ class InternxtClient {
       ...?headers,
     };
 
-    if (useAuth && newToken != null) {
+    if (isNetworkAuth && networkUser != null && networkPass != null) {
+      // EXACT match to Python/JS SDK: Network API uses Basic Auth
+      final authString = base64Encode(utf8.encode('$networkUser:$networkPass'));
+      requestHeaders['Authorization'] = 'Basic $authString';
+      log('🔐 [DEBUG] Using Basic Auth for Network API');
+    } else if (useAuth && newToken != null) {
       requestHeaders['Authorization'] = 'Bearer $newToken';
     }
 
@@ -3012,42 +3020,29 @@ class InternxtClient {
     String bucketId,
     int fileSize,
     String user,
-    String pass, {
-    int maxRetries = 3, // This parameter is no longer used, but kept for signature compatibility
-  }) async {
-    final url =
-        Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
-    final data = {
+    String pass,
+  ) async {
+    final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
+    final body = json.encode({
       'uploads': [
         {'index': 0, 'size': fileSize}
       ]
-    };
-    final body = json.encode(data);
+    });
 
-    log('POST $url (start upload)');
+    // Uses your actual _makeRequest signature
+    final response = await _makeRequest(
+      'POST',
+      url,
+      body: body,
+      useAuth: false,         // Disable Bearer token
+      isNetworkAuth: true,    // Enable Basic Auth
+      networkUser: user,
+      networkPass: pass,
+    );
 
-    try {
-      // All retry logic (network, 5xx, 401) is now handled inside _makeRequest.
-      // We just make one call.
-      final response = await _makeRequest(
-        'POST',
-        url,
-        body: body,
-        useAuth: false,
-        isNetworkAuth: true,
-        networkUser: user,
-        networkPass: pass,
-      );
-
-      return json.decode(response.body);
-      
-    } catch (e) {
-      // If _makeRequest fails after all its retries, it will throw.
-      log('Start upload failed after all retries: $e');
-      throw Exception(
-          'Failed to start upload after multiple attempts: $e');
-    }
+    return json.decode(response.body);
   }
+  
 
   Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
     log('PUT $uploadUrl (uploading chunk)');
@@ -3066,7 +3061,6 @@ class InternxtClient {
   Future<Map<String, dynamic>> _finishUpload(String bucketId,
       Map<String, dynamic> payload, String user, String pass) async {
     final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
-    log('POST $url (finish upload)');
 
     final response = await _makeRequest(
       'POST',
@@ -3100,7 +3094,7 @@ class InternxtClient {
   }
 
   Future<Map<String, dynamic>> _uploadFile(
-    io.File localFile, // Note we use io.File
+    io.File localFile,
     String destinationFolderUuid,
     String remoteFileName, {
     required String bridgeUser,
@@ -3108,56 +3102,43 @@ class InternxtClient {
     String? creationTime,
     String? modificationTime,
   }) async {
-    if (this.bucketId == null) {
-      throw Exception(
-          "Bucket ID not found in credentials. Please login again.");
-    }
-    final bucketId = this.bucketId!;
-
-    if (this.mnemonic == null) throw Exception("Not logged in");
-
-    final networkAuth = _getNetworkAuth(bridgeUser, userIdForAuth);
-    final networkUser = networkAuth['user']!;
-    final networkPass = networkAuth['pass']!;
-
     final fileBytes = await localFile.readAsBytes();
     final fileSize = fileBytes.length;
 
-    print("     📤 Uploading '$remoteFileName' (${formatSize(fileSize)})...");
-    
-    if (creationTime != null || modificationTime != null) {
-       log("     🕐 Attempting to preserve timestamps:");
-       if (creationTime != null) log("        Creation: $creationTime");
-       if (modificationTime != null) log("        Modification: $modificationTime");
+    // --- NEW: 402 PREVENTION ---
+    if (fileSize == 0) {
+      log("     ⚠️ Skipping 0-byte file: '$remoteFileName' (API would return 402)");
+      // We throw a specific exception that the parent loop can catch to mark as 'skipped'
+      throw Exception("SKIPPED_EMPTY_FILE");
     }
 
-    log("     🔐 Encrypting with exact protocol");
-    final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId);
+    String? networkFileId;
+    log("     🔐 Encrypting and initializing network upload...");
+    
+    final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId!);
     final encryptedData = encryptedResult['data']!;
     final fileIndexHex = encryptedResult['index']!;
 
-    log("     🚀 Initializing network upload");
+    final bridgePass = crypto.sha256.convert(utf8.encode(userIdForAuth)).toString();
+    
     final startResponse = await _startUpload(
-        bucketId, encryptedData.length, networkUser, networkPass);
+        bucketId!, encryptedData.length, bridgeUser, bridgePass);
+    
     final uploadUrl = startResponse['uploads'][0]['url'];
     final fileNetworkUuid = startResponse['uploads'][0]['uuid'];
 
-    log("     ☁️  Uploading encrypted data");
     await _uploadChunk(uploadUrl, encryptedData);
 
-    log("     ✅ Finalizing network upload");
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
     final finishPayload = {
       'index': fileIndexHex,
-      'shards': [
-        {'hash': encryptedHash, 'uuid': fileNetworkUuid}
-      ]
+      'shards': [{'hash': encryptedHash, 'uuid': fileNetworkUuid}]
     };
-    final finishResponse =
-        await _finishUpload(bucketId, finishPayload, networkUser, networkPass);
-    final networkFileId = finishResponse['id'];
+    
+    final finishResponse = await _finishUpload(bucketId!, finishPayload, bridgeUser, bridgePass);
+    networkFileId = finishResponse['id'];
 
-    log("     📋 Creating file metadata");
+    log("     📋 Creating Drive file entry...");
     final plainName = p.basenameWithoutExtension(remoteFileName);
     final fileType = p.extension(remoteFileName).replaceAll('.', '');
 
@@ -3167,11 +3148,11 @@ class InternxtClient {
       'type': fileType,
       'size': fileSize,
       'bucket': bucketId,
-      'fileId': networkFileId,
+      'fileId': networkFileId, // Guaranteed non-null here because fileSize > 0
       'encryptVersion': 'Aes03',
       'name': '',
-      'creationTime': creationTime, 
-      'modificationTime': modificationTime, 
+      'creationTime': creationTime,
+      'modificationTime': modificationTime,
     };
 
     return await _createFileEntry(fileEntryPayload);
@@ -3258,6 +3239,10 @@ class InternxtClient {
       print("  -> ✅ Successfully uploaded: $effectiveRemoteFilename");
       return "uploaded";
     } catch (upErr) {
+      if (upErr.toString().contains("SKIPPED_EMPTY_FILE")) {
+        print("  -> ⏭️  Skipped empty file (API policy): $effectiveRemoteFilename");
+        return "skipped";
+      }
       print("  -> ❌ Error during upload: $upErr");
       return "error";
     }
@@ -3469,8 +3454,8 @@ class InternxtClient {
 
   Future<Map<String, dynamic>> _getDownloadLinks(
       String bucketId, String fileId, String user, String pass) async {
+    
     final url = Uri.parse('$networkUrl/buckets/$bucketId/files/$fileId/info');
-    log('GET $url');
 
     final response = await _makeRequest(
       'GET',
@@ -3479,7 +3464,7 @@ class InternxtClient {
       useAuth: false,
       isNetworkAuth: true,
       networkUser: user,
-      networkPass: pass,
+      networkPass: pass, // This must be the SHA256 bridgePass
     );
 
     return json.decode(response.body);
