@@ -865,7 +865,7 @@ class InternxtCLI {
       final String destinationPath = args[1];
       final bool force = argResults['force'] as bool;
 
-      // 1. Resolve Destination first
+      // 1. Resolve Destination (Matches Python target resolution)
       print("🔍 Resolving destination path: $destinationPath");
       final destFolderInfo = await client.resolvePath(destinationPath);
       if (destFolderInfo['type'] != 'folder') {
@@ -878,18 +878,38 @@ class InternxtCLI {
 
       if (sourcePattern.contains('*')) {
         print("🌐 Pattern detected, performing server-side expansion...");
-        final parentPath = p.dirname(sourcePattern);
+        
+        // Fix: Ensure parentPath is at least '/' for root-level patterns like '/*.pdf'
+        var parentPath = p.dirname(sourcePattern);
+        if (parentPath == '.') parentPath = '/';
+        
         final pattern = p.basename(sourcePattern);
         final glob = Glob(pattern);
 
+        // Resolve parent folder to get its UUID
         final parentInfo = await client.resolvePath(parentPath);
-        final folders = await client.listFolders(parentInfo['uuid']);
-        final files = await client.listFolderFiles(parentInfo['uuid']);
+        final parentUuid = parentInfo['uuid'] as String;
+
+        // Fetch children (Matches Python get_folder_content logic)
+        final folders = await client.listFolders(parentUuid);
+        final files = await client.listFolderFiles(parentUuid);
         
         for (var item in [...folders, ...files]) {
-          final name = item['name'] ?? '';
-          if (glob.matches(name)) {
-            itemsToMove.add(item);
+          // Robust Name Reconstruction: Match display name (e.g. "file.pdf")
+          final String displayName;
+          if (item['type'] == 'file') {
+            final name = item['name'] ?? '';
+            final ext = item['fileType'] ?? '';
+            displayName = (ext.isNotEmpty) ? '$name.$ext' : name;
+          } else {
+            displayName = item['name'] ?? '';
+          }
+
+          if (glob.matches(displayName)) {
+            itemsToMove.add({
+              ...item,
+              'displayName': displayName,
+            });
           }
         }
       } else {
@@ -897,7 +917,7 @@ class InternxtCLI {
         itemsToMove.add({
           'uuid': sourceInfo['uuid'],
           'type': sourceInfo['type'],
-          'name': (sourceInfo['metadata'] as Map)['name'] ?? sourcePattern,
+          'displayName': (sourceInfo['metadata'] as Map)['name'] ?? sourcePattern,
         });
       }
 
@@ -906,7 +926,7 @@ class InternxtCLI {
         return;
       }
 
-      // 3. Confirm Batch
+      // 3. Confirm Batch (Safety precaution for mass moves)
       if (itemsToMove.length > 1 && !force) {
         io.stdout.write('❓ Move ${itemsToMove.length} items to "$destinationPath"? [y/N]: ');
         final res = io.stdin.readLineSync()?.toLowerCase();
@@ -916,14 +936,15 @@ class InternxtCLI {
         }
       }
 
-      // 4. Execution Loop
+      // 4. Execution Loop (Matches Python move_by_path sequence)
       for (var item in itemsToMove) {
         final uuid = item['uuid'] as String;
         final type = item['type'] as String;
-        final name = item['name'] as String;
+        final name = item['displayName'] as String;
 
         print("🚀 Moving $type: $name...");
         try {
+          // PATCH /files/{uuid} or PATCH /folders/{uuid}
           if (type == 'file') {
             await client.moveFile(uuid, destinationFolderUuid);
           } else {
@@ -3058,45 +3079,48 @@ class InternxtClient {
     int bytesSent = 0;
     final stopwatch = Stopwatch()..start();
 
-    log("     ☁️  [STEP 3/5] Starting streamed upload for $fileName (${formatSize(totalBytes)})");
+    print("     ☁️  [STEP 3/5] Streamed Network Transfer: $fileName");
 
     final request = http.StreamedRequest('PUT', Uri.parse(uploadUrl));
     request.headers['Content-Type'] = 'application/octet-stream';
     request.headers['internxt-client'] = 'cli';
     request.contentLength = totalBytes;
 
-    // Use 64KB internal chunks for the stream to provide smooth progress updates
-    const int stepSize = 64 * 1024;
+    // Use smaller chunks (128KB) to see more granular percentage growth
+    const int internalBuffer = 128 * 1024;
+    final responseFuture = request.send();
 
-    // Start the asynchronous write to the request sink
-    Future(() async {
-      try {
-        for (int i = 0; i < totalBytes; i += stepSize) {
-          final end = (i + stepSize < totalBytes) ? i + stepSize : totalBytes;
-          final chunk = chunkData.sublist(i, end);
-          request.sink.add(chunk);
-          bytesSent += chunk.length;
+    try {
+      for (int i = 0; i < totalBytes; i += internalBuffer) {
+        final end = (i + internalBuffer < totalBytes) ? i + internalBuffer : totalBytes;
+        final chunk = chunkData.sublist(i, end);
+        
+        request.sink.add(chunk);
+        bytesSent += chunk.length;
 
-          // Progress Indication (Python tqdm style)
-          final percent = (bytesSent / totalBytes * 100).toStringAsFixed(1);
-          final speed = bytesSent / (stopwatch.elapsedMilliseconds / 1000 + 0.001);
-          
-          // Use \r to overwrite the same line in terminal
-          io.stdout.write('\r        Progress: $percent% (${formatSize(bytesSent)}/${formatSize(totalBytes)}) [${formatSize(speed)}/s]   ');
-        }
-      } finally {
-        await request.sink.close();
+        // Progress Calculation
+        final percent = (bytesSent / totalBytes * 100).toStringAsFixed(1);
+        final elapsed = stopwatch.elapsedMilliseconds / 1000.0;
+        final speed = bytesSent / (elapsed > 0 ? elapsed : 0.001);
+        
+        // High verbosity UI update
+        io.stdout.write('\r        Progress: $percent% (${formatSize(bytesSent)}/${formatSize(totalBytes)}) [${formatSize(speed)}/s]   ');
+        
+        // CRITICAL FIX: Mandatory delay to prevent socket saturation and allow UI repaint
+        // This is how the Go adapter prevents "jumping" to the end
+        await Future.delayed(const Duration(milliseconds: 5)); 
       }
-    });
+    } finally {
+      await request.sink.close();
+    }
 
-    final response = await http.Response.fromStream(await request.send());
-    print(''); // Move to next line after progress is 100%
+    final response = await http.Response.fromStream(await responseFuture);
+    print(''); 
 
     if (response.statusCode != 200 && response.statusCode != 201) {
-      throw Exception('Upload chunk failed: ${response.statusCode} - ${response.body}');
+      throw Exception('Upload failed: ${response.statusCode} - ${response.body}');
     }
   }
-  
 
   Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
     log('PUT $uploadUrl (uploading chunk)');
@@ -3156,62 +3180,48 @@ class InternxtClient {
     String? creationTime,
     String? modificationTime,
   }) async {
+    final fileSize = await localFile.length();
+    final stopwatch = Stopwatch()..start();
+
+    // STEP 1: Encryption Verbosity (Python style)
+    print("\n     🔐 [STEP 1/5] Starting Encryption for ${formatSize(fileSize)}...");
     final fileBytes = await localFile.readAsBytes();
-    final fileSize = fileBytes.length;
-
-    // Pre-emptive skip for 0-byte files to avoid 402 error
-    if (fileSize == 0) {
-      log("⚠️ Skipping 0-byte file: '$remoteFileName' (API Plan Constraint)");
-      throw Exception("SKIPPED_EMPTY_FILE");
-    }
-
-    final bridgePass = crypto.sha256.convert(utf8.encode(userIdForAuth)).toString();
-    String? networkFileId;
+    final encryptClock = Stopwatch()..start();
     
-    // Robust Retry Loop (Matches Python DriveService.upload_file_to_folder)
-    const int maxRetries = 3;
-    for (int attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        log("🔐 Step 1/5: Local Encryption...");
-        final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId!);
-        final encryptedData = encryptedResult['data']!;
-        final fileIndexHex = encryptedResult['index']!;
+    final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId!);
+    final encryptedData = encryptedResult['data']!;
+    final fileIndexHex = encryptedResult['index']!;
+    
+    encryptClock.stop();
+    print("     ✅ Encryption complete! (${encryptClock.elapsed.inSeconds}s, ${formatSize(fileSize / (encryptClock.elapsed.inSeconds + 0.001))}/s)");
 
-        log("🚀 Step 2/5: Requesting Upload URL...");
-        final startResponse = await _startUpload(bucketId!, encryptedData.length, bridgeUser, bridgePass);
-        final uploadUrl = startResponse['uploads'][0]['url'];
-        final fileNetworkUuid = startResponse['uploads'][0]['uuid'];
+    // STEP 2: Start (Network Auth check)
+    final bridgePass = crypto.sha256.convert(utf8.encode(userIdForAuth)).toString();
+    log("📡 [DEBUG] Requesting Network Shard URL (Basic Auth via SHA256 of UID)");
+    final startResponse = await _startUpload(bucketId!, encryptedData.length, bridgeUser, bridgePass);
+    
+    // STEP 3: The Optimized Stream (Fixed in #1 above)
+    await _uploadChunkWithProgress(startResponse['uploads'][0]['url'], encryptedData, remoteFileName);
 
-        // STEP 3: Optimized Streamed Chunk Upload
-        await _uploadChunkWithProgress(uploadUrl, encryptedData, remoteFileName);
+    // STEP 4: Finalize
+    print("     ✅ [STEP 4/5] Finalizing network storage...");
+    final encryptedHash = crypto.sha256.convert(encryptedData).toString();
+    final finishResponse = await _finishUpload(bucketId!, {
+      'index': fileIndexHex,
+      'shards': [{'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}]
+    }, bridgeUser, bridgePass);
 
-        log("✅ Step 4/5: Finalizing Storage...");
-        final encryptedHash = crypto.sha256.convert(encryptedData).toString();
-        final finishResponse = await _finishUpload(bucketId!, {
-          'index': fileIndexHex,
-          'shards': [{'hash': encryptedHash, 'uuid': fileNetworkUuid}]
-        }, bridgeUser, bridgePass);
-        
-        networkFileId = finishResponse['id'];
-        break; // Success
-      } catch (e) {
-        if (attempt == maxRetries - 1) rethrow;
-        final delay = Duration(seconds: pow(2, attempt).toInt());
-        log("⚠️ Upload attempt ${attempt + 1} failed. Retrying in ${delay.inSeconds}s...");
-        await Future.delayed(delay);
-      }
-    }
-
-    log("📋 Step 5/5: Registering Metadata...");
+    // STEP 5: Register
+    print("     📋 [STEP 5/5] Creating Drive file entry...");
     return await _createFileEntry({
       'folderUuid': destinationFolderUuid,
       'plainName': p.basenameWithoutExtension(remoteFileName),
       'type': p.extension(remoteFileName).replaceAll('.', ''),
       'size': fileSize,
       'bucket': bucketId,
-      'fileId': networkFileId,
+      'fileId': finishResponse['id'],
       'encryptVersion': 'Aes03',
-      'name': '', // Mandatory empty field for Gateway
+      'name': '',
       'creationTime': creationTime,
       'modificationTime': modificationTime,
     });
