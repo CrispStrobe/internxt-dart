@@ -13,14 +13,14 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 ## Phase 4: split the monolith (in progress)
 
 **Status:** ConfigService, crypto, utils, cache, the HTTP transport
-(including raw drive endpoint helpers), the auth protocol, drive
-mutating ops, and the cache-aware listing + path resolution have
-been extracted. cli.dart down from 4317 → 3336 LOC. Seven new
-modules at the project root: `config.dart` (152), `crypto.dart`
-(211), `utils.dart` (45), `cache.dart` (84), `api.dart` (228),
-`auth.dart` (167), `drive.dart` (570). Tests stay green via thin
-delegating wrappers + re-exports. Each extraction got its own
-commit (4.a–4.h.2).
+(including raw drive endpoint helpers), the auth protocol, and
+drive.dart in full have been extracted. cli.dart down from 4317
+→ 2986 LOC (under 3000 for the first time). Seven new modules at
+the project root: `config.dart` (152), `crypto.dart` (211),
+`utils.dart` (45), `cache.dart` (84), `api.dart` (228), `auth.dart`
+(167), `drive.dart` (1022). Tests stay green via thin delegating
+wrappers + re-exports. Each extraction got its own commit
+(4.a–4.h.3).
 
 The state-vs-protocol split is now consistent across all layers:
 instance state (the 7 session fields, `_isRefreshingToken` lock,
@@ -31,17 +31,13 @@ dependencies as parameters. Drive ops take the cache maps plus the
 directly.
 
 **Still ahead (in this phase):**
-- `drive.dart` 4.h.3 — recursive folder creation + search / find /
-  tree. Specifically: `_createFolder`, `createFolderRecursive`,
-  `_resolveOrCreateRemoteFolder`, `_buildFullPath`, `search`,
-  `findFiles`, `printTree`. The two underscore wrappers
-  `_apiSearchFiles` / `_apiGetFolderAncestors` will be dropped when
-  their callers move (only `search` / `_buildFullPath` use them).
 - `upload.dart` — `_startUpload`, `_uploadChunkWithProgress`,
   `_finishUpload`, `_createFileEntry`, `_uploadFile`,
   `uploadThumbnailAsync`, `uploadSingleItem`, `upload`. Memory-gated
   concurrency lives here. Also still has the `_invalidateCache`
   call sites that justify keeping that wrapper on `InternxtClient`.
+  Likely needs to be staged across two commits because of size
+  (~700 LOC) and the network-auth + crypto integration.
 - `download.dart` — `downloadFile`, `downloadFileStreamed`,
   `downloadPath`, `_getDownloadLinks`, `_getNetworkAuth`. The bridge-
   auth helper currently lives near the upload code but belongs with

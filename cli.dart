@@ -2328,152 +2328,12 @@ class InternxtClient {
 
   // --- Upload Operations ---
 
-  Future<Map<String, dynamic>> _createFolder(
-      String name, String parentFolderUuid,
-      {String? creationTime, String? modificationTime}) async {
-    final url = Uri.parse('$driveApiUrl/folders');
-    final data = <String, dynamic>{
-      'plainName': name,
-      'parentFolderUuid': parentFolderUuid
-    };
-
-    if (creationTime != null) {
-      data['creationTime'] = creationTime;
-      log("     🕐 Added folder creationTime to payload");
-    }
-    if (modificationTime != null) {
-      data['modificationTime'] = modificationTime;
-      log("     🕐 Added folder modificationTime to payload");
-    }
-
-    log('POST $url (create folder $name)');
-
-    final response = await _makeRequest(
-      'POST',
-      url,
-      body: json.encode(data),
-    );
-
-    _invalidateCache(parentFolderUuid);
-
-    return json.decode(response.body);
-  }
-
   Future<Map<String, dynamic>> createFolderRecursive(String path,
-      {String? creationTime, String? modificationTime}) async {
-    if (this.rootFolderId == null) throw Exception("Not logged in");
-    var cleanPath = path.trim().replaceAll(RegExp(r'^/+|/+$'), '');
-    if (cleanPath.isEmpty)
-      return {'uuid': rootFolderId, 'plainName': 'Root', 'path': '/'};
-    var parts = cleanPath.split('/');
-    var currentParentUuid = rootFolderId!;
-    var currentPathSoFar = '/';
-    Map<String, dynamic>? currentFolderInfo = {
-      'uuid': rootFolderId,
-      'plainName': 'Root',
-      'path': '/'
-    };
-
-    for (var i = 0; i < parts.length; i++) {
-      final part = parts[i];
-      if (part.isEmpty) continue;
-      final isLastPart = (i == parts.length - 1);
-
-      final partPath = '$currentPathSoFar/$part'.replaceAll('//', '/');
-      Map<String, dynamic>? foundFolder = null;
-
-      try {
-        final folders = await listFolders(currentParentUuid);
-        for (var folder in folders) {
-          if (folder['name'] == part) {
-            foundFolder = folder;
-            break;
-          }
-        }
-
-        if (foundFolder != null) {
-          currentParentUuid = foundFolder['uuid'];
-          foundFolder['path'] = partPath;
-          currentFolderInfo = foundFolder;
-          currentPathSoFar = partPath;
-          log("  -> Found existing folder: $part in $currentPathSoFar (UUID: ${currentParentUuid.substring(0, 8)}...)");
-
-          if (isLastPart &&
-              (creationTime != null || modificationTime != null)) {
-            log("     ⚠️  Folder exists, cannot update timestamps (API limitation).");
-          }
-        } else {
-          log("  -> Creating folder: $part in $currentPathSoFar");
-          try {
-            final newFolder = await _createFolder(
-              part,
-              currentParentUuid,
-              creationTime: isLastPart ? creationTime : null,
-              modificationTime: isLastPart ? modificationTime : null,
-            );
-            currentParentUuid = newFolder['uuid'];
-            newFolder['path'] = partPath;
-            currentFolderInfo = newFolder;
-            currentPathSoFar = partPath;
-            log("     ✅ Created successfully (UUID: ${currentParentUuid.substring(0, 8)}...)");
-          } on Exception catch (e) {
-            if (e.toString().contains(' 409') ||
-                e.toString().contains('already exists')) {
-              log("     ⚠️ Received 409 Conflict, likely created concurrently. Waiting 1s before re-fetching info for '$part'...");
-
-              await Future.delayed(Duration(seconds: 1));
-
-              try {
-                final parentUuidToList = currentFolderInfo!['uuid'];
-                log("     Re-fetching folders inside parent UUID: ${parentUuidToList.substring(0, 8)}...");
-                _invalidateCache(parentUuidToList);
-                final foldersAfterConflict =
-                    await listFolders(parentUuidToList);
-
-                Map<String, dynamic>? conflictingFolder;
-                try {
-                  conflictingFolder = foldersAfterConflict.firstWhere(
-                    (folder) => folder['name'] == part,
-                  );
-                } catch (e) {
-                  conflictingFolder = null;
-                }
-
-                if (conflictingFolder != null) {
-                  currentParentUuid = conflictingFolder['uuid'];
-                  conflictingFolder['path'] = partPath;
-                  currentFolderInfo = conflictingFolder;
-                  currentPathSoFar = partPath;
-                  log("     ✅ Re-fetched successfully after 409 (UUID: ${currentParentUuid.substring(0, 8)}...)");
-                } else {
-                  log("     ❌ Re-fetch failed: Folder '$part' not found in parent ${parentUuidToList.substring(0, 8)}... after 409.");
-                  throw Exception(
-                      "Folder '$part' conflict (409) but could not re-fetch it.");
-                }
-              } catch (fetchErr) {
-                log("     ❌ Failed during re-fetch attempt for '$part' after 409: $fetchErr");
-                throw Exception(
-                    "Failed to resolve folder '$part' after 409 conflict: $fetchErr");
-              }
-            } else {
-              throw e;
-            }
-          }
-        }
-      } catch (e) {
-        throw Exception(
-            "Failed to process folder part '$part' in '$currentPathSoFar': $e");
-      }
-    }
-    if (currentFolderInfo == null) {
-      throw Exception(
-          "Failed to resolve or create the final folder in the path.");
-    }
-    if (currentFolderInfo['path'] == null) {
-      currentFolderInfo['path'] = currentPathSoFar;
-    }
-    return currentFolderInfo;
-  }
+          {String? creationTime, String? modificationTime}) =>
+      inxt_drive.createFolderRecursive(driveApiUrl, newToken, rootFolderId,
+          _folderCache, _fileCache, path,
+          creationTime: creationTime,
+          modificationTime: modificationTime);
 
   Future<Map<String, dynamic>> _startUpload(
     String bucketId,
@@ -2989,31 +2849,9 @@ class InternxtClient {
   }
 
   Future<Map<String, dynamic>> _resolveOrCreateRemoteFolder(
-      String targetPath) async {
-    Map<String, dynamic> targetFolderInfo;
-    try {
-      targetFolderInfo = await resolvePath(targetPath);
-      if (targetFolderInfo['type'] != 'folder') {
-        throw Exception(
-            "Target path '$targetPath' exists but is not a folder.");
-      }
-      log("✅ Target folder exists: '${targetFolderInfo['path'] ?? targetPath}'");
-    } on Exception catch (e) {
-      if (e.toString().contains("Path not found")) {
-        log("⏳ Target path '$targetPath' not found. Attempting to create...");
-        try {
-          targetFolderInfo = await createFolderRecursive(targetPath);
-          log("✅ Created target folder '$targetPath'");
-        } catch (createErr) {
-          throw Exception(
-              "Failed to create target folder '$targetPath': $createErr");
-        }
-      } else {
-        throw e;
-      }
-    }
-    return targetFolderInfo;
-  }
+          String targetPath) =>
+      inxt_drive.resolveOrCreateRemoteFolder(driveApiUrl, newToken,
+          rootFolderId, _folderCache, _fileCache, targetPath);
 
   Future<Map<String, dynamic>> _getDownloadLinks(
       String bucketId, String fileId, String user, String pass) async {
@@ -3082,222 +2920,34 @@ class InternxtClient {
   Future<void> deletePermanently(String uuid, String type) =>
       inxt_drive.deletePermanently(driveApiUrl, newToken, uuid, type);
 
-  // --- Search / Find ---
+  // --- Search / Find / Tree ---
+  // Implementations live in drive.dart. These wrappers thread the
+  // session state through.
 
-  Future<List<dynamic>> _apiSearchFiles(String query) =>
-      inxt_api.searchFiles(driveApiUrl, newToken, query);
-
-  Future<List<dynamic>> _apiGetFolderAncestors(String folderUuid) =>
-      inxt_api.getFolderAncestors(driveApiUrl, newToken, folderUuid);
-
-  /// Builds the full readable path for an item given its metadata and parent UUID.
-  Future<String> _buildFullPath(
-      Map<String, dynamic> item, String? parentUuid) async {
-    String itemName = item['plainName'] ?? 'Unknown';
-    if (item['itemType'] == 'file' &&
-        item['type'] != null &&
-        item['type'].isNotEmpty) {
-      itemName = '$itemName.${item['type']}';
-    }
-
-    if (parentUuid == null || parentUuid == this.rootFolderId) {
-      return '/$itemName';
-    }
-
-    try {
-      final ancestors = await _apiGetFolderAncestors(parentUuid);
-      final pathParts = ancestors
-          .map((ancestor) => ancestor['plainName'] as String?)
-          .where((name) => name != null && name.toLowerCase() != 'root')
-          .toList();
-
-      final parentPath = '/${pathParts.join('/')}';
-      return '${parentPath.replaceAll('//', '/')}/$itemName';
-    } catch (e) {
-      log('Could not build full path for $itemName: $e');
-      return '/?/$itemName'; // Best guess path
-    }
-  }
-
-  /// Performs a search and enhances results with full paths.
   Future<Map<String, List<Map<String, dynamic>>>> search(String query,
-      {bool detailed = false}) async {
-    final results = await _apiSearchFiles(query);
+          {bool detailed = false}) =>
+      inxt_drive.search(driveApiUrl, newToken, rootFolderId, query,
+          detailed: detailed);
 
-    List<Map<String, dynamic>> folders = [];
-    List<Map<String, dynamic>> files = [];
-
-    for (var item in results) {
-      final isFolder = item['itemType'] == 'folder';
-      final itemMap = {
-        'uuid': item['itemId'] ?? item['id'],
-        'name': item['name'],
-        'itemType': item['itemType'],
-        'plainName': item['name'],
-        'type': item['type'],
-      };
-
-      if (detailed) {
-        try {
-          Map<String, dynamic> metadata;
-          String? parentUuid;
-          if (isFolder) {
-            metadata = await getFolderMetadata(itemMap['uuid']);
-            parentUuid = metadata['parentUuid'];
-          } else {
-            metadata = await getFileMetadata(itemMap['uuid']);
-            parentUuid = metadata['folderUuid'];
-          }
-          itemMap['fullPath'] = await _buildFullPath(itemMap, parentUuid);
-          itemMap['metadata'] = metadata;
-        } catch (e) {
-          itemMap['fullPath'] = '/?/${itemMap['name']}';
-          itemMap['metadata'] = {'error': e.toString()};
-        }
-      }
-
-      if (isFolder) {
-        folders.add(itemMap);
-      } else {
-        files.add(itemMap);
-      }
-    }
-    return {'folders': folders, 'files': files};
-  }
-
-  /// Recursively finds files matching a glob pattern, using the cache.
   Future<List<Map<String, dynamic>>> findFiles(
     String startPath,
     String pattern, {
     int maxDepth = -1,
-  }) async {
-    final glob = Glob(pattern, caseSensitive: false);
-    final List<Map<String, dynamic>> results = [];
+  }) =>
+      inxt_drive.findFiles(driveApiUrl, newToken, rootFolderId, _folderCache,
+          _fileCache, startPath, pattern,
+          maxDepth: maxDepth);
 
-    final List<MapEntry<String, int>> pathStack = [MapEntry(startPath, 0)];
-
-    while (pathStack.isNotEmpty) {
-      final entry = pathStack.removeLast();
-      final currentPath = entry.key;
-      final currentDepth = entry.value;
-
-      if (maxDepth != -1 && currentDepth >= maxDepth) {
-        continue;
-      }
-
-      log('Finding in: $currentPath (depth $currentDepth)');
-
-      Map<String, dynamic> resolved;
-      try {
-        resolved = await resolvePath(currentPath);
-        if (resolved['type'] != 'folder') continue;
-      } catch (e) {
-        log('Could not resolve path $currentPath: $e');
-        continue;
-      }
-
-      final currentFolderUuid = resolved['uuid'];
-
-      try {
-        final files = await listFolderFiles(currentFolderUuid);
-        for (var file in files) {
-          final plainName = file['name'] ?? '';
-          final fileType = file['fileType'] ?? '';
-          final fullName =
-              fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
-
-          if (glob.matches(fullName)) {
-            final fullPath = '$currentPath/$fullName'.replaceAll('//', '/');
-            results.add({
-              ...file,
-              'fullPath': fullPath,
-              'displayName': fullName,
-            });
-          }
-        }
-      } catch (e) {
-        log('Could not list files in $currentPath: $e');
-      }
-
-      if (maxDepth == -1 || (currentDepth + 1) < maxDepth) {
-        try {
-          final folders = await listFolders(currentFolderUuid);
-          for (var folder in folders) {
-            final folderName = folder['name'] ?? 'unknown';
-            final subFolderPath =
-                '$currentPath/$folderName'.replaceAll('//', '/');
-            pathStack.add(MapEntry(subFolderPath, currentDepth + 1));
-          }
-        } catch (e) {
-          log('Could not list folders in $currentPath: $e');
-        }
-      }
-    }
-    return results;
-  }
-
-  /// Recursively builds and prints a tree structure for a given path.
   Future<void> printTree(
     String path,
     void Function(String) printLine, {
     int maxDepth = 3,
     int currentDepth = 0,
-    String prefix = "",
-  }) async {
-    if (currentDepth >= maxDepth) return;
-
-    Map<String, dynamic> resolved;
-    try {
-      resolved = await resolvePath(path);
-      if (resolved['type'] != 'folder') {
-        printLine("$prefix└── 📄 ${p.basename(path)}");
-        return;
-      }
-    } catch (e) {
-      printLine("$prefix└── ❌ Error reading path: $e");
-      return;
-    }
-
-    try {
-      final folderUuid = resolved['uuid'];
-      final folders = await listFolders(folderUuid);
-      final files = await listFolderFiles(folderUuid);
-      final allItems = [...folders, ...files];
-
-      if (allItems.isEmpty) return;
-
-      for (var i = 0; i < allItems.length; i++) {
-        final item = allItems[i];
-        final isLastItem = (i == allItems.length - 1);
-
-        final connector = isLastItem ? "└── " : "├── ";
-        final childPrefix = prefix + (isLastItem ? "    " : "│   ");
-
-        final itemName = item['name'] ?? 'Unknown';
-
-        if (item['type'] == 'folder') {
-          final folderPath = '$path/$itemName'.replaceAll('//', '/');
-          printLine("$prefix$connector📁 $itemName/");
-
-          await printTree(
-            folderPath,
-            printLine,
-            maxDepth: maxDepth,
-            currentDepth: currentDepth + 1,
-            prefix: childPrefix,
-          );
-        } else {
-          final fileType = item['fileType'] ?? '';
-          final displayName =
-              fileType.isNotEmpty ? '$itemName.$fileType' : itemName;
-          final size = formatSize(item['size'] ?? 0);
-          printLine("$prefix$connector📄 $displayName ($size)");
-        }
-      }
-    } catch (e) {
-      printLine("$prefix└── ❌ Error listing folder: $e");
-    }
-  }
+    String prefix = '',
+  }) =>
+      inxt_drive.printTree(driveApiUrl, newToken, rootFolderId, _folderCache,
+          _fileCache, path, printLine,
+          maxDepth: maxDepth, currentDepth: currentDepth, prefix: prefix);
 
   // --- File Crypto ---
   // Implementations live in crypto.dart. See note above passToHash.

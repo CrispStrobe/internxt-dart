@@ -6,11 +6,15 @@
 // cache primitives in cache.dart; this module is the layer that
 // glues them.
 //
-// Stage 4.h.1 lifted the simple mutating ops (mv / rename / set
-// timestamp / trash / delete / list-trash). Stage 4.h.2 adds the
-// cache-aware paginated listing primitives plus path resolution
-// (listFolders, listFolderFiles, resolvePath). Stage 4.h.3 will
-// add recursive folder creation and search / findFiles / printTree.
+// Stages:
+//   4.h.1  mutating ops (mv / rename / set timestamp / trash /
+//          delete / list-trash).
+//   4.h.2  cache-aware paginated listing primitives + path
+//          resolution (listFolders, listFolderFiles, resolvePath).
+//   4.h.3  recursive folder creation + search / find / tree
+//          (createFolder, createFolderRecursive,
+//          resolveOrCreateRemoteFolder, buildFullPath, search,
+//          findFiles, printTree).
 //
 // State convention: nothing here holds instance state. Callers pass
 // `driveApiUrl`, a bearer-token snapshot, and (where the operation
@@ -21,8 +25,12 @@
 
 import 'dart:convert';
 
+import 'package:glob/glob.dart';
+import 'package:path/path.dart' as p;
+
 import 'api.dart' as inxt_api;
 import 'cache.dart' as inxt_cache;
+import 'utils.dart' as inxt_utils;
 
 /// Bind cache.clearParentCache's metadata-fetcher callbacks to the
 /// supplied (driveApiUrl, bearerToken) snapshot. Used by every
@@ -568,3 +576,447 @@ Future<Map<String, dynamic>> resolvePath(
     'path': resolvedPathStr.isEmpty ? '/' : resolvedPathStr,
   };
 }
+
+// --- Folder creation ---
+
+/// POST /folders  body: `{plainName, parentFolderUuid, [creationTime,
+/// modificationTime]}`. Invalidates the parent folder listing so a
+/// subsequent listFolders call sees the new folder.
+Future<Map<String, dynamic>> createFolder(
+  String driveApiUrl,
+  String? bearerToken,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String name,
+  String parentFolderUuid, {
+  String? creationTime,
+  String? modificationTime,
+}) async {
+  final body = <String, dynamic>{
+    "plainName": name,
+    "parentFolderUuid": parentFolderUuid,
+  };
+  if (creationTime != null) body["creationTime"] = creationTime;
+  if (modificationTime != null) body["modificationTime"] = modificationTime;
+
+  final response = await inxt_api.makeRequest(
+    "POST",
+    Uri.parse("$driveApiUrl/folders"),
+    bearerToken: bearerToken,
+    body: json.encode(body),
+  );
+
+  inxt_cache.invalidateCache(folderCache, fileCache, parentFolderUuid);
+  return json.decode(response.body);
+}
+
+/// Walks [path] from the root, creating any folder segments that
+/// don't yet exist. Returns the metadata of the deepest segment with
+/// an extra `path` field set to its full path.
+///
+/// On a 409 from `createFolder` (folder created concurrently — common
+/// when two clients race or an in-flight retry crosses a successful
+/// create), invalidates the parent listing, sleeps 1s, refetches,
+/// and continues. Matches the monolith behavior exactly; the live
+/// smoke suite exercises this path via the 3-level recursive create
+/// test.
+///
+/// `creationTime` and `modificationTime` are applied only to the
+/// final segment (matching how the WebDAV layer drives this).
+/// Existing folders cannot have their timestamps updated through
+/// this path — the gateway doesn't support it on existing folders.
+Future<Map<String, dynamic>> createFolderRecursive(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String path, {
+  String? creationTime,
+  String? modificationTime,
+}) async {
+  if (rootFolderId == null) throw Exception('Not logged in');
+  final cleanPath = path.trim().replaceAll(RegExp(r'^/+|/+$'), '');
+  if (cleanPath.isEmpty) {
+    return {'uuid': rootFolderId, 'plainName': 'Root', 'path': '/'};
+  }
+  final parts = cleanPath.split('/');
+  var currentParentUuid = rootFolderId;
+  var currentPathSoFar = '/';
+  Map<String, dynamic>? currentFolderInfo = {
+    'uuid': rootFolderId,
+    'plainName': 'Root',
+    'path': '/',
+  };
+
+  for (var i = 0; i < parts.length; i++) {
+    final part = parts[i];
+    if (part.isEmpty) continue;
+    final isLastPart = (i == parts.length - 1);
+    final partPath = '$currentPathSoFar/$part'.replaceAll('//', '/');
+
+    try {
+      final folders = await listFolders(
+          driveApiUrl, bearerToken, folderCache, currentParentUuid);
+      Map<String, dynamic>? foundFolder;
+      for (var folder in folders) {
+        if (folder['name'] == part) {
+          foundFolder = folder;
+          break;
+        }
+      }
+
+      if (foundFolder != null) {
+        currentParentUuid = foundFolder['uuid'];
+        foundFolder['path'] = partPath;
+        currentFolderInfo = foundFolder;
+        currentPathSoFar = partPath;
+        continue;
+      }
+
+      try {
+        final newFolder = await createFolder(
+          driveApiUrl,
+          bearerToken,
+          folderCache,
+          fileCache,
+          part,
+          currentParentUuid,
+          creationTime: isLastPart ? creationTime : null,
+          modificationTime: isLastPart ? modificationTime : null,
+        );
+        currentParentUuid = newFolder['uuid'];
+        newFolder['path'] = partPath;
+        currentFolderInfo = newFolder;
+        currentPathSoFar = partPath;
+      } on Exception catch (e) {
+        final isConflict = e.toString().contains(' 409') ||
+            e.toString().contains('already exists');
+        if (!isConflict) rethrow;
+
+        // Concurrent create: invalidate the parent listing, wait a
+        // beat for backend consistency, refetch, and look for the
+        // colliding folder.
+        await Future.delayed(const Duration(seconds: 1));
+        final parentUuidToList = currentFolderInfo!['uuid'] as String;
+        inxt_cache.invalidateCache(folderCache, fileCache, parentUuidToList);
+        final foldersAfterConflict = await listFolders(
+            driveApiUrl, bearerToken, folderCache, parentUuidToList);
+
+        Map<String, dynamic>? conflictingFolder;
+        try {
+          conflictingFolder = foldersAfterConflict.firstWhere(
+            (folder) => folder['name'] == part,
+          );
+        } catch (_) {
+          conflictingFolder = null;
+        }
+
+        if (conflictingFolder == null) {
+          throw Exception(
+              "Folder '$part' conflict (409) but could not re-fetch it.");
+        }
+        currentParentUuid = conflictingFolder['uuid'];
+        conflictingFolder['path'] = partPath;
+        currentFolderInfo = conflictingFolder;
+        currentPathSoFar = partPath;
+      }
+    } catch (e) {
+      throw Exception(
+          "Failed to process folder part '$part' in '$currentPathSoFar': $e");
+    }
+  }
+
+  if (currentFolderInfo == null) {
+    throw Exception('Failed to resolve or create the final folder in the path.');
+  }
+  currentFolderInfo['path'] ??= currentPathSoFar;
+  return currentFolderInfo;
+}
+
+/// Resolves [targetPath] if it exists, otherwise creates it
+/// recursively. Throws if the path exists but is a file rather than
+/// a folder. Used by upload/download flows that need a destination
+/// folder on the remote, regardless of whether it already exists.
+Future<Map<String, dynamic>> resolveOrCreateRemoteFolder(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String targetPath,
+) async {
+  Map<String, dynamic> targetFolderInfo;
+  try {
+    targetFolderInfo = await resolvePath(driveApiUrl, bearerToken, rootFolderId,
+        folderCache, fileCache, targetPath);
+    if (targetFolderInfo['type'] != 'folder') {
+      throw Exception("Target path '$targetPath' exists but is not a folder.");
+    }
+  } on Exception catch (e) {
+    if (!e.toString().contains('Path not found')) rethrow;
+    try {
+      targetFolderInfo = await createFolderRecursive(driveApiUrl, bearerToken,
+          rootFolderId, folderCache, fileCache, targetPath);
+    } catch (createErr) {
+      throw Exception(
+          "Failed to create target folder '$targetPath': $createErr");
+    }
+  }
+  return targetFolderInfo;
+}
+
+// --- Search / find / tree ---
+
+/// Reconstruct the full readable path for an item by fetching its
+/// folder ancestors and joining their plainNames. Used by [search]
+/// when `detailed=true` so each result has a usable display path.
+///
+/// Returns `'/?/<itemName>'` on any failure rather than throwing —
+/// the search UI prefers a "best guess" path over a failed search.
+Future<String> buildFullPath(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, dynamic> item,
+  String? parentUuid,
+) async {
+  var itemName = (item['plainName'] ?? 'Unknown') as String;
+  if (item['itemType'] == 'file' &&
+      item['type'] != null &&
+      (item['type'] as String).isNotEmpty) {
+    itemName = '$itemName.${item['type']}';
+  }
+
+  if (parentUuid == null || parentUuid == rootFolderId) {
+    return '/$itemName';
+  }
+
+  try {
+    final ancestors =
+        await inxt_api.getFolderAncestors(driveApiUrl, bearerToken, parentUuid);
+    final pathParts = ancestors
+        .map((ancestor) => ancestor['plainName'] as String?)
+        .where((name) => name != null && name.toLowerCase() != 'root')
+        .toList();
+    final parentPath = '/${pathParts.join('/')}';
+    return '${parentPath.replaceAll('//', '/')}/$itemName';
+  } catch (_) {
+    return '/?/$itemName';
+  }
+}
+
+/// Server-side fuzzy search. With `detailed=true`, each result is
+/// enriched with a full reconstructed path and the raw metadata
+/// record. Without it the result is just `{uuid, name, itemType,
+/// plainName, type}`.
+///
+/// Returns `{folders: [...], files: [...]}` partitioned by the
+/// gateway-provided `itemType` field.
+Future<Map<String, List<Map<String, dynamic>>>> search(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  String query, {
+  bool detailed = false,
+}) async {
+  final results = await inxt_api.searchFiles(driveApiUrl, bearerToken, query);
+
+  final folders = <Map<String, dynamic>>[];
+  final files = <Map<String, dynamic>>[];
+
+  for (var item in results) {
+    final isFolder = item['itemType'] == 'folder';
+    final itemMap = <String, dynamic>{
+      'uuid': item['itemId'] ?? item['id'],
+      'name': item['name'],
+      'itemType': item['itemType'],
+      'plainName': item['name'],
+      'type': item['type'],
+    };
+
+    if (detailed) {
+      try {
+        Map<String, dynamic> metadata;
+        String? parentUuid;
+        if (isFolder) {
+          metadata = await inxt_api.getFolderMetadata(
+              driveApiUrl, bearerToken, itemMap['uuid']);
+          parentUuid = metadata['parentUuid'];
+        } else {
+          metadata = await inxt_api.getFileMetadata(
+              driveApiUrl, bearerToken, itemMap['uuid']);
+          parentUuid = metadata['folderUuid'];
+        }
+        itemMap['fullPath'] = await buildFullPath(
+            driveApiUrl, bearerToken, rootFolderId, itemMap, parentUuid);
+        itemMap['metadata'] = metadata;
+      } catch (e) {
+        itemMap['fullPath'] = '/?/${itemMap['name']}';
+        itemMap['metadata'] = {'error': e.toString()};
+      }
+    }
+
+    if (isFolder) {
+      folders.add(itemMap);
+    } else {
+      files.add(itemMap);
+    }
+  }
+  return {'folders': folders, 'files': files};
+}
+
+/// Recursive client-side glob search. Walks the tree breadth-first
+/// from [startPath], matching files against [pattern] (case-
+/// insensitive Glob). [maxDepth] of -1 means unbounded.
+///
+/// Tolerant of resolve / list failures on individual subtrees:
+/// errors on one branch are swallowed so the search returns whatever
+/// it could find rather than aborting on the first transient
+/// failure. Matches monolith behavior.
+Future<List<Map<String, dynamic>>> findFiles(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String startPath,
+  String pattern, {
+  int maxDepth = -1,
+}) async {
+  final glob = Glob(pattern, caseSensitive: false);
+  final results = <Map<String, dynamic>>[];
+  final pathStack = <MapEntry<String, int>>[MapEntry(startPath, 0)];
+
+  while (pathStack.isNotEmpty) {
+    final entry = pathStack.removeLast();
+    final currentPath = entry.key;
+    final currentDepth = entry.value;
+
+    if (maxDepth != -1 && currentDepth >= maxDepth) continue;
+
+    Map<String, dynamic> resolved;
+    try {
+      resolved = await resolvePath(driveApiUrl, bearerToken, rootFolderId,
+          folderCache, fileCache, currentPath);
+      if (resolved['type'] != 'folder') continue;
+    } catch (_) {
+      continue;
+    }
+
+    final currentFolderUuid = resolved['uuid'] as String;
+
+    try {
+      final files = await listFolderFiles(
+          driveApiUrl, bearerToken, fileCache, currentFolderUuid);
+      for (var file in files) {
+        final plainName = (file['name'] ?? '') as String;
+        final fileType = (file['fileType'] ?? '') as String;
+        final fullName =
+            fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+        if (glob.matches(fullName)) {
+          final fullPath = '$currentPath/$fullName'.replaceAll('//', '/');
+          results.add({
+            ...file,
+            'fullPath': fullPath,
+            'displayName': fullName,
+          });
+        }
+      }
+    } catch (_) {
+      // best-effort: skip this subtree's files
+    }
+
+    if (maxDepth == -1 || (currentDepth + 1) < maxDepth) {
+      try {
+        final folders = await listFolders(
+            driveApiUrl, bearerToken, folderCache, currentFolderUuid);
+        for (var folder in folders) {
+          final folderName = (folder['name'] ?? 'unknown') as String;
+          final subFolderPath =
+              '$currentPath/$folderName'.replaceAll('//', '/');
+          pathStack.add(MapEntry(subFolderPath, currentDepth + 1));
+        }
+      } catch (_) {
+        // best-effort: skip this subtree's subfolders
+      }
+    }
+  }
+  return results;
+}
+
+/// Recursively renders an ASCII tree of [path] up to [maxDepth].
+/// Output is delivered through the [printLine] callback so the
+/// caller can route it to stdout, a buffer, or a log.
+Future<void> printTree(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String path,
+  void Function(String) printLine, {
+  int maxDepth = 3,
+  int currentDepth = 0,
+  String prefix = '',
+}) async {
+  if (currentDepth >= maxDepth) return;
+
+  Map<String, dynamic> resolved;
+  try {
+    resolved = await resolvePath(driveApiUrl, bearerToken, rootFolderId,
+        folderCache, fileCache, path);
+    if (resolved['type'] != 'folder') {
+      printLine('$prefix└── 📄 ${p.basename(path)}');
+      return;
+    }
+  } catch (e) {
+    printLine('$prefix└── ❌ Error reading path: $e');
+    return;
+  }
+
+  try {
+    final folderUuid = resolved['uuid'] as String;
+    final folders =
+        await listFolders(driveApiUrl, bearerToken, folderCache, folderUuid);
+    final files = await listFolderFiles(
+        driveApiUrl, bearerToken, fileCache, folderUuid);
+    final allItems = [...folders, ...files];
+
+    if (allItems.isEmpty) return;
+
+    for (var i = 0; i < allItems.length; i++) {
+      final item = allItems[i];
+      final isLastItem = (i == allItems.length - 1);
+      final connector = isLastItem ? '└── ' : '├── ';
+      final childPrefix = prefix + (isLastItem ? '    ' : '│   ');
+      final itemName = (item['name'] ?? 'Unknown') as String;
+
+      if (item['type'] == 'folder') {
+        final folderPath = '$path/$itemName'.replaceAll('//', '/');
+        printLine('$prefix$connector📁 $itemName/');
+        await printTree(
+          driveApiUrl,
+          bearerToken,
+          rootFolderId,
+          folderCache,
+          fileCache,
+          folderPath,
+          printLine,
+          maxDepth: maxDepth,
+          currentDepth: currentDepth + 1,
+          prefix: childPrefix,
+        );
+      } else {
+        final fileType = (item['fileType'] ?? '') as String;
+        final displayName =
+            fileType.isNotEmpty ? '$itemName.$fileType' : itemName;
+        final size = inxt_utils.formatSize(item['size'] ?? 0);
+        printLine('$prefix$connector📄 $displayName ($size)');
+      }
+    }
+  } catch (e) {
+    printLine('$prefix└── ❌ Error listing folder: $e');
+  }
+}
+
