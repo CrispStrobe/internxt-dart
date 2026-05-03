@@ -1130,10 +1130,49 @@ void main() {
     expect(copyDl['data'] as Uint8List, equals(w.payload));
   });
 
-  test('PINNED GAP: update_file replaces content in-place',
-      () {},
-      skip: 'update_file (replace-bytes-while-keeping-uuid) is not '
-          'implemented in the Dart CLI. The Python WebDAV layer uses '
-          'this for PUT-on-existing; the Dart WebDAV layer trashes + '
-          're-uploads instead.');
+  liveTest('updateFile replaces bytes while keeping uuid', () async {
+    // Initial upload (content v1).
+    final stem = _uniqueName('updatable');
+    final wV1 = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      wV1.file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final initial = await client.resolvePath('$_sentinelPath/$stem.txt');
+    final fileUuid = initial['uuid'] as String;
+
+    // Replace with content v2 — different size on purpose.
+    final v2Path = '${tmpRoot.path}/${stem}_v2.txt';
+    final v2Bytes = Uint8List.fromList(
+        utf8.encode('REPLACED content for updateFile test ${_uniqueName('')}'));
+    File(v2Path).writeAsBytesSync(v2Bytes);
+
+    await client.updateFile(
+      fileUuid,
+      File(v2Path),
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+    );
+
+    // Critical invariant: same uuid resolves to the new bytes.
+    final after = await client.resolvePath('$_sentinelPath/$stem.txt');
+    expect(after['uuid'], equals(fileUuid),
+        reason: 'updateFile changed the uuid (expected in-place)');
+    final downloadResult = await client.downloadFile(
+      fileUuid,
+      _creds!['bridgeUser'] as String,
+      _creds!['userId'].toString(),
+    );
+    final downloaded = downloadResult['data'] as Uint8List;
+    expect(downloaded, equals(v2Bytes),
+        reason: 'downloaded bytes do not match v2');
+    expect(downloaded, isNot(equals(wV1.payload)),
+        reason: 'updateFile did not actually replace the content');
+  });
 }

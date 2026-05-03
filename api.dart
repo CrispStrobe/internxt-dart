@@ -242,6 +242,28 @@ Future<Map<String, dynamic>> getStorageUsage(
   return json.decode(response.body);
 }
 
+/// PUT /files/{uuid} — replace a file's content while keeping its UUID.
+///
+/// Used by the in-place update path (`updateFile` in upload.dart) to
+/// swap the network shard pointer of an existing drive entry without
+/// creating a new UUID. Payload shape: `{fileId, size}` where
+/// `fileId` is the network UUID returned by `finishUpload` for the
+/// new content, and `size` is the new plaintext size in bytes.
+Future<Map<String, dynamic>> replaceFile(
+  String driveApiUrl,
+  String? bearerToken,
+  String fileUuid,
+  Map<String, dynamic> payload,
+) async {
+  final response = await makeRequest(
+    'PUT',
+    Uri.parse('$driveApiUrl/files/$fileUuid'),
+    bearerToken: bearerToken,
+    body: json.encode(payload),
+  );
+  return json.decode(response.body);
+}
+
 /// GET /users/me — current user info.
 ///
 /// REGRESSION MARKER: as of the Phase 5.a port, the live backend

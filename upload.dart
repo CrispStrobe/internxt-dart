@@ -594,6 +594,87 @@ Future<void> upload(
   }
 }
 
+/// In-place file content replacement. The drive entry's UUID is
+/// preserved; only its network shard pointer + size change.
+///
+/// Used by the WebDAV PUT-on-existing path (mirrors the Python
+/// sibling's `update_file`). Pipeline:
+///   1. Read + encrypt local file.
+///   2. start/chunk/finish to push the new shard (gets a new
+///      `fileId` network UUID).
+///   3. PUT /files/{uuid} with `{fileId, size}` so the drive entry
+///      points to the new shard.
+///   4. Invalidate the parent listing cache so a subsequent
+///      listFolderFiles sees the new size.
+///
+/// Returns the gateway's PUT response. The drive entry's UUID is
+/// unchanged from the input [fileUuid].
+Future<Map<String, dynamic>> updateFile(
+  String driveApiUrl,
+  String networkUrl,
+  String? bearerToken,
+  String mnemonic,
+  String bucketId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String fileUuid,
+  io.File localFile, {
+  required String bridgeUser,
+  required String userIdForAuth,
+}) async {
+  // 1. Read + encrypt.
+  final fileSize = await localFile.length();
+  final fileBytes = await localFile.readAsBytes();
+  final encryptedResult =
+      inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
+  final encryptedData = encryptedResult['data']!;
+  final fileIndexHex = encryptedResult['index']!;
+
+  // 2. Network upload of the new shard.
+  final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
+  final startResponse = await startUpload(
+      networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
+  await uploadChunkWithProgress(
+      startResponse['uploads'][0]['url'], encryptedData, 'update-$fileUuid');
+
+  final encryptedHash = crypto.sha256.convert(encryptedData).toString();
+  final finishResponse = await finishUpload(
+    networkUrl,
+    bucketId,
+    {
+      'index': fileIndexHex,
+      'shards': [
+        {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
+      ]
+    },
+    bridgeUser,
+    bridgePass,
+  );
+
+  // 3. Repoint the drive entry.
+  final result = await inxt_api.replaceFile(
+    driveApiUrl,
+    bearerToken,
+    fileUuid,
+    {'fileId': finishResponse['id'], 'size': fileSize},
+  );
+
+  // 4. Invalidate parent listing so the new size shows up.
+  try {
+    final metadata =
+        await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
+    final parentUuid = (metadata['folderUuid'] as String?) ??
+        metadata['folderId']?.toString();
+    if (parentUuid != null) {
+      inxt_cache.invalidateCache(folderCache, fileCache, parentUuid);
+    }
+  } catch (_) {
+    // best-effort: cache will expire on its own after `cacheDuration`
+  }
+
+  return result;
+}
+
 /// Copy a file to a different folder, preserving timestamps.
 ///
 /// Mirrors the Python sibling's `copy_item` exactly: there's no
