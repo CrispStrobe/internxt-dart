@@ -13,31 +13,30 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 ## Phase 4: split the monolith (in progress)
 
 **Status:** ConfigService, crypto, utils, cache, the HTTP transport
-(including raw drive endpoint helpers), the auth protocol, and the
-first stage of drive.dart (mutating ops) have been extracted.
-cli.dart down from 4317 → 3602 LOC. Seven new modules at the
-project root: `config.dart` (152), `crypto.dart` (211), `utils.dart`
-(45), `cache.dart` (84), `api.dart` (228), `auth.dart` (167),
-`drive.dart` (266). Tests stay green via thin delegating wrappers +
-re-exports. Each extraction got its own commit (4.a–4.h.1).
+(including raw drive endpoint helpers), the auth protocol, drive
+mutating ops, and the cache-aware listing + path resolution have
+been extracted. cli.dart down from 4317 → 3336 LOC. Seven new
+modules at the project root: `config.dart` (152), `crypto.dart`
+(211), `utils.dart` (45), `cache.dart` (84), `api.dart` (228),
+`auth.dart` (167), `drive.dart` (570). Tests stay green via thin
+delegating wrappers + re-exports. Each extraction got its own
+commit (4.a–4.h.2).
 
 The state-vs-protocol split is now consistent across all layers:
 instance state (the 7 session fields, `_isRefreshingToken` lock,
 two cache maps) lives on `InternxtClient`; the protocol / helper
 functions live in their respective modules and take their
-dependencies as parameters. Drive ops in 4.h.1 take the cache maps
-plus the (URL, token) snapshot, and call `inxt_cache` /
-`inxt_api` directly.
+dependencies as parameters. Drive ops take the cache maps plus the
+(URL, token) snapshot, and call `inxt_cache` / `inxt_api`
+directly.
 
 **Still ahead (in this phase):**
-- `drive.dart` 4.h.2 — the more complex domain ops still in cli.dart:
-  - `listFolders`, `listFolderFiles` (paginated, cache-aware)
-  - `resolvePath` (depends on the listing functions)
-  - `_createFolder`, `createFolderRecursive`, `_resolveOrCreateRemoteFolder`
-  - `search`, `findFiles`, `printTree`, `_buildFullPath`
-  - The two underscore wrappers `_apiSearchFiles` / `_apiGetFolderAncestors`
-    will be dropped when their callers move (only `search` /
-    `_buildFullPath` use them).
+- `drive.dart` 4.h.3 — recursive folder creation + search / find /
+  tree. Specifically: `_createFolder`, `createFolderRecursive`,
+  `_resolveOrCreateRemoteFolder`, `_buildFullPath`, `search`,
+  `findFiles`, `printTree`. The two underscore wrappers
+  `_apiSearchFiles` / `_apiGetFolderAncestors` will be dropped when
+  their callers move (only `search` / `_buildFullPath` use them).
 - `upload.dart` — `_startUpload`, `_uploadChunkWithProgress`,
   `_finishUpload`, `_createFileEntry`, `_uploadFile`,
   `uploadThumbnailAsync`, `uploadSingleItem`, `upload`. Memory-gated

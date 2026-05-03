@@ -25,11 +25,12 @@ behaviour change. Tests stay green via thin delegating wrappers on
 | 4.f | `auth.dart` | 167 | `is2faNeeded` + `login` + `apiRefreshToken` + `computeBridgePass`. Owns the multi-step login dance (salt fetch → PBKDF2 hash → access token → hydration → bridge pass) and the raw refresh call. The orchestrator `refreshToken()` and the state mutator `setAuth()` stay on `InternxtClient` because they tie the protocol to the `_isRefreshingToken` lock, ConfigService persistence, and the 7 session fields. `computeBridgePass` dedupes a SHA-256 inline expression that lived in two places. |
 | 4.g | `api.dart` (extended) | +110 → 228 | Six raw drive endpoint helpers — `getFileMetadata`, `getFolderMetadata`, `updateFileMetadata`, `updateFolderMetadata`, `searchFiles`, `getFolderAncestors`. Each is a thin `makeRequest` + `json.decode` wrapper. Sub-extraction to shrink drive.dart's eventual surface; the cli.dart wrappers are now one-line delegates. |
 | 4.h.1 | `drive.dart` | 266 | Mutating ops: `moveFile` / `moveFolder`, `renameFile` / `renameFolder`, `setFileTimestamp` / `setFolderTimestamp`, `trashItems`, `deletePermanently`, `getTrashContent`. Each takes the gateway URL + bearer token snapshot, plus the two cache maps where invalidation is needed. Calls `inxt_api` and `inxt_cache` directly rather than via callbacks (drive is layered above both, so the direct dependency is fine). The internal `_clearParent` helper binds `clearParentCache`'s metadata-fetcher callbacks to the (URL, token) snapshot. The dead `_clearParentCache` wrapper was dropped from cli.dart since drive.dart was its only consumer. |
+| 4.h.2 | `drive.dart` (extended) | +304 → 570 | Cache-aware paginated listing + path resolution: `listFolders`, `listFolderFiles`, `resolvePath`. The two listing primitives share the cache-hit-or-paginate shape; `resolvePath` walks the tree using both. `rootFolderId` is passed nullable through `resolvePath` and the function does its own "logged in?" check. The dropped log-noise paid an unexpected dividend: dart-analyze info-level lints fell from 39 → 34 because the old long methods carried several `prefer_final_locals` / `unnecessary_this` nits that disappeared with them. |
 
-cli.dart down from 4317 → 3602 LOC. Still ahead: `drive.dart` 4.h.2
-(path resolution, listFolders / listFolderFiles with cache,
-recursive folder creation, search / find / tree), `upload.dart`,
-`download.dart`.
+cli.dart down from 4317 → 3336 LOC. Still ahead: `drive.dart` 4.h.3
+(`_createFolder`, `createFolderRecursive`, `_resolveOrCreateRemoteFolder`,
+`_buildFullPath`, `search`, `findFiles`, `printTree`),
+`upload.dart`, `download.dart`.
 See [`PLAN.md`](PLAN.md) for the full Phase 4 roadmap and a planned
 Phase 6 that publishes the result as a library for cloud-dart to
 consume.
