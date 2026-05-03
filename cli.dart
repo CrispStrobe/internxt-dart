@@ -8,7 +8,6 @@ import 'dart:typed_data';
 import 'package:args/args.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
-import 'package:pointycastle/export.dart';
 import 'package:bip39/bip39.dart' as bip39;
 import 'package:hex/hex.dart';
 import 'package:path/path.dart' as p;
@@ -23,7 +22,9 @@ import 'webdav_filesystem.dart'; // Our custom implementation
 // Phase 4 module split — re-exported so existing tests that do
 // `import '../cli.dart';` keep finding ConfigService etc.
 import 'config.dart';
+import 'crypto.dart' as inxt_crypto;
 export 'config.dart' show ConfigService;
+export 'crypto.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -2064,151 +2065,24 @@ class InternxtClient {
   }
 
   // --- Crypto Helpers ---
+  // Implementations live in crypto.dart. These thin wrappers keep the
+  // existing test surface (`client.encryptTextWithKey(...)`) working
+  // without forcing every test to switch to the top-level functions.
 
-  Map<String, String> passToHash(String password, String salt) {
-    log('passToHash: password length=${password.length}, salt=$salt');
+  Map<String, String> passToHash(String password, String salt) =>
+      inxt_crypto.passToHash(password, salt);
 
-    final saltBytes = HEX.decode(salt);
-    final passwordBytes = Uint8List.fromList(utf8.encode(password));
+  Map<String, dynamic> generateKeys(String password) =>
+      inxt_crypto.generateKeys(password);
 
-    final pbkdf2 = PBKDF2KeyDerivator(HMac(SHA1Digest(), 64))
-      ..init(Pbkdf2Parameters(Uint8List.fromList(saltBytes), 10000, 32));
+  String encryptTextWithKey(String textToEncrypt, String secret) =>
+      inxt_crypto.encryptTextWithKey(textToEncrypt, secret);
 
-    final hashBytes = pbkdf2.process(passwordBytes);
-    final hashHex = HEX.encode(hashBytes);
+  String decryptTextWithKey(String encryptedText, String secret) =>
+      inxt_crypto.decryptTextWithKey(encryptedText, secret);
 
-    log('passToHash: hash length=${hashHex.length}');
-
-    return {'salt': salt, 'hash': hashHex};
-  }
-
-  Map<String, dynamic> generateKeys(String password) {
-    log('generateKeys: Encrypting with password as key');
-
-    final encryptedPk =
-        encryptTextWithKey('placeholder-private-key-for-login', password);
-
-    return {
-      'privateKeyEncrypted': encryptedPk,
-      'publicKey': 'placeholder-public-key-for-login',
-      'revocationCertificate': 'placeholder-revocation-cert-for-login',
-      'ecc': {
-        'publicKey': 'placeholder-ecc-public-key',
-        'privateKeyEncrypted': encryptedPk,
-      },
-      'kyber': {
-        'publicKey': null,
-        'privateKeyEncrypted': null,
-      },
-    };
-  }
-
-  String encryptTextWithKey(String textToEncrypt, String secret) {
-    log('encryptTextWithKey: text length=${textToEncrypt.length}');
-
-    final random = Random.secure();
-    final salt =
-        Uint8List.fromList(List.generate(8, (_) => random.nextInt(256)));
-
-    final keyIv = getKeyAndIvFrom(secret, salt);
-    final key = keyIv['key']!;
-    final iv = keyIv['iv']!;
-
-    log('encryptTextWithKey: salt=${HEX.encode(salt)}, key length=${key.length}, iv length=${iv.length}');
-
-    final cipher = PaddedBlockCipherImpl(
-      PKCS7Padding(),
-      CBCBlockCipher(AESEngine()),
-    );
-
-    cipher.init(
-      true,
-      PaddedBlockCipherParameters(
-        ParametersWithIV(KeyParameter(key), iv),
-        null,
-      ),
-    );
-
-    final textBytes = Uint8List.fromList(utf8.encode(textToEncrypt));
-    final encrypted = cipher.process(textBytes);
-
-    final result = Uint8List(16 + encrypted.length);
-    result.setAll(0, utf8.encode('Salted__'));
-    result.setAll(8, salt);
-    result.setAll(16, encrypted);
-
-    final hexResult = HEX.encode(result);
-    log('encryptTextWithKey: result length=${hexResult.length}');
-
-    return hexResult;
-  }
-
-  String decryptTextWithKey(String encryptedText, String secret) {
-    log('decryptTextWithKey: encrypted length=${encryptedText.length}');
-
-    final cipherBytes = Uint8List.fromList(HEX.decode(encryptedText));
-    final salt = cipherBytes.sublist(8, 16);
-    log('decryptTextWithKey: salt=${HEX.encode(salt)}');
-
-    final keyIv = getKeyAndIvFrom(secret, salt);
-    final key = keyIv['key']!;
-    final iv = keyIv['iv']!;
-
-    final cipher = PaddedBlockCipherImpl(
-      PKCS7Padding(),
-      CBCBlockCipher(AESEngine()),
-    );
-
-    cipher.init(
-      false,
-      PaddedBlockCipherParameters(
-        ParametersWithIV(KeyParameter(key), iv),
-        null,
-      ),
-    );
-
-    final contentsToDecrypt = cipherBytes.sublist(16);
-    final decrypted = cipher.process(contentsToDecrypt);
-
-    final result = utf8.decode(decrypted);
-    log('decryptTextWithKey: decrypted length=${result.length}');
-
-    return result;
-  }
-
-  Map<String, Uint8List> getKeyAndIvFrom(String secret, Uint8List salt) {
-    log('getKeyAndIvFrom: secret length=${secret.length}, salt length=${salt.length}');
-
-    final secretBytes = latin1.encode(secret);
-    final password = Uint8List(secretBytes.length + salt.length);
-    password.setAll(0, secretBytes);
-    password.setAll(secretBytes.length, salt);
-
-    final md5Hashes = <Uint8List>[];
-    Uint8List digest = password;
-
-    for (var i = 0; i < 3; i++) {
-      final md5 = MD5Digest();
-      md5.update(digest, 0, digest.length);
-      final hash = Uint8List(md5.digestSize);
-      md5.doFinal(hash, 0);
-      md5Hashes.add(hash);
-
-      digest = Uint8List(hash.length + password.length);
-      digest.setAll(0, hash);
-      digest.setAll(hash.length, password);
-    }
-
-    final key = Uint8List(32);
-    key.setAll(0, md5Hashes[0]);
-    key.setAll(16, md5Hashes[1]);
-
-    final iv = md5Hashes[2];
-
-    log('getKeyAndIvFrom: key length=${key.length}, iv length=${iv.length}');
-
-    return {'key': key, 'iv': iv};
-  }
+  Map<String, Uint8List> getKeyAndIvFrom(String secret, Uint8List salt) =>
+      inxt_crypto.getKeyAndIvFrom(secret, salt);
 
   // --- Caching ---
 
@@ -4098,67 +3972,33 @@ class InternxtClient {
   }
 
   // --- File Crypto ---
+  // Implementations live in crypto.dart. See note above passToHash.
 
-  Uint8List getFileDeterministicKey(Uint8List key, Uint8List data) {
-    final combined = Uint8List(key.length + data.length);
-    combined.setAll(0, key);
-    combined.setAll(key.length, data);
+  Uint8List getFileDeterministicKey(Uint8List key, Uint8List data) =>
+      inxt_crypto.getFileDeterministicKey(key, data);
 
-    return crypto.sha512.convert(combined).bytes as Uint8List;
-  }
-
-  Uint8List generateFileBucketKey(String mnemonic, String bucketId) {
-    final seed = Uint8List.fromList(bip39.mnemonicToSeed(mnemonic));
-    final bucketIdBytes = Uint8List.fromList(HEX.decode(bucketId));
-    return getFileDeterministicKey(seed, bucketIdBytes);
-  }
+  Uint8List generateFileBucketKey(String mnemonic, String bucketId) =>
+      inxt_crypto.generateFileBucketKey(mnemonic, bucketId);
 
   Uint8List generateFileKey(
-      String mnemonic, String bucketId, Uint8List index) {
-    final bucketKey = generateFileBucketKey(mnemonic, bucketId);
-    return getFileDeterministicKey(
-      bucketKey.sublist(0, 32),
-      index,
-    ).sublist(0, 32);
-  }
+          String mnemonic, String bucketId, Uint8List index) =>
+      inxt_crypto.generateFileKey(mnemonic, bucketId, index);
 
   Uint8List decryptStream(
     Uint8List encryptedData,
     String mnemonic,
     String bucketId,
     String fileIndexHex,
-  ) {
-    final index = Uint8List.fromList(HEX.decode(fileIndexHex));
-    final fileKey = generateFileKey(mnemonic, bucketId, index);
-    final iv = index.sublist(0, 16);
-
-    final cipher = CTRStreamCipher(AESEngine())
-      ..init(false, ParametersWithIV(KeyParameter(fileKey), iv));
-
-    return cipher.process(encryptedData);
-  }
+  ) =>
+      inxt_crypto.decryptStream(
+          encryptedData, mnemonic, bucketId, fileIndexHex);
 
   Map<String, dynamic> encryptStream(
     Uint8List data,
     String mnemonic,
     String bucketId,
-  ) {
-    final random = Random.secure();
-    final index =
-        Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
-    final fileKey = generateFileKey(mnemonic, bucketId, index);
-    final iv = index.sublist(0, 16);
-
-    final cipher = CTRStreamCipher(AESEngine())
-      ..init(true, ParametersWithIV(KeyParameter(fileKey), iv));
-
-    final encryptedData = cipher.process(data);
-
-    return {
-      'data': encryptedData,
-      'index': HEX.encode(index),
-    };
-  }
+  ) =>
+      inxt_crypto.encryptStream(data, mnemonic, bucketId);
 }
 
 // ConfigService lives in config.dart; the export at the top of this
