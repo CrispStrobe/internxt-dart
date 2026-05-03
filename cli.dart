@@ -1549,10 +1549,10 @@ class InternxtCLI {
     print('Test 3: Encryption/Decryption (OpenSSL compat)');
     final testText = 'Hello Internxt';
     final encrypted =
-        client._encryptTextWithKey(testText, InternxtClient.appCryptoSecret);
+        client.encryptTextWithKey(testText, InternxtClient.appCryptoSecret);
     print('   Encrypted: ${encrypted.substring(0, 32)}...');
     final decrypted =
-        client._decryptTextWithKey(encrypted, InternxtClient.appCryptoSecret);
+        client.decryptTextWithKey(encrypted, InternxtClient.appCryptoSecret);
     print('   Decrypted: $decrypted');
     assert(decrypted == testText, 'Encryption/Decryption failed!');
     print('   ✅ PASS\n');
@@ -1560,7 +1560,7 @@ class InternxtCLI {
     print('Test 4: Password hashing (PBKDF2-SHA1)');
     final password = 'testpass123';
     final salt = '1234567890abcdef1234567890abcdef';
-    final hashResult = client._passToHash(password, salt);
+    final hashResult = client.passToHash(password, salt);
     print('   Salt: $salt');
     print('   Hash: ${hashResult['hash']!.substring(0, 32)}...');
     final expectedHash =
@@ -1580,7 +1580,7 @@ class InternxtCLI {
     print('Test 6: File Key Derivation (SHA512)');
     final key = Uint8List.fromList(utf8.encode('test-key'));
     final data = Uint8List.fromList(utf8.encode('test-data'));
-    final derived = client._getFileDeterministicKey(key, data);
+    final derived = client.getFileDeterministicKey(key, data);
     print(
         '   SHA512 derived key (hex): ${HEX.encode(derived).substring(0, 32)}...');
     final expectedDerived =
@@ -1977,10 +1977,10 @@ class InternxtClient {
     log("💧 Step 1: Salt received.");
 
     // STEP 2: Crypto (Mirroring Python crypto_service)
-    final salt = _decryptTextWithKey(sKey, appCryptoSecret);
-    final masterHash = _passToHash(password, salt)['hash']!;
-    final encryptedHash = _encryptTextWithKey(masterHash, appCryptoSecret);
-    final keysPayload = _generateKeys(password);
+    final salt = decryptTextWithKey(sKey, appCryptoSecret);
+    final masterHash = passToHash(password, salt)['hash']!;
+    final encryptedHash = encryptTextWithKey(masterHash, appCryptoSecret);
+    final keysPayload = generateKeys(password);
 
     // STEP 3: Initial Access Call
     log("🔐 Step 3: Requesting session token via /auth/login/access...");
@@ -2031,7 +2031,7 @@ class InternxtClient {
       'email': user['email'],
       'token': hydrated['token'],
       'newToken': hydrated['newToken'],
-      'mnemonic': _decryptTextWithKey(user['mnemonic'], password),
+      'mnemonic': decryptTextWithKey(user['mnemonic'], password),
       'userId': user['userId'],
       'rootFolderId': user['rootFolderId'],
       'bridgeUser': user['bridgeUser'],
@@ -2060,8 +2060,8 @@ class InternxtClient {
 
   // --- Crypto Helpers ---
 
-  Map<String, String> _passToHash(String password, String salt) {
-    log('_passToHash: password length=${password.length}, salt=$salt');
+  Map<String, String> passToHash(String password, String salt) {
+    log('passToHash: password length=${password.length}, salt=$salt');
 
     final saltBytes = HEX.decode(salt);
     final passwordBytes = Uint8List.fromList(utf8.encode(password));
@@ -2072,16 +2072,16 @@ class InternxtClient {
     final hashBytes = pbkdf2.process(passwordBytes);
     final hashHex = HEX.encode(hashBytes);
 
-    log('_passToHash: hash length=${hashHex.length}');
+    log('passToHash: hash length=${hashHex.length}');
 
     return {'salt': salt, 'hash': hashHex};
   }
 
-  Map<String, dynamic> _generateKeys(String password) {
-    log('_generateKeys: Encrypting with password as key');
+  Map<String, dynamic> generateKeys(String password) {
+    log('generateKeys: Encrypting with password as key');
 
     final encryptedPk =
-        _encryptTextWithKey('placeholder-private-key-for-login', password);
+        encryptTextWithKey('placeholder-private-key-for-login', password);
 
     return {
       'privateKeyEncrypted': encryptedPk,
@@ -2098,18 +2098,18 @@ class InternxtClient {
     };
   }
 
-  String _encryptTextWithKey(String textToEncrypt, String secret) {
-    log('_encryptTextWithKey: text length=${textToEncrypt.length}');
+  String encryptTextWithKey(String textToEncrypt, String secret) {
+    log('encryptTextWithKey: text length=${textToEncrypt.length}');
 
     final random = Random.secure();
     final salt =
         Uint8List.fromList(List.generate(8, (_) => random.nextInt(256)));
 
-    final keyIv = _getKeyAndIvFrom(secret, salt);
+    final keyIv = getKeyAndIvFrom(secret, salt);
     final key = keyIv['key']!;
     final iv = keyIv['iv']!;
 
-    log('_encryptTextWithKey: salt=${HEX.encode(salt)}, key length=${key.length}, iv length=${iv.length}');
+    log('encryptTextWithKey: salt=${HEX.encode(salt)}, key length=${key.length}, iv length=${iv.length}');
 
     final cipher = PaddedBlockCipherImpl(
       PKCS7Padding(),
@@ -2133,19 +2133,19 @@ class InternxtClient {
     result.setAll(16, encrypted);
 
     final hexResult = HEX.encode(result);
-    log('_encryptTextWithKey: result length=${hexResult.length}');
+    log('encryptTextWithKey: result length=${hexResult.length}');
 
     return hexResult;
   }
 
-  String _decryptTextWithKey(String encryptedText, String secret) {
-    log('_decryptTextWithKey: encrypted length=${encryptedText.length}');
+  String decryptTextWithKey(String encryptedText, String secret) {
+    log('decryptTextWithKey: encrypted length=${encryptedText.length}');
 
     final cipherBytes = Uint8List.fromList(HEX.decode(encryptedText));
     final salt = cipherBytes.sublist(8, 16);
-    log('_decryptTextWithKey: salt=${HEX.encode(salt)}');
+    log('decryptTextWithKey: salt=${HEX.encode(salt)}');
 
-    final keyIv = _getKeyAndIvFrom(secret, salt);
+    final keyIv = getKeyAndIvFrom(secret, salt);
     final key = keyIv['key']!;
     final iv = keyIv['iv']!;
 
@@ -2166,13 +2166,13 @@ class InternxtClient {
     final decrypted = cipher.process(contentsToDecrypt);
 
     final result = utf8.decode(decrypted);
-    log('_decryptTextWithKey: decrypted length=${result.length}');
+    log('decryptTextWithKey: decrypted length=${result.length}');
 
     return result;
   }
 
-  Map<String, Uint8List> _getKeyAndIvFrom(String secret, Uint8List salt) {
-    log('_getKeyAndIvFrom: secret length=${secret.length}, salt length=${salt.length}');
+  Map<String, Uint8List> getKeyAndIvFrom(String secret, Uint8List salt) {
+    log('getKeyAndIvFrom: secret length=${secret.length}, salt length=${salt.length}');
 
     final secretBytes = latin1.encode(secret);
     final password = Uint8List(secretBytes.length + salt.length);
@@ -2200,7 +2200,7 @@ class InternxtClient {
 
     final iv = md5Hashes[2];
 
-    log('_getKeyAndIvFrom: key length=${key.length}, iv length=${iv.length}');
+    log('getKeyAndIvFrom: key length=${key.length}, iv length=${iv.length}');
 
     return {'key': key, 'iv': iv};
   }
@@ -2573,7 +2573,7 @@ class InternxtClient {
     final encryptedData = downloadResponse.bodyBytes;
 
     print('   🔐 Decrypting...');
-    final decryptedData = _decryptStream(
+    final decryptedData = decryptStream(
       encryptedData,
       mnemonic!,
       bucketId,
@@ -2637,7 +2637,7 @@ class InternxtClient {
 
     // 4. Decrypt and write to disk
     log('     🔐 [DEBUG] Decrypting and saving to disk...');
-    final decryptedData = _decryptStream(Uint8List.fromList(encryptedBuffer),
+    final decryptedData = decryptStream(Uint8List.fromList(encryptedBuffer),
         mnemonic!, metadata['bucket'], fileIndexHex);
 
     final file = io.File(destinationPath);
@@ -3204,7 +3204,7 @@ class InternxtClient {
     final fileBytes = await localFile.readAsBytes();
     final encryptClock = Stopwatch()..start();
 
-    final encryptedResult = _encryptStream(fileBytes, mnemonic!, bucketId!);
+    final encryptedResult = encryptStream(fileBytes, mnemonic!, bucketId!);
     final encryptedData = encryptedResult['data']!;
     final fileIndexHex = encryptedResult['index']!;
 
@@ -4088,7 +4088,7 @@ class InternxtClient {
 
   // --- File Crypto ---
 
-  Uint8List _getFileDeterministicKey(Uint8List key, Uint8List data) {
+  Uint8List getFileDeterministicKey(Uint8List key, Uint8List data) {
     final combined = Uint8List(key.length + data.length);
     combined.setAll(0, key);
     combined.setAll(key.length, data);
@@ -4096,29 +4096,29 @@ class InternxtClient {
     return crypto.sha512.convert(combined).bytes as Uint8List;
   }
 
-  Uint8List _generateFileBucketKey(String mnemonic, String bucketId) {
+  Uint8List generateFileBucketKey(String mnemonic, String bucketId) {
     final seed = Uint8List.fromList(bip39.mnemonicToSeed(mnemonic));
     final bucketIdBytes = Uint8List.fromList(HEX.decode(bucketId));
-    return _getFileDeterministicKey(seed, bucketIdBytes);
+    return getFileDeterministicKey(seed, bucketIdBytes);
   }
 
-  Uint8List _generateFileKey(
+  Uint8List generateFileKey(
       String mnemonic, String bucketId, Uint8List index) {
-    final bucketKey = _generateFileBucketKey(mnemonic, bucketId);
-    return _getFileDeterministicKey(
+    final bucketKey = generateFileBucketKey(mnemonic, bucketId);
+    return getFileDeterministicKey(
       bucketKey.sublist(0, 32),
       index,
     ).sublist(0, 32);
   }
 
-  Uint8List _decryptStream(
+  Uint8List decryptStream(
     Uint8List encryptedData,
     String mnemonic,
     String bucketId,
     String fileIndexHex,
   ) {
     final index = Uint8List.fromList(HEX.decode(fileIndexHex));
-    final fileKey = _generateFileKey(mnemonic, bucketId, index);
+    final fileKey = generateFileKey(mnemonic, bucketId, index);
     final iv = index.sublist(0, 16);
 
     final cipher = CTRStreamCipher(AESEngine())
@@ -4127,7 +4127,7 @@ class InternxtClient {
     return cipher.process(encryptedData);
   }
 
-  Map<String, dynamic> _encryptStream(
+  Map<String, dynamic> encryptStream(
     Uint8List data,
     String mnemonic,
     String bucketId,
@@ -4135,7 +4135,7 @@ class InternxtClient {
     final random = Random.secure();
     final index =
         Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
-    final fileKey = _generateFileKey(mnemonic, bucketId, index);
+    final fileKey = generateFileKey(mnemonic, bucketId, index);
     final iv = index.sublist(0, 16);
 
     final cipher = CTRStreamCipher(AESEngine())
@@ -4163,11 +4163,14 @@ class ConfigService {
   late final String batchStateDir;
   late final String webdavPidFile;
 
-  ConfigService() {
-    final home = io.Platform.environment['HOME'] ??
+  /// [dataDir] override is for tests; production code uses the default
+  /// `~/.internxt-cli` location.
+  ConfigService({String? dataDir}) {
+    final home = dataDir ??
+        io.Platform.environment['HOME'] ??
         io.Platform.environment['USERPROFILE'] ??
         '.';
-    internxtCliDataDir = p.join(home, '.internxt-cli');
+    internxtCliDataDir = dataDir ?? p.join(home, '.internxt-cli');
     internxtCliLogsDir = p.join(internxtCliDataDir, 'logs');
     batchStateDir = p.join(internxtCliDataDir, 'batch_states');
     credentialsFile = p.join(internxtCliDataDir, '.inxtcli-dart-creds.json');
