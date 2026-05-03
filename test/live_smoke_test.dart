@@ -1030,11 +1030,45 @@ void main() {
     );
   });
 
-  test('PINNED GAP: list_folder_with_paths enriched entries',
-      () {},
-      skip: 'No list_folder_with_paths equivalent (no per-entry '
-          'display_name / path / size_display fields). The CLI '
-          'rendering happens at handle-level, not as a library method.');
+  liveTest('listFolderWithPaths returns enriched entries', () async {
+    final stem = _uniqueName('listing-probe');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      w.file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+
+    final listing = await listFolderWithPaths(
+      InternxtClient.driveApiUrl,
+      client.newToken,
+      client.rootFolderId,
+      // Tests don't have direct access to the private cache maps; pass
+      // empty maps so the listing always hits the network. Production
+      // callers (the CLI) thread the InternxtClient's caches through.
+      <String, CacheEntry>{},
+      <String, CacheEntry>{},
+      _sentinelPath,
+    );
+
+    expect(listing['currentPath'], endsWith(_runId));
+    final files = listing['files'] as List<Map<String, dynamic>>;
+    final probe = files.firstWhere(
+      (f) => f['displayName'] == '$stem.txt',
+      orElse: () => <String, dynamic>{},
+    );
+    expect(probe, isNotEmpty,
+        reason: '$stem.txt not in enriched listing: '
+            '${files.map((f) => f['displayName']).toList()}');
+    expect(probe['path'], endsWith('$stem.txt'));
+    expect(probe['sizeDisplay'], isA<String>());
+    expect(probe['modified'], isNotNull);
+  });
 
   test('PINNED GAP: file copy preserves content',
       () {},

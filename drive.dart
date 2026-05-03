@@ -1020,3 +1020,78 @@ Future<void> printTree(
   }
 }
 
+/// Library-friendly enriched folder listing.
+///
+/// Wraps [resolvePath] + [listFolders] + [listFolderFiles] and
+/// annotates each entry with:
+///   - `path`         full readable path under the resolved folder
+///   - `displayName`  `<plainName>.<type>` for files, `<plainName>` for folders
+///   - `sizeDisplay`  `'<DIR>'` for folders; human-readable size for files
+///   - `modified`     `modificationTime ?? updatedAt`
+/// while preserving every original field from the listing.
+///
+/// Returns `{folders, files, currentPath}`. Mirrors the Python
+/// sibling's `list_folder_with_paths`. Useful for UI layers (CLI
+/// rendering, the Flutter app, future REPL) that want a single call
+/// to get a fully populated row set.
+Future<Map<String, dynamic>> listFolderWithPaths(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String folderPath,
+) async {
+  final resolved = await resolvePath(
+      driveApiUrl, bearerToken, rootFolderId, folderCache, fileCache, folderPath);
+  if (resolved['type'] != 'folder') {
+    throw Exception("Path '$folderPath' is a file, not a folder");
+  }
+
+  final folderUuid = resolved['uuid'] as String;
+  final basePath = (resolved['path'] as String?) ?? folderPath;
+  final basePathTrimmed =
+      basePath.endsWith('/') && basePath.length > 1 ? basePath.substring(0, basePath.length - 1) : basePath;
+
+  final rawFolders = await listFolders(
+      driveApiUrl, bearerToken, folderCache, folderUuid,
+      detailed: true);
+  final rawFiles = await listFolderFiles(
+      driveApiUrl, bearerToken, fileCache, folderUuid,
+      detailed: true);
+
+  final enrichedFolders = rawFolders.map((folder) {
+    final name = (folder['name'] ?? 'Unknown') as String;
+    return {
+      ...folder,
+      'path': '$basePathTrimmed/$name',
+      'displayName': name,
+      'sizeDisplay': '<DIR>',
+      'modified': folder['modificationTime'] ?? folder['updatedAt'] ?? '',
+    };
+  }).toList();
+
+  final enrichedFiles = rawFiles.map((file) {
+    final plainName = (file['name'] ?? '') as String;
+    final fileType = (file['fileType'] ?? '') as String;
+    final displayName =
+        fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+    final sizeBytes = file['size'] is int
+        ? file['size'] as int
+        : int.tryParse((file['size'] ?? 0).toString()) ?? 0;
+    return {
+      ...file,
+      'path': '$basePathTrimmed/$displayName',
+      'displayName': displayName,
+      'sizeDisplay': inxt_utils.formatSize(sizeBytes),
+      'modified': file['modificationTime'] ?? file['updatedAt'] ?? '',
+    };
+  }).toList();
+
+  return {
+    'folders': enrichedFolders,
+    'files': enrichedFiles,
+    'currentPath': basePathTrimmed,
+  };
+}
+
