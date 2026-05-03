@@ -20,6 +20,7 @@
 // Coverage: every live test in test/live_smoke_test.dart performs
 // at least one upload, so any regression here surfaces immediately.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
 import 'dart:typed_data';
@@ -37,6 +38,119 @@ import 'crypto.dart' as inxt_crypto;
 import 'download.dart' as inxt_download;
 import 'drive.dart' as inxt_drive;
 import 'utils.dart' as inxt_utils;
+
+// =============================================================================
+// MEMORY-GATED UPLOAD CONCURRENCY (Phase 7.1)
+// =============================================================================
+//
+// Mirrors the Python sibling's _mem_acquire/_mem_release. Without this,
+// parallel uploads (Phase 7.2) of large files OOM the process; even a
+// single ~5 GB upload on a 4 GB machine can trip the OS killer.
+//
+// The gate is a process-wide counter of "reserved bytes". Each upload
+// reserves ~2 * file_size before reading the plaintext (we hold both
+// plaintext and encrypted copy briefly during encrypt). On release the
+// counter goes down and any waiting uploads re-check.
+//
+// _availableMemory() is best-effort cross-platform:
+//   - Linux:   /proc/meminfo `MemAvailable`
+//   - macOS:   `vm_stat` + `sysctl hw.pagesize`
+//   - other:   _fallbackAvailableBytes (4 GB)
+//
+// Override for tests via [memoryGateOverride].
+
+const int _safetyMarginBytes = 1 * 1024 * 1024 * 1024; // 1 GB
+const int _fallbackAvailableBytes = 4 * 1024 * 1024 * 1024; // 4 GB
+
+/// Test seam: set to a non-null value to force [_availableMemory] to
+/// return a specific value. Production code leaves this null.
+int? memoryGateOverride;
+
+int _availableMemory() {
+  if (memoryGateOverride != null) return memoryGateOverride!;
+  try {
+    if (io.Platform.isLinux) {
+      final lines = io.File('/proc/meminfo').readAsLinesSync();
+      for (final line in lines) {
+        if (line.startsWith('MemAvailable:')) {
+          final kb = int.parse(line.split(RegExp(r'\s+'))[1]);
+          return kb * 1024;
+        }
+      }
+    } else if (io.Platform.isMacOS) {
+      final ps = int.parse(io.Process.runSync('sysctl', ['-n', 'hw.pagesize'])
+          .stdout
+          .toString()
+          .trim());
+      final vm =
+          io.Process.runSync('vm_stat', []).stdout.toString();
+      var free = 0;
+      var spec = 0;
+      for (final line in vm.split('\n')) {
+        if (line.contains('Pages free')) {
+          free = int.parse(
+              line.split(':')[1].trim().replaceAll('.', ''));
+        } else if (line.contains('Pages speculative')) {
+          spec = int.parse(
+              line.split(':')[1].trim().replaceAll('.', ''));
+        }
+      }
+      return (free + spec) * ps;
+    }
+  } catch (_) {
+    // best-effort: fall through to the fallback
+  }
+  return _fallbackAvailableBytes;
+}
+
+/// Process-wide memory gate for upload concurrency. Single-threaded
+/// Dart so the counter doesn't need a mutex; the async-friendly
+/// "wake waiters" pattern is implemented with completers + a 5-second
+/// timeout poll (re-check the OS memory in case the OS released
+/// caches between waits).
+class _MemoryGate {
+  static int _reserved = 0;
+  static final List<Completer<void>> _waiters = [];
+
+  /// Reserve [need] bytes. Returns when the reservation succeeds.
+  /// If no other reservation is active but the OS reports tight
+  /// memory anyway, we let one through to avoid deadlock — caches
+  /// are typically reclaimable.
+  static Future<void> acquire(int need) async {
+    while (true) {
+      final avail = _availableMemory();
+      final headroom = (avail - _safetyMarginBytes).clamp(0, 1 << 62);
+      if (need <= headroom - _reserved) {
+        _reserved += need;
+        return;
+      }
+      if (_reserved == 0) {
+        _reserved += need;
+        return;
+      }
+      // Wait for a release. 5-second timeout polls the OS in case
+      // memory pressure dropped between waits.
+      final completer = Completer<void>();
+      _waiters.add(completer);
+      try {
+        await completer.future.timeout(const Duration(seconds: 5));
+      } on TimeoutException {
+        // fall through to re-check
+      }
+      _waiters.remove(completer);
+    }
+  }
+
+  /// Release [amount] bytes from the reservation. Wakes any waiters.
+  static void release(int amount) {
+    _reserved = (_reserved - amount).clamp(0, 1 << 62);
+    final waiters = List<Completer<void>>.of(_waiters);
+    _waiters.clear();
+    for (final w in waiters) {
+      if (!w.isCompleted) w.complete();
+    }
+  }
+}
 
 // --- Network primitives ---
 
@@ -198,55 +312,67 @@ Future<Map<String, dynamic>> uploadFile(
 }) async {
   final fileSize = await localFile.length();
 
-  print(
-      '\n     🔐 [STEP 1/5] Starting Encryption for ${inxt_utils.formatSize(fileSize)}...');
-  final fileBytes = await localFile.readAsBytes();
-  final encryptClock = Stopwatch()..start();
+  // Memory gate: reserve ~2x file_size for the plaintext+encrypted
+  // copies that overlap during encrypt. Released in `finally`. With
+  // a single sequential uploader this is a no-op (the gate lets it
+  // straight through); under concurrent workers (Phase 7.2) the gate
+  // serializes large uploads when RAM is tight.
+  final memNeed = fileSize * 2;
+  await _MemoryGate.acquire(memNeed);
+  try {
+    print(
+        '\n     🔐 [STEP 1/5] Starting Encryption for ${inxt_utils.formatSize(fileSize)}...');
+    final fileBytes = await localFile.readAsBytes();
+    final encryptClock = Stopwatch()..start();
 
-  final encryptedResult = inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
-  final encryptedData = encryptedResult['data']!;
-  final fileIndexHex = encryptedResult['index']!;
+    final encryptedResult =
+        inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
+    final encryptedData = encryptedResult['data']!;
+    final fileIndexHex = encryptedResult['index']!;
 
-  encryptClock.stop();
-  final encryptSeconds = encryptClock.elapsed.inSeconds;
-  print(
-      '     ✅ Encryption complete! (${encryptSeconds}s, ${inxt_utils.formatSize(fileSize / (encryptSeconds + 0.001))}/s)');
+    encryptClock.stop();
+    final encryptSeconds = encryptClock.elapsed.inSeconds;
+    print(
+        '     ✅ Encryption complete! (${encryptSeconds}s, ${inxt_utils.formatSize(fileSize / (encryptSeconds + 0.001))}/s)');
 
-  final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
-  final startResponse = await startUpload(
-      networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
+    final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
+    final startResponse = await startUpload(
+        networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
 
-  await uploadChunkWithProgress(
-      startResponse['uploads'][0]['url'], encryptedData, remoteFileName);
+    await uploadChunkWithProgress(
+        startResponse['uploads'][0]['url'], encryptedData, remoteFileName);
 
-  print('     ✅ [STEP 4/5] Finalizing network storage...');
-  final encryptedHash = crypto.sha256.convert(encryptedData).toString();
-  final finishResponse = await finishUpload(
-    networkUrl,
-    bucketId,
-    {
-      'index': fileIndexHex,
-      'shards': [
-        {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
-      ]
-    },
-    bridgeUser,
-    bridgePass,
-  );
+    print('     ✅ [STEP 4/5] Finalizing network storage...');
+    final encryptedHash = crypto.sha256.convert(encryptedData).toString();
+    final finishResponse = await finishUpload(
+      networkUrl,
+      bucketId,
+      {
+        'index': fileIndexHex,
+        'shards': [
+          {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
+        ]
+      },
+      bridgeUser,
+      bridgePass,
+    );
 
-  print('     📋 [STEP 5/5] Creating Drive file entry...');
-  return createFileEntry(driveApiUrl, bearerToken, folderCache, fileCache, {
-    'folderUuid': destinationFolderUuid,
-    'plainName': p.basenameWithoutExtension(remoteFileName),
-    'type': p.extension(remoteFileName).replaceAll('.', ''),
-    'size': fileSize,
-    'bucket': bucketId,
-    'fileId': finishResponse['id'],
-    'encryptVersion': 'Aes03',
-    'name': '',
-    'creationTime': creationTime,
-    'modificationTime': modificationTime,
-  });
+    print('     📋 [STEP 5/5] Creating Drive file entry...');
+    return createFileEntry(driveApiUrl, bearerToken, folderCache, fileCache, {
+      'folderUuid': destinationFolderUuid,
+      'plainName': p.basenameWithoutExtension(remoteFileName),
+      'type': p.extension(remoteFileName).replaceAll('.', ''),
+      'size': fileSize,
+      'bucket': bucketId,
+      'fileId': finishResponse['id'],
+      'encryptVersion': 'Aes03',
+      'name': '',
+      'creationTime': creationTime,
+      'modificationTime': modificationTime,
+    });
+  } finally {
+    _MemoryGate.release(memNeed);
+  }
 }
 
 /// Single-file upload with conflict policy + timestamp preservation.
@@ -622,57 +748,64 @@ Future<Map<String, dynamic>> updateFile(
   required String bridgeUser,
   required String userIdForAuth,
 }) async {
-  // 1. Read + encrypt.
   final fileSize = await localFile.length();
-  final fileBytes = await localFile.readAsBytes();
-  final encryptedResult =
-      inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
-  final encryptedData = encryptedResult['data']!;
-  final fileIndexHex = encryptedResult['index']!;
-
-  // 2. Network upload of the new shard.
-  final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
-  final startResponse = await startUpload(
-      networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
-  await uploadChunkWithProgress(
-      startResponse['uploads'][0]['url'], encryptedData, 'update-$fileUuid');
-
-  final encryptedHash = crypto.sha256.convert(encryptedData).toString();
-  final finishResponse = await finishUpload(
-    networkUrl,
-    bucketId,
-    {
-      'index': fileIndexHex,
-      'shards': [
-        {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
-      ]
-    },
-    bridgeUser,
-    bridgePass,
-  );
-
-  // 3. Repoint the drive entry.
-  final result = await inxt_api.replaceFile(
-    driveApiUrl,
-    bearerToken,
-    fileUuid,
-    {'fileId': finishResponse['id'], 'size': fileSize},
-  );
-
-  // 4. Invalidate parent listing so the new size shows up.
+  // Memory gate: same 2x reservation as uploadFile.
+  final memNeed = fileSize * 2;
+  await _MemoryGate.acquire(memNeed);
   try {
-    final metadata =
-        await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
-    final parentUuid = (metadata['folderUuid'] as String?) ??
-        metadata['folderId']?.toString();
-    if (parentUuid != null) {
-      inxt_cache.invalidateCache(folderCache, fileCache, parentUuid);
-    }
-  } catch (_) {
-    // best-effort: cache will expire on its own after `cacheDuration`
-  }
+    // 1. Read + encrypt.
+    final fileBytes = await localFile.readAsBytes();
+    final encryptedResult =
+        inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
+    final encryptedData = encryptedResult['data']!;
+    final fileIndexHex = encryptedResult['index']!;
 
-  return result;
+    // 2. Network upload of the new shard.
+    final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
+    final startResponse = await startUpload(
+        networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
+    await uploadChunkWithProgress(
+        startResponse['uploads'][0]['url'], encryptedData, 'update-$fileUuid');
+
+    final encryptedHash = crypto.sha256.convert(encryptedData).toString();
+    final finishResponse = await finishUpload(
+      networkUrl,
+      bucketId,
+      {
+        'index': fileIndexHex,
+        'shards': [
+          {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
+        ]
+      },
+      bridgeUser,
+      bridgePass,
+    );
+
+    // 3. Repoint the drive entry.
+    final result = await inxt_api.replaceFile(
+      driveApiUrl,
+      bearerToken,
+      fileUuid,
+      {'fileId': finishResponse['id'], 'size': fileSize},
+    );
+
+    // 4. Invalidate parent listing so the new size shows up.
+    try {
+      final metadata =
+          await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
+      final parentUuid = (metadata['folderUuid'] as String?) ??
+          metadata['folderId']?.toString();
+      if (parentUuid != null) {
+        inxt_cache.invalidateCache(folderCache, fileCache, parentUuid);
+      }
+    } catch (_) {
+      // best-effort: cache will expire on its own after `cacheDuration`
+    }
+
+    return result;
+  } finally {
+    _MemoryGate.release(memNeed);
+  }
 }
 
 /// Copy a file to a different folder, preserving timestamps.
