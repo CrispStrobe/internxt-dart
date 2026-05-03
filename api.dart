@@ -1,16 +1,19 @@
-// HTTP transport — central request handler with retries.
+// HTTP transport + raw drive endpoint wrappers.
 //
-// Extracted from cli.dart in Phase 4. All endpoint methods on
-// `InternxtClient` (auth, files, folders, trash, network) ultimately
-// call `makeRequest` here. By design this module knows nothing about
-// auth state or refresh — the caller passes a bearer token snapshot
-// and is responsible for rotating it on 401. Refresh orchestration
-// lives in cli.dart for now and will move to auth.dart in a later
-// extraction.
+// Extracted from cli.dart in Phase 4. `makeRequest` is the central
+// HTTP transport with retries. The endpoint helpers below it are
+// thin JSON-decoded wrappers around `makeRequest` for endpoints that
+// don't carry domain logic — get/put metadata, search, ancestors.
+// Higher-level operations (path resolution, mv/rename/copy/trash,
+// upload, download) live in their own modules.
+//
+// State convention: nothing in this module holds instance state.
+// Callers pass `driveApiUrl` and a bearer-token snapshot; refresh
+// orchestration lives on `InternxtClient`.
 //
 // Behavior pinned by the live smoke suite (test/live_smoke_test.dart):
 // every read/write/list operation in those tests routes through this
-// function, so any regression here surfaces immediately.
+// module, so any regression here surfaces immediately.
 
 import 'dart:convert';
 import 'dart:math';
@@ -115,4 +118,111 @@ Future<http.Response> makeRequest(
     }
     rethrow;
   }
+}
+
+// --- Raw drive endpoint wrappers ---
+// Each is a thin `makeRequest` call + json.decode. Return shapes
+// match the gateway responses verbatim — callers do their own
+// field extraction.
+
+/// GET /files/{uuid}/meta — file metadata (name, fileType, folderUuid,
+/// folderId, size, bucket, fileId, timestamps, …).
+Future<Map<String, dynamic>> getFileMetadata(
+  String driveApiUrl,
+  String? bearerToken,
+  String fileUuid,
+) async {
+  final response = await makeRequest(
+    'GET',
+    Uri.parse('$driveApiUrl/files/$fileUuid/meta'),
+    bearerToken: bearerToken,
+  );
+  return json.decode(response.body);
+}
+
+/// GET /folders/{uuid}/meta — folder metadata (name, parentUuid,
+/// parentId, timestamps, …).
+Future<Map<String, dynamic>> getFolderMetadata(
+  String driveApiUrl,
+  String? bearerToken,
+  String folderUuid,
+) async {
+  final response = await makeRequest(
+    'GET',
+    Uri.parse('$driveApiUrl/folders/$folderUuid/meta'),
+    bearerToken: bearerToken,
+  );
+  return json.decode(response.body);
+}
+
+/// PUT /files/{uuid}/meta — update mutable file metadata fields.
+/// Used for rename (`plainName`), retype (`type`), and timestamp
+/// preservation (`modificationTime`).
+Future<Map<String, dynamic>> updateFileMetadata(
+  String driveApiUrl,
+  String? bearerToken,
+  String fileUuid,
+  Map<String, dynamic> payload,
+) async {
+  final response = await makeRequest(
+    'PUT',
+    Uri.parse('$driveApiUrl/files/$fileUuid/meta'),
+    bearerToken: bearerToken,
+    body: json.encode(payload),
+  );
+  return json.decode(response.body);
+}
+
+/// PUT /folders/{uuid}/meta — update mutable folder metadata fields
+/// (rename via `plainName`, timestamp preservation).
+Future<Map<String, dynamic>> updateFolderMetadata(
+  String driveApiUrl,
+  String? bearerToken,
+  String folderUuid,
+  Map<String, dynamic> payload,
+) async {
+  final response = await makeRequest(
+    'PUT',
+    Uri.parse('$driveApiUrl/folders/$folderUuid/meta'),
+    bearerToken: bearerToken,
+    body: json.encode(payload),
+  );
+  return json.decode(response.body);
+}
+
+/// GET /fuzzy/{query} — server-side fuzzy search across the user's
+/// drive. The response shape is unpredictable (sometimes
+/// `{data: [...]}`, sometimes `{results: [...]}`, sometimes the bare
+/// list); this helper normalizes to a `List<dynamic>`. Empty list
+/// when the response shape is unrecognized.
+Future<List<dynamic>> searchFiles(
+  String driveApiUrl,
+  String? bearerToken,
+  String query,
+) async {
+  final response = await makeRequest(
+    'GET',
+    Uri.parse('$driveApiUrl/fuzzy/$query'),
+    bearerToken: bearerToken,
+  );
+  final data = json.decode(response.body);
+  final items = data['data'] ?? data['results'] ?? data;
+  return items is List ? items : <dynamic>[];
+}
+
+/// GET /folders/{uuid}/ancestors — returns the parent chain for a
+/// folder, used to reconstruct full readable paths in search results.
+/// Returns an empty list if the response is malformed.
+Future<List<dynamic>> getFolderAncestors(
+  String driveApiUrl,
+  String? bearerToken,
+  String folderUuid,
+) async {
+  final response = await makeRequest(
+    'GET',
+    Uri.parse('$driveApiUrl/folders/$folderUuid/ancestors'),
+    bearerToken: bearerToken,
+  );
+  final data = json.decode(response.body);
+  return data is List ? data : <dynamic>[];
 }

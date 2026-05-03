@@ -1879,23 +1879,11 @@ class InternxtClient {
         tfaCode: tfaCode,
       );
 
-  Future<Map<String, dynamic>> getFileMetadata(String fileUuid) async {
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-    log('GET $url (fetching file metadata)');
+  Future<Map<String, dynamic>> getFileMetadata(String fileUuid) =>
+      inxt_api.getFileMetadata(driveApiUrl, newToken, fileUuid);
 
-    final response = await _makeRequest('GET', url);
-
-    return json.decode(response.body);
-  }
-
-  Future<Map<String, dynamic>> getFolderMetadata(String folderUuid) async {
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
-    log('GET $url (fetching folder metadata)');
-
-    final response = await _makeRequest('GET', url);
-
-    return json.decode(response.body);
-  }
+  Future<Map<String, dynamic>> getFolderMetadata(String folderUuid) =>
+      inxt_api.getFolderMetadata(driveApiUrl, newToken, folderUuid);
 
   // --- Crypto Helpers ---
   // Implementations live in crypto.dart. These thin wrappers keep the
@@ -3460,30 +3448,13 @@ class InternxtClient {
   }
 
   Future<Map<String, dynamic>> _apiUpdateFileMetadata(
-      String fileUuid, Map<String, dynamic> payload) async {
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-    log('PUT $url (updating file metadata)');
-
-    final response = await _makeRequest(
-      'PUT',
-      url,
-      body: json.encode(payload),
-    );
-    return json.decode(response.body);
-  }
+          String fileUuid, Map<String, dynamic> payload) =>
+      inxt_api.updateFileMetadata(driveApiUrl, newToken, fileUuid, payload);
 
   Future<Map<String, dynamic>> _apiUpdateFolderMetadata(
-      String folderUuid, Map<String, dynamic> payload) async {
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
-    log('PUT $url (updating folder metadata)');
-
-    final response = await _makeRequest(
-      'PUT',
-      url,
-      body: json.encode(payload),
-    );
-    return json.decode(response.body);
-  }
+          String folderUuid, Map<String, dynamic> payload) =>
+      inxt_api.updateFolderMetadata(
+          driveApiUrl, newToken, folderUuid, payload);
 
   Future<void> setFileTimestamp(String fileUuid, DateTime mTime) async {
     final isoTimestamp = mTime.toUtc().toIso8601String();
@@ -3536,33 +3507,11 @@ class InternxtClient {
 
   // --- Search / Find ---
 
-  /// Calls the server-side fuzzy search.
-  Future<List<dynamic>> _apiSearchFiles(String query) async {
-    final url = Uri.parse('$driveApiUrl/fuzzy/$query');
-    log('GET $url (searching)');
+  Future<List<dynamic>> _apiSearchFiles(String query) =>
+      inxt_api.searchFiles(driveApiUrl, newToken, query);
 
-    final response = await _makeRequest('GET', url);
-    final data = json.decode(response.body);
-
-    final items = data['data'] ?? data['results'] ?? data;
-    if (items is List) {
-      return items;
-    }
-    return [];
-  }
-
-  /// Gets all parent folders for a given folder UUID.
-  Future<List<dynamic>> _apiGetFolderAncestors(String folderUuid) async {
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/ancestors');
-    log('GET $url (getting ancestors)');
-
-    final response = await _makeRequest('GET', url);
-    final data = json.decode(response.body);
-    if (data is List) {
-      return data;
-    }
-    return [];
-  }
+  Future<List<dynamic>> _apiGetFolderAncestors(String folderUuid) =>
+      inxt_api.getFolderAncestors(driveApiUrl, newToken, folderUuid);
 
   /// Builds the full readable path for an item given its metadata and parent UUID.
   Future<String> _buildFullPath(

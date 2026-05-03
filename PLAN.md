@@ -12,13 +12,13 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
 ## Phase 4: split the monolith (in progress)
 
-**Status:** ConfigService, crypto, utils, cache, the HTTP transport,
-and the auth protocol have been extracted. cli.dart down from 4317
-→ 3810 LOC. Six new modules at the project root: `config.dart`
-(152), `crypto.dart` (211), `utils.dart` (45), `cache.dart` (84),
-`api.dart` (118), `auth.dart` (167). Tests stay green via thin
-delegating wrappers + re-exports. Each extraction got its own
-commit (4.a–4.f).
+**Status:** ConfigService, crypto, utils, cache, the HTTP transport
+(including raw drive endpoint helpers), and the auth protocol have
+been extracted. cli.dart down from 4317 → 3759 LOC. Six new modules
+at the project root: `config.dart` (152), `crypto.dart` (211),
+`utils.dart` (45), `cache.dart` (84), `api.dart` (228), `auth.dart`
+(167). Tests stay green via thin delegating wrappers + re-exports.
+Each extraction got its own commit (4.a–4.g).
 
 The state-vs-protocol split is now consistent across the auth and
 cache layers: instance state (the 7 session fields, `_isRefreshingToken`
@@ -27,11 +27,20 @@ helper functions live in their respective modules and take their
 dependencies as parameters.
 
 **Still ahead (in this phase):**
-- `drive.dart` — path resolution, list, mv, rename, copy, trash,
-  recursive folder ops. Largest remaining chunk. Could pull the raw
-  endpoint methods (`getFileMetadata`, `getFolderMetadata`, etc.) into
-  api.dart first as a separate sub-extraction if it makes drive.dart
-  more tractable.
+- `drive.dart` — domain operations layered on top of api.dart and
+  cache.dart: path resolution, list, mv/rename, trash,
+  setFileTimestamp / setFolderTimestamp, recursive folder creation,
+  search / findFiles / printTree. Largest remaining chunk. Likely
+  needs to be staged across two or three commits because of size
+  (~1100 LOC).
+- `upload.dart` — `_startUpload`, `_uploadChunkWithProgress`,
+  `_finishUpload`, `_createFileEntry`, `_uploadFile`,
+  `uploadThumbnailAsync`, `uploadSingleItem`, `upload`,
+  `_resolveOrCreateRemoteFolder`. Memory-gated concurrency lives here.
+- `download.dart` — `downloadFile`, `downloadFileStreamed`,
+  `downloadPath`, `_getDownloadLinks`, `_getNetworkAuth`. The bridge-
+  auth helper currently lives near the upload code but belongs with
+  download since download.dart is the consumer of bridge auth.
 - `upload.dart` — encrypt → push → finalize → drive-entry pipeline +
   memory-gated concurrency.
 - `download.dart` — download + decrypt + write + timestamp preserve.
