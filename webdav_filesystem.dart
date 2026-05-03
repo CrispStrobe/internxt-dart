@@ -53,7 +53,7 @@ class InternxtFileSink implements io.IOSink {
   
   static const int _maxMemorySize = 100 * 1024 * 1024; // 100MB
   bool _usingDisk = false;
-  io.BytesBuilder _memoryBuffer = io.BytesBuilder(copy: false);
+  BytesBuilder _memoryBuffer = BytesBuilder(copy: false);
   io.File? _tempFile;
   io.IOSink? _tempFileSink;
   int _bytesWritten = 0;
@@ -75,7 +75,7 @@ class InternxtFileSink implements io.IOSink {
       _tempFileSink!.add(bufferedBytes);
     }
     
-    _memoryBuffer = io.BytesBuilder(copy: false); 
+    _memoryBuffer = BytesBuilder(copy: false); 
   }
 
   @override
@@ -311,20 +311,19 @@ class InternxtFileSystem implements FileSystem {
   set currentDirectory(dynamic path) => throw UnimplementedError('Not applicable');
   @override
   Directory get systemTempDirectory => LocalFileSystem().systemTempDirectory;
-  @override
+
+  // The following members are NOT part of package:file FileSystem interface.
+  // Kept as defensive defaults in case the wsgi dispatcher asks for them
+  // via dynamic dispatch; @override removed since they don't override anything.
   Directory get homeDirectory => throw UnimplementedError('Not applicable');
-  
+
   @override
   Link link(dynamic path) => throw UnimplementedError('Links are not supported');
-  @override
+
   String get pathSeparator => '/';
-  @override
   bool get isWatchSupported => false;
-  @override
   Future<String> symbolicLinkTarget(String path) => throw UnimplementedError('Links not supported');
-  @override
   Future<File> createTemp(String prefix) => throw UnimplementedError('Temp ops not supported');
-  @override
   File createTempSync(String prefix) => throw UnimplementedError('Sync ops not supported');
 }
 
@@ -333,8 +332,9 @@ class InternxtDirectory implements Directory {
   final InternxtClient client;
   @override
   final String path;
-  @override
-  final InternxtFileSystem fs; 
+  // package:file FileSystemEntity uses `fileSystem`, not `fs`. Kept as
+  // `fs` for our internal use; @override removed.
+  final InternxtFileSystem fs;
 
   InternxtDirectory({required this.client, required this.path, required this.fs});
 
@@ -420,7 +420,9 @@ class InternxtDirectory implements Directory {
   @override
   Future<io.FileStat> stat() async => fs.stat(path);
   
-  @override
+  // Directory in package:file 7.x doesn't expose setStat as part of the
+  // interface; this method is here in case the wsgi layer calls it via
+  // dynamic dispatch. @override removed.
   Future<void> setStat(io.FileStat stat) async {
     client.log('WebDAV: PROPPATCH (Folder) $path'); // <-- FIX
     try {
@@ -482,8 +484,9 @@ class InternxtFile implements File {
   final InternxtClient client;
   @override
   final String path;
-  @override
-  final InternxtFileSystem fs; 
+  // package:file FileSystemEntity uses `fileSystem`, not `fs`. Kept as
+  // `fs` for our internal use; @override removed.
+  final InternxtFileSystem fs;
 
   InternxtFile({required this.client, required this.path, required this.fs});
 
@@ -604,7 +607,9 @@ class InternxtFile implements File {
   @override
   Future<io.FileStat> stat() async => fs.stat(path);
 
-  @override
+  // File in package:file 7.x doesn't expose setStat as part of the
+  // interface; this method is here in case the wsgi layer calls it via
+  // dynamic dispatch. @override removed.
   Future<void> setStat(io.FileStat stat) async {
     client.log('WebDAV: PROPPATCH (File) $path'); // <-- FIX
     try {

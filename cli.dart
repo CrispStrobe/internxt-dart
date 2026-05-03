@@ -18,8 +18,6 @@ import 'package:glob/list_local_fs.dart';
 // WebDAV Imports
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_dav/shelf_dav.dart';
-import 'package:file/file.dart' hide File, Directory; // Use interface
-import 'package:file/local.dart'; // Use concrete for temp dir
 import 'webdav_filesystem.dart'; // Our custom implementation
 
 /// Internxt CLI in Dart
@@ -1345,9 +1343,11 @@ class InternxtCLI {
         print("🔄 DEBUG: Resuming existing batch with ${batchState['tasks'].length} tasks.");
       }
 
-      // Step 1: Optimization - Resolve target once
-      final targetFolderInfo = await client._resolveOrCreateRemoteFolder(targetPath);
-      final targetFolderUuid = targetFolderInfo['uuid'] as String;
+      // Step 1: Optimization - Resolve target once. We compute this for
+      // its side effect (creates intermediate folders if needed); the
+      // returned uuid is unused here because client.upload below resolves
+      // the path again internally.
+      await client._resolveOrCreateRemoteFolder(targetPath);
 
       // Step 2: Optimization - Perform batch existence check (Go rclone style)
       // This prevents thousands of individual resolvePath calls
@@ -1914,37 +1914,6 @@ class InternxtClient {
     }
   }
 
-  /// Encrypts the password hash using the modern Internxt protocol.
-  /// Flow: Decrypt server-salt -> PBKDF2 hash password with salt -> Encrypt result.
-  String _encryptPasswordHash(String password, String encryptedSalt) {
-    log("🔐 TRACE: Starting modern password hash encryption...");
-    
-    // 1. Decrypt the salt (sKey) using the fixed App Crypto Secret
-    final saltHex = _decryptTextWithKey(encryptedSalt, appCryptoSecret);
-    
-    // 2. Compute the PBKDF2-SHA1 hash (10,000 iterations)
-    final hashObj = _passToHash(password, saltHex);
-    final masterHash = hashObj['hash']!;
-    
-    // 3. Re-encrypt the hash with the app secret for the login payload
-    final encryptedHash = _encryptTextWithKey(masterHash, appCryptoSecret);
-    
-    log("✅ TRACE: Password hash encryption complete.");
-    return encryptedHash;
-  }
-
-  /// Computes the Bridge Auth (Basic Auth) credentials.
-  /// The password is the SHA256 hash of the UserID string.
-  Map<String, String> _computeBridgeAuth(String bridgeUser, String userId) {
-    log("🔐 DEBUG: Computing Bridge Auth for UserID: $userId");
-    // Bridge password is sha256(userId)
-    final bridgePass = crypto.sha256.convert(utf8.encode(userId.toString())).toString();
-    return {
-      'user': bridgeUser,
-      'pass': bridgePass,
-    };
-  }
-
   /// Login to Internxt
   Future<Map<String, dynamic>> login(String email, String password, {String? tfaCode}) async {
     final cleanEmail = email.toLowerCase().trim();
@@ -2020,24 +1989,6 @@ class InternxtClient {
       'bridgePass': bridgePass,
       'bucketId': user['bucket'], // This is your storage container ID
     };
-  }
-
-  Future<Map<String, dynamic>> _getSecurityDetails(String email) async {
-    final url = Uri.parse('$driveApiUrl/auth/login');
-    log('💧 TRACE: Fetching security details (salt) for $email');
-
-    final response = await _makeRequest(
-      'POST',
-      url,
-      body: json.encode({'email': email.toLowerCase().trim()}),
-      useAuth: false,
-    );
-
-    final data = json.decode(response.body);
-    if (data['sKey'] == null) {
-      throw Exception("Security details failed: sKey missing from response.");
-    }
-    return data;
   }
 
   Future<Map<String, dynamic>> getFileMetadata(String fileUuid) async {
@@ -2659,8 +2610,6 @@ class InternxtClient {
     return true;
   }
 
-  Future<void> _wait(Duration duration) => Future.delayed(duration);
-
   Future<void> downloadPath(
     String remotePath, {
     String? localDestination,
@@ -3037,16 +2986,6 @@ class InternxtClient {
     return currentFolderInfo; 
   }
 
-  Future<void> _deleteFilePermanently(String fileUuid) async {
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid');
-    log('DELETE $url');
-    try {
-      await _makeRequest('DELETE', url);
-    } catch (e) {
-      log('Delete file failed (swallowing error): $e');
-    }
-  }
-
   Future<Map<String, dynamic>> _startUpload(
     String bucketId,
     int fileSize,
@@ -3122,20 +3061,6 @@ class InternxtClient {
     }
   }
 
-  Future<void> _uploadChunk(String uploadUrl, Uint8List chunkData) async {
-    log('PUT $uploadUrl (uploading chunk)');
-    final response = await http.put(
-      Uri.parse(uploadUrl),
-      headers: {'Content-Type': 'application/octet-stream'},
-      body: chunkData,
-    );
-
-    if (response.statusCode != 200) {
-      log('Upload chunk failed: ${response.body}');
-      throw Exception('Failed to upload chunk: ${response.statusCode}');
-    }
-  }
-
   Future<Map<String, dynamic>> _finishUpload(String bucketId,
       Map<String, dynamic> payload, String user, String pass) async {
     final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
@@ -3181,7 +3106,6 @@ class InternxtClient {
     String? modificationTime,
   }) async {
     final fileSize = await localFile.length();
-    final stopwatch = Stopwatch()..start();
 
     // STEP 1: Encryption Verbosity (Python style)
     print("\n     🔐 [STEP 1/5] Starting Encryption for ${formatSize(fileSize)}...");
@@ -3761,16 +3685,6 @@ class InternxtClient {
     await _apiUpdateFolderMetadata(
         folderUuid, {'modificationTime': isoTimestamp});
     // No cache invalidation needed, as list content hasn't changed
-  }
-
-  Future<void> _deleteFolderPermanently(String folderUuid) async {
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
-    log('DELETE $url');
-    try {
-      await _makeRequest('DELETE', url);
-    } catch(e) {
-      log('Delete folder failed (swallowing error): $e');
-    }
   }
 
   Future<void> trashItems(String uuid, String type) async {

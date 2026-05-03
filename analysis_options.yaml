@@ -1,0 +1,34 @@
+# Dart static analysis configuration.
+#
+# Uses package:lints/recommended.yaml — the Dart team's curated set of
+# style + correctness rules — plus a few stricter language settings.
+#
+# Run: dart analyze
+include: package:lints/recommended.yaml
+
+analyzer:
+  # NOTE: strict-casts / strict-inference / strict-raw-types would each
+  # surface 100-150 errors in this JSON-heavy codebase because the API
+  # responses are untyped Map/List. Until the monolith is split into
+  # modules with proper response types (see PLAN.md), we stick to the
+  # default casting behaviour and rely on tests + runtime errors to
+  # catch type mismatches. Re-enable strict-casts once Phase 4 is done.
+
+  errors:
+    # Treat these as errors so CI fails on them
+    unused_import: error
+    unused_local_variable: warning
+    unused_element: warning
+    override_on_non_overriding_member: error
+    deprecated_export_use: warning
+
+  exclude:
+    - .dart_tool/**
+    - build/**
+
+linter:
+  rules:
+    - prefer_relative_imports
+    - unnecessary_lambdas
+    - unnecessary_brace_in_string_interps
+    - prefer_final_locals
