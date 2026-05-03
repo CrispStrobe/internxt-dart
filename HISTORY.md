@@ -20,9 +20,10 @@ behaviour change. Tests stay green via thin delegating wrappers on
 | 4.a | `config.dart` | 152 | `ConfigService` — credential / batch-state / WebDAV PID persistence. No instance-state coupling. |
 | 4.b | `crypto.dart` | 211 | Trust root: AES-256-CBC + EVP_BytesToKey, PBKDF2-SHA1, AES-256-CTR, SHA-512 key derivation. Live tests confirm wire-compat with the real backend. Dropped per-call `log()` debug noise. |
 | 4.c | `utils.dart` | 45 | `formatSize` + `shouldIncludeFile`. Pure functions, already test-covered. |
+| 4.d | `cache.dart` | 84 | `CacheEntry` + `cacheDuration` + `invalidateCache` + `clearParentCache`. Cache *storage* (the two `Map<String, CacheEntry>` fields) stays on `InternxtClient` — its lifetime is tied to a logged-in session. The `clearParentCache` doc comment pins the Phase 3 folderId-vs-folderUuid lesson so a future edit can't quietly reintroduce it. |
 
-cli.dart down from 4317 → 3997 LOC. Still ahead: `auth.dart`,
-`api.dart`, `cache.dart`, `drive.dart`, `upload.dart`, `download.dart`.
+cli.dart down from 4317 → 3976 LOC. Still ahead: `auth.dart`,
+`api.dart`, `drive.dart`, `upload.dart`, `download.dart`.
 See [`PLAN.md`](PLAN.md) for the full Phase 4 roadmap and a planned
 Phase 6 that publishes the result as a library for cloud-dart to
 consume.

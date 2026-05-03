@@ -25,21 +25,17 @@ import 'config.dart';
 import 'crypto.dart' as inxt_crypto;
 import 'utils.dart' as inxt_utils;
 import 'utils.dart' show formatSize; // unprefixed for in-file callers
+import 'cache.dart' as inxt_cache;
+import 'cache.dart' show CacheEntry; // unprefixed: used in field types
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
 export 'utils.dart';
+export 'cache.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
   final cli = InternxtCLI();
   await cli.run(arguments);
-}
-
-// Helper class for cache entries
-class _CacheEntry {
-  final dynamic items;
-  final DateTime timestamp;
-  _CacheEntry({required this.items, required this.timestamp});
 }
 
 class InternxtCLI {
@@ -1760,10 +1756,10 @@ class InternxtClient {
   String? rootFolderId;
   String? bucketId;
 
-  // Caching variables
-  static const Duration _cacheDuration = Duration(minutes: 10);
-  final Map<String, _CacheEntry> _folderCache = {};
-  final Map<String, _CacheEntry> _fileCache = {};
+  // Caching variables — see cache.dart for the entry shape, the TTL
+  // constant (`cacheDuration`), and the invalidation helpers.
+  final Map<String, CacheEntry> _folderCache = {};
+  final Map<String, CacheEntry> _fileCache = {};
 
   // Token refresh lock
   bool _isRefreshingToken = false;
@@ -2088,38 +2084,21 @@ class InternxtClient {
       inxt_crypto.getKeyAndIvFrom(secret, salt);
 
   // --- Caching ---
+  // Implementations live in cache.dart. These wrappers thread the
+  // instance-owned cache maps through to the free functions.
 
-  /// Clears the cache for a specific folder.
-  void _invalidateCache(String folderUuid) {
-    _folderCache.remove(folderUuid);
-    _fileCache.remove(folderUuid);
-    log('Cache invalidated for folder: $folderUuid');
-  }
+  void _invalidateCache(String folderUuid) =>
+      inxt_cache.invalidateCache(_folderCache, _fileCache, folderUuid);
 
-  /// Finds an item's parent and clears its cache.
-  Future<void> _clearParentCache(String itemUuid, String itemType) async {
-    String? parentUuid;
-    try {
-      if (itemType == 'file') {
-        final metadata = await getFileMetadata(itemUuid);
-        // PREFER folderUuid (string UUID) over folderId (legacy integer).
-        // The cache is keyed by string UUID; using the int silently fails to
-        // invalidate. Found via live test: file would still resolve after
-        // trash because the parent listing was served from stale cache.
-        parentUuid = (metadata['folderUuid'] as String?) ??
-            metadata['folderId']?.toString();
-      } else {
-        final metadata = await getFolderMetadata(itemUuid);
-        parentUuid = (metadata['parentUuid'] as String?) ??
-            metadata['parentId']?.toString();
-      }
-      if (parentUuid != null) {
-        _invalidateCache(parentUuid);
-      }
-    } catch (e) {
-      log('Could not clear parent cache for $itemUuid (parent: $parentUuid): $e');
-    }
-  }
+  Future<void> _clearParentCache(String itemUuid, String itemType) =>
+      inxt_cache.clearParentCache(
+        _folderCache,
+        _fileCache,
+        itemUuid,
+        itemType,
+        getFileMetadata,
+        getFolderMetadata,
+      );
 
   // --- List Operations ---
 
@@ -2128,7 +2107,7 @@ class InternxtClient {
     // Check cache
     final cached = _folderCache[folderId];
     if (cached != null &&
-        DateTime.now().difference(cached.timestamp) < _cacheDuration) {
+        DateTime.now().difference(cached.timestamp) < inxt_cache.cacheDuration) {
       log('Using cached folder list for $folderId');
       // Return a copy to prevent mutation
       return List<Map<String, dynamic>>.from(cached.items);
@@ -2193,7 +2172,7 @@ class InternxtClient {
 
     // Save to cache
     _folderCache[folderId] =
-        _CacheEntry(items: allItems, timestamp: DateTime.now());
+        CacheEntry(items: allItems, timestamp: DateTime.now());
 
     // Filter detailed fields if not requested (after caching full data)
     if (!detailed) {
@@ -2214,7 +2193,7 @@ class InternxtClient {
     // Check cache
     final cached = _fileCache[folderId];
     if (cached != null &&
-        DateTime.now().difference(cached.timestamp) < _cacheDuration) {
+        DateTime.now().difference(cached.timestamp) < inxt_cache.cacheDuration) {
       log('Using cached file list for $folderId');
       // Return a copy to prevent mutation
       return List<Map<String, dynamic>>.from(cached.items);
@@ -2286,7 +2265,7 @@ class InternxtClient {
 
     // Save to cache
     _fileCache[folderId] =
-        _CacheEntry(items: allItems, timestamp: DateTime.now());
+        CacheEntry(items: allItems, timestamp: DateTime.now());
 
     // Filter detailed fields if not requested
     if (!detailed) {

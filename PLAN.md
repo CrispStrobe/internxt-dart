@@ -12,11 +12,11 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
 ## Phase 4: split the monolith (in progress)
 
-**Status:** ConfigService, crypto, and utils have been extracted. cli.dart
-down from 4317 → 3997 LOC. Three new modules at the project root:
-`config.dart` (152), `crypto.dart` (211), `utils.dart` (45). Tests stay
-green via thin delegating wrappers + re-exports. Each extraction got
-its own commit (4.a, 4.b, 4.c).
+**Status:** ConfigService, crypto, utils, and cache have been extracted.
+cli.dart down from 4317 → 3976 LOC. Four new modules at the project
+root: `config.dart` (152), `crypto.dart` (211), `utils.dart` (45),
+`cache.dart` (84). Tests stay green via thin delegating wrappers +
+re-exports. Each extraction got its own commit (4.a, 4.b, 4.c, 4.d).
 
 **Still ahead (in this phase):**
 - `auth.dart` — login orchestration, refresh, bridge auth, credential
@@ -25,10 +25,6 @@ its own commit (4.a, 4.b, 4.c).
   decision on whether auth holds those fields or `InternxtClient` does.
 - `api.dart` — `_makeRequest`, pagination helpers, raw endpoint
   methods. Probably extract before `auth` since auth depends on it.
-- `cache.dart` — `_CacheEntry`, `_folderCache`, `_fileCache`,
-  `_invalidateCache`, `_clearParentCache`. The cache layer is where
-  the bug we found in Phase 3 lived; a dedicated module makes future
-  cache-correctness audits tractable.
 - `drive.dart` — path resolution, list, mv, rename, copy, trash,
   recursive folder ops. Largest remaining chunk.
 - `upload.dart` — encrypt → push → finalize → drive-entry pipeline +
