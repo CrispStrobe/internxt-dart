@@ -1,2 +1,23 @@
-# Ignores the directory and everything inside it
+# Dart build / pub artifacts
 .dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+pubspec.lock.local
+
+# Coverage
+coverage/
+*.lcov
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
