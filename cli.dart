@@ -29,12 +29,14 @@ import 'cache.dart' as inxt_cache;
 import 'cache.dart' show CacheEntry; // unprefixed: used in field types
 import 'api.dart' as inxt_api;
 import 'auth.dart' as inxt_auth;
+import 'drive.dart' as inxt_drive;
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
 export 'utils.dart';
 export 'cache.dart';
 export 'api.dart';
 export 'auth.dart';
+export 'drive.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -1906,21 +1908,13 @@ class InternxtClient {
       inxt_crypto.getKeyAndIvFrom(secret, salt);
 
   // --- Caching ---
-  // Implementations live in cache.dart. These wrappers thread the
-  // instance-owned cache maps through to the free functions.
+  // Implementations live in cache.dart. drive.dart calls into cache.dart
+  // directly, so the only caller still needing this wrapper is the
+  // upload pipeline (still in cli.dart for now). _clearParentCache
+  // moved out with the mv/rename/trash extraction.
 
   void _invalidateCache(String folderUuid) =>
       inxt_cache.invalidateCache(_folderCache, _fileCache, folderUuid);
-
-  Future<void> _clearParentCache(String itemUuid, String itemType) =>
-      inxt_cache.clearParentCache(
-        _folderCache,
-        _fileCache,
-        itemUuid,
-        itemType,
-        getFileMetadata,
-        getFolderMetadata,
-      );
 
   // --- List Operations ---
 
@@ -3315,195 +3309,44 @@ class InternxtClient {
   }
 
   // --- File/Trash Operations ---
+  // Implementations live in drive.dart. These wrappers thread the
+  // gateway URL, the bearer token snapshot, and (where invalidation
+  // is needed) the two cache maps through to the free functions.
 
   Future<List<Map<String, dynamic>>> getTrashContent(
-      {int offset = 0, int limit = 50}) async {
-    final url = Uri.parse('$driveApiUrl/storage/trash/paginated');
-    final List<Map<String, dynamic>> allItems = [];
+          {int offset = 0, int limit = 50}) =>
+      inxt_drive.getTrashContent(driveApiUrl, newToken,
+          offset: offset, limit: limit);
 
-    try {
-      log('GET $url?type=files (listing trash files)');
-      final fileResponse = await _makeRequest(
-        'GET',
-        url.replace(queryParameters: {
-          'offset': offset.toString(),
-          'limit': limit.toString(),
-          'type': 'files',
-        }),
-      );
+  Future<void> moveFile(String fileUuid, String destinationFolderUuid) =>
+      inxt_drive.moveFile(driveApiUrl, newToken, _folderCache, _fileCache,
+          fileUuid, destinationFolderUuid);
 
-      final fileData = json.decode(fileResponse.body);
-      final files = fileData['result'] ?? fileData['items'] ?? [];
-      for (var item in files) {
-        allItems.add({
-          'type': 'file',
-          'name': item['plainName'] ?? item['name'],
-          'fileType': item['type'] ?? '',
-          'uuid': item['uuid'] ?? item['id'],
-          'size': item['size'],
-        });
-      }
-    } catch (e) {
-      log('Error fetching trash files: $e');
-    }
-
-    try {
-      log('GET $url?type=folders (listing trash folders)');
-      final folderResponse = await _makeRequest(
-        'GET',
-        url.replace(queryParameters: {
-          'offset': offset.toString(),
-          'limit': limit.toString(),
-          'type': 'folders',
-        }),
-      );
-
-      final folderData = json.decode(folderResponse.body);
-      final folders = folderData['result'] ?? folderData['items'] ?? [];
-      for (var item in folders) {
-        allItems.add({
-          'type': 'folder',
-          'name': item['plainName'] ?? item['name'],
-          'fileType': '',
-          'uuid': item['uuid'] ?? item['id'],
-          'size': null,
-        });
-      }
-    } catch (e) {
-      log('Error fetching trash folders: $e');
-    }
-
-    if (allItems.isEmpty && (offset == 0)) {
-      log('Both trash list calls failed or returned empty.');
-      // Return empty list, don't throw
-    }
-    return allItems;
-  }
-
-  Future<void> moveFile(String fileUuid, String destinationFolderUuid) async {
-    await _clearParentCache(fileUuid, 'file');
-
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid');
-    final payload = {'destinationFolder': destinationFolderUuid};
-    log('PATCH $url (moving file $fileUuid)');
-
-    await _makeRequest(
-      'PATCH',
-      url,
-      body: json.encode(payload),
-    );
-
-    _invalidateCache(destinationFolderUuid);
-  }
-
-  Future<void> moveFolder(
-      String folderUuid, String destinationFolderUuid) async {
-    await _clearParentCache(folderUuid, 'folder');
-
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid');
-    final payload = {'destinationFolder': destinationFolderUuid};
-    log('PATCH $url (moving folder $folderUuid)');
-
-    await _makeRequest(
-      'PATCH',
-      url,
-      body: json.encode(payload),
-    );
-
-    _invalidateCache(destinationFolderUuid);
-  }
+  Future<void> moveFolder(String folderUuid, String destinationFolderUuid) =>
+      inxt_drive.moveFolder(driveApiUrl, newToken, _folderCache, _fileCache,
+          folderUuid, destinationFolderUuid);
 
   Future<void> renameFile(
-      String fileUuid, String newPlainName, String? newType) async {
-    await _clearParentCache(fileUuid, 'file');
+          String fileUuid, String newPlainName, String? newType) =>
+      inxt_drive.renameFile(driveApiUrl, newToken, _folderCache, _fileCache,
+          fileUuid, newPlainName, newType);
 
-    final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-    final payload = <String, dynamic>{'plainName': newPlainName};
-    if (newType != null) {
-      payload['type'] = newType;
-    } else {
-      payload['type'] = '';
-    }
-    log('PUT $url (renaming file $fileUuid)');
+  Future<void> renameFolder(String folderUuid, String newName) =>
+      inxt_drive.renameFolder(driveApiUrl, newToken, _folderCache, _fileCache,
+          folderUuid, newName);
 
-    await _makeRequest(
-      'PUT',
-      url,
-      body: json.encode(payload),
-    );
-  }
+  Future<void> setFileTimestamp(String fileUuid, DateTime mTime) =>
+      inxt_drive.setFileTimestamp(driveApiUrl, newToken, fileUuid, mTime);
 
-  Future<void> renameFolder(String folderUuid, String newName) async {
-    await _clearParentCache(folderUuid, 'folder');
+  Future<void> setFolderTimestamp(String folderUuid, DateTime mTime) =>
+      inxt_drive.setFolderTimestamp(driveApiUrl, newToken, folderUuid, mTime);
 
-    final url = Uri.parse('$driveApiUrl/folders/$folderUuid/meta');
-    final payload = {'plainName': newName};
-    log('PUT $url (renaming folder $folderUuid)');
+  Future<void> trashItems(String uuid, String type) =>
+      inxt_drive.trashItems(
+          driveApiUrl, newToken, _folderCache, _fileCache, uuid, type);
 
-    await _makeRequest(
-      'PUT',
-      url,
-      body: json.encode(payload),
-    );
-  }
-
-  Future<Map<String, dynamic>> _apiUpdateFileMetadata(
-          String fileUuid, Map<String, dynamic> payload) =>
-      inxt_api.updateFileMetadata(driveApiUrl, newToken, fileUuid, payload);
-
-  Future<Map<String, dynamic>> _apiUpdateFolderMetadata(
-          String folderUuid, Map<String, dynamic> payload) =>
-      inxt_api.updateFolderMetadata(
-          driveApiUrl, newToken, folderUuid, payload);
-
-  Future<void> setFileTimestamp(String fileUuid, DateTime mTime) async {
-    final isoTimestamp = mTime.toUtc().toIso8601String();
-    log('WebDAV: Setting file timestamp for $fileUuid -> $isoTimestamp');
-    await _apiUpdateFileMetadata(fileUuid, {'modificationTime': isoTimestamp});
-    // No cache invalidation needed, as list content hasn't changed
-  }
-
-  Future<void> setFolderTimestamp(String folderUuid, DateTime mTime) async {
-    final isoTimestamp = mTime.toUtc().toIso8601String();
-    log('WebDAV: Setting folder timestamp for $folderUuid -> $isoTimestamp');
-    await _apiUpdateFolderMetadata(
-        folderUuid, {'modificationTime': isoTimestamp});
-    // No cache invalidation needed, as list content hasn't changed
-  }
-
-  Future<void> trashItems(String uuid, String type) async {
-    await _clearParentCache(uuid, type);
-
-    final url = Uri.parse('$driveApiUrl/storage/trash/add');
-    final payload = {
-      'items': [
-        {'uuid': uuid, 'type': type}
-      ]
-    };
-    log('POST $url (trashing item $uuid)');
-
-    await _makeRequest(
-      'POST',
-      url,
-      body: json.encode(payload),
-    );
-  }
-
-  Future<void> deletePermanently(String uuid, String type) async {
-    final url = Uri.parse('$driveApiUrl/storage/trash');
-    final payload = {
-      'items': [
-        {'uuid': uuid, 'type': type}
-      ]
-    };
-    log('DELETE $url (deleting item $uuid)');
-
-    await _makeRequest(
-      'DELETE',
-      url,
-      body: json.encode(payload),
-    );
-  }
+  Future<void> deletePermanently(String uuid, String type) =>
+      inxt_drive.deletePermanently(driveApiUrl, newToken, uuid, type);
 
   // --- Search / Find ---
 
