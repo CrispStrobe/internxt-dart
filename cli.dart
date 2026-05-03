@@ -20,6 +20,11 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_dav/shelf_dav.dart';
 import 'webdav_filesystem.dart'; // Our custom implementation
 
+// Phase 4 module split — re-exported so existing tests that do
+// `import '../cli.dart';` keep finding ConfigService etc.
+import 'config.dart';
+export 'config.dart' show ConfigService;
+
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
   final cli = InternxtCLI();
@@ -4156,148 +4161,8 @@ class InternxtClient {
   }
 }
 
-// ============================================================================
-// CONFIG SERVICE
-// ============================================================================
-
-/// Handles persistent storage for credentials, batch states, and WebDAV metadata.
-
-class ConfigService {
-  late final String internxtCliDataDir;
-  late final String internxtCliLogsDir;
-  late final String credentialsFile;
-  late final String batchStateDir;
-  late final String webdavPidFile;
-
-  /// [dataDir] override is for tests; production code uses the default
-  /// `~/.internxt-cli` location.
-  ConfigService({String? dataDir}) {
-    final home = dataDir ??
-        io.Platform.environment['HOME'] ??
-        io.Platform.environment['USERPROFILE'] ??
-        '.';
-    internxtCliDataDir = dataDir ?? p.join(home, '.internxt-cli');
-    internxtCliLogsDir = p.join(internxtCliDataDir, 'logs');
-    batchStateDir = p.join(internxtCliDataDir, 'batch_states');
-    credentialsFile = p.join(internxtCliDataDir, '.inxtcli-dart-creds.json');
-    webdavPidFile = p.join(internxtCliDataDir, 'webdav.pid');
-
-    // Ensure directories exist
-    io.Directory(internxtCliDataDir).createSync(recursive: true);
-    io.Directory(internxtCliLogsDir).createSync(recursive: true);
-    io.Directory(batchStateDir).createSync(recursive: true);
-  }
-
-  // Getter for the config handleConfig method
-  String get configDir => internxtCliDataDir;
-
-  // --- WebDAV PID Management ---
-  Future<void> saveWebdavPid(int pid) async {
-    try {
-      await io.File(webdavPidFile).writeAsString(pid.toString());
-    } catch (e) {
-      print('⚠️  Warning: Could not save WebDAV PID file: $e');
-    }
-  }
-
-  Future<int?> readWebdavPid() async {
-    try {
-      if (await io.File(webdavPidFile).exists()) {
-        final content = await io.File(webdavPidFile).readAsString();
-        return int.tryParse(content.trim());
-      }
-    } catch (e) {
-      print('⚠️  Warning: Could not read WebDAV PID file: $e');
-    }
-    return null;
-  }
-
-  Future<void> clearWebdavPid() async {
-    try {
-      if (await io.File(webdavPidFile).exists()) {
-        await io.File(webdavPidFile).delete();
-      }
-    } catch (e) {
-      print('⚠️  Warning: Could not clear WebDAV PID file: $e');
-    }
-  }
-
-  // --- Batch State Management ---
-  String generateBatchId(
-      String operationType, List<String> sources, String target) {
-    final input = '$operationType-${sources.join('|')}-$target';
-    final bytes = utf8.encode(input);
-    final digest = crypto.sha1.convert(bytes);
-    return digest.toString().substring(0, 16);
-  }
-
-  String getBatchStateFilePath(String batchId) {
-    return p.join(batchStateDir, 'batch_state_$batchId.json');
-  }
-
-  Future<Map<String, dynamic>?> loadBatchState(String batchId) async {
-    final filePath = getBatchStateFilePath(batchId);
-    final file = io.File(filePath);
-    if (await file.exists()) {
-      try {
-        final content = await file.readAsString();
-        return json.decode(content) as Map<String, dynamic>;
-      } catch (e) {
-        print("⚠️ Warning: Could not read batch state file '$filePath': $e");
-        await deleteBatchState(batchId);
-        return null;
-      }
-    }
-    return null;
-  }
-
-  Future<void> saveBatchState(
-      String batchId, Map<String, dynamic> state) async {
-    final filePath = getBatchStateFilePath(batchId);
-    final file = io.File(filePath);
-    try {
-      await file.writeAsString(json.encode(state));
-    } catch (e) {
-      print("⚠️ Warning: Could not save batch state file '$filePath': $e");
-    }
-  }
-
-  Future<void> deleteBatchState(String batchId) async {
-    final filePath = getBatchStateFilePath(batchId);
-    final file = io.File(filePath);
-    if (await file.exists()) {
-      try {
-        await file.delete();
-      } catch (e) {
-        print("⚠️ Warning: Could not delete batch state file '$filePath': $e");
-      }
-    }
-  }
-
-  // --- Hydrated Credentials Management ---
-  Future<void> saveCredentials(Map<String, dynamic> credentials) async {
-    final file = io.File(credentialsFile);
-    await file.writeAsString(json.encode(credentials), flush: true);
-  }
-
-  Future<Map<String, dynamic>?> readCredentials() async {
-    final file = io.File(credentialsFile);
-    if (!await file.exists()) return null;
-    try {
-      final contents = await file.readAsString();
-      return json.decode(contents) as Map<String, dynamic>;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  Future<void> clearCredentials() async {
-    final file = io.File(credentialsFile);
-    if (await file.exists()) {
-      await file.delete();
-    }
-  }
-}
+// ConfigService lives in config.dart; the export at the top of this
+// file makes it visible to anyone who does `import 'cli.dart';`.
 
 // ============================================================================
 // UTILITY FUNCTIONS
