@@ -206,16 +206,13 @@ Backend endpoints to add:
 
 Estimated work: ~80 LOC + 3 unit tests + 2 live tests.
 
-### Search (`search`, `find`)
+### Search (`search`, `find`) — implemented, live-tested
 
-Python has both server-side fuzzy search and a client-side recursive
-wildcard `find`. Dart has neither. The server-side endpoint is
-`POST /storage/items/search` (or similar — confirm against Python's
-`api.py`).
-
-Estimated work: ~60 LOC + 2 unit tests + 1 live test (with retry for
-the 2-10s eventual consistency we saw in Python live tests — the
-search index isn't immediate).
+`search` (server-side fuzzy via `GET /fuzzy/{query}`) and `findFiles`
+(client-side recursive glob) are both in `drive.dart` and exercised
+by live tests as of the live-test parity pass. The remaining work
+is wiring them to user-facing CLI subcommands (the methods exist but
+are not surfaced via `bin/inxt search` or similar).
 
 ### `whoami`, `quota`, `config` commands
 
@@ -223,23 +220,58 @@ Three small commands the Python sibling exposes. `whoami` prints the
 logged-in email; `quota` prints used/limit storage; `config` prints
 the active config keys.
 
+`quota` requires a new endpoint helper in `api.dart` for
+`GET /users/usage`. The Python live test
+`test_live_storage_usage_endpoint` is currently a `PINNED GAP` skip
+in our live suite for this reason.
+
 Estimated work: ~30 LOC each + 1 unit test each.
 
-### Conflict-handling on upload (skip / overwrite / safety-pattern)
+### Conflict-handling on upload — partial (`skip` + `overwrite`)
 
-Python has a tested `on_conflict='skip'|'overwrite'|'safety_pattern'`
-flag for the upload path. Safety-pattern uploads to a temp name first,
-then renames the existing target to a `.bak` suffix, then promotes
-the temp upload. The Dart impl has the conflict detection but only
-prints "target exists, skipping" — no overwrite or safety-pattern path.
+`onConflict='skip'` and `onConflict='overwrite'` are both implemented
+in `upload.dart` and exercised by the live suite (as of the
+live-test parity pass). Still missing: `safety_pattern` (upload to
+temp name → rename existing to `.bak` → promote temp). Without it,
+the `overwrite` branch destroys the previous version with no
+recovery path beyond Internxt's 30-day trash.
 
-This is the highest-priority feature gap from a data-safety angle.
-Without `safety_pattern`, a user re-uploading a file is one keystroke
-away from losing the existing version.
+Estimated work: ~80 LOC + 2 unit tests + 1 live test for the
+`safety_pattern` branch alone.
 
-Estimated work: ~120 LOC + 4 unit tests + 3 live tests (the live
-tests are the only way to verify the right UUIDs land on the server
-in each branch).
+### File copy (`copy_item`)
+
+Python has `copy_item(src_uuid, dst_folder_uuid)` backed by
+`POST /storage/copy` (or whichever the gateway exposes). The Dart
+CLI lacks this entirely — there's no `copy` subcommand, no method
+on `InternxtClient`, and no entry in `drive.dart`. Live test
+`PINNED GAP: file copy preserves content` skips for this reason.
+
+Estimated work: ~40 LOC + 1 unit test + 1 live test.
+
+### File replace-in-place (`update_file`)
+
+Python's `update_file(uuid, local_path)` replaces the file's bytes
+while preserving the same UUID — used by the WebDAV PUT-on-existing
+path in the Python sibling. The Dart WebDAV layer instead trashes +
+re-uploads, which produces a new UUID and breaks any external
+references. Live test `PINNED GAP: update_file replaces content
+in-place` skips for this reason.
+
+Estimated work: ~60 LOC + 1 unit test + 1 live test. Touches the
+WebDAV PUT path so should be paired with WebDAV reliability work
+(below).
+
+### `list_folder_with_paths` enriched listing
+
+Python's `list_folder_with_paths(remote_path)` returns each entry
+annotated with `display_name`, `path`, and `size_display` — useful
+as a library API for UI layers (the Flutter app, future REPL, etc.).
+The Dart port does this enrichment inline inside the CLI's `handle*`
+functions, so it's not available as a library method.
+
+Estimated work: ~30 LOC + 1 unit test. Mostly a refactor of the
+existing rendering helpers.
 
 ---
 

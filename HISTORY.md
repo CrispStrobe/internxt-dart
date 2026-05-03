@@ -47,6 +47,54 @@ cli.dart down from 4317 → 2176 LOC — a 50% reduction. Phase 4 complete.
 | `drive.dart` | 1022 | All drive domain ops: mv/rename/timestamps/trash, paginated cache-aware listing, path resolution, recursive folder creation, search/find/tree. |
 | `upload.dart` | 594 | Upload pipeline: start/chunk/finish/createFileEntry primitives + per-file orchestrator + per-item conflict policy + top-level batch driver with resumable state. |
 | `download.dart` | 460 | Download pipeline: links primitive + in-memory and streamed downloaders + top-level path dispatcher with resumable state. |
+
+---
+
+## Live test parity with the Python sibling
+
+After Phase 4 landed, the live smoke suite was expanded from 12
+tests to 23 + 5 PINNED GAPs to match the Python sibling's
+`test_live_smoke.py`. Suite runtime is ~3:20 against the real
+backend.
+
+### Newly covered (11 ports)
+
+| Test | What it pins |
+|---|---|
+| `upload with unicode filename round-trips` | Unicode plainName preserved through the encrypted-name layer |
+| `upload extensionless file round-trips` | Files with no `.ext` (README, LICENSE) survive the type-extraction pass |
+| `upload 2 MB file (chunked multipart path)` | The 128 KB sub-chunk loop + 5 ms inter-chunk delay actually iterate (3-min timeout) |
+| `search finds uniquely-named file` | Server-side fuzzy index returns the upload (with retry for ~10s indexing latency) |
+| `search with bogus query returns a list` | Bogus terms produce a sane Map<String, List> shape, no crash |
+| `findFiles within sentinel returns only matching glob` | Client-side recursive glob matches the right files and ignores the rest |
+| `recursive folder upload + per-file download round-trips` | 4-file/3-folder tree round-trips byte-exact through upload+download |
+| `move non-empty folder brings children with same uuids` | move = pointer reparent (not delete+upload); child UUIDs preserved |
+| `rename folder preserves child file uuid + path` | Rename doesn't churn child UUIDs, paths still resolve |
+| `upload with onConflict=skip preserves original uuid + bytes` | The skip branch in `upload.dart` actually returns 'skipped' and leaves remote unchanged |
+| `upload with onConflict=overwrite trashes old + uploads new` | The overwrite branch produces a new UUID with new bytes |
+
+The conflict-policy tests are particularly load-bearing: those code
+paths existed in `upload.dart` since 4.i but had zero integration
+coverage before this pass.
+
+### PINNED GAPs (5 skips)
+
+Each shows up in the test report with a clear `skip:` reason and
+maps to a feature gap tracked in `PLAN.md`:
+
+| Gap | Why skipped |
+|---|---|
+| storage usage endpoint | No `/users/usage` helper yet (needs a `quota` command port) |
+| `/drive/users/me` known-404 | No `get_user_info` equivalent in the Dart CLI; the regression marker is for the Python side |
+| `list_folder_with_paths` enriched listing | The Dart CLI does the path/display-name enrichment inline in `handle*` functions, not as a library method |
+| file copy preserves content | `copy_item` is not implemented in the Dart port at all |
+| `update_file` replaces content in-place | Replace-bytes-while-keeping-uuid is not implemented; the Dart WebDAV layer does trash + re-upload instead |
+
+### Infrastructure changes
+
+- `liveTest()` helper now accepts an optional `Timeout` parameter to
+  bump past the 30s default for tests that legitimately take longer
+  (chunked upload, eventual-consistency retries).
 See [`PLAN.md`](PLAN.md) for the full Phase 4 roadmap and a planned
 Phase 6 that publishes the result as a library for cloud-dart to
 consume.
