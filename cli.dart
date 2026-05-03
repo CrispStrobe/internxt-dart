@@ -12,7 +12,6 @@ import 'package:bip39/bip39.dart' as bip39;
 import 'package:hex/hex.dart';
 import 'package:path/path.dart' as p;
 import 'package:glob/glob.dart';
-import 'package:glob/list_local_fs.dart';
 
 // WebDAV Imports
 import 'package:shelf/shelf_io.dart' as shelf_io;
@@ -25,11 +24,11 @@ import 'config.dart';
 import 'crypto.dart' as inxt_crypto;
 import 'utils.dart' as inxt_utils;
 import 'utils.dart' show formatSize; // unprefixed for in-file callers
-import 'cache.dart' as inxt_cache;
-import 'cache.dart' show CacheEntry; // unprefixed: used in field types
+import 'cache.dart' show CacheEntry; // for field types on InternxtClient
 import 'api.dart' as inxt_api;
 import 'auth.dart' as inxt_auth;
 import 'drive.dart' as inxt_drive;
+import 'upload.dart' as inxt_upload;
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
 export 'utils.dart';
@@ -37,6 +36,7 @@ export 'cache.dart';
 export 'api.dart';
 export 'auth.dart';
 export 'drive.dart';
+export 'upload.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -1907,17 +1907,6 @@ class InternxtClient {
   Map<String, Uint8List> getKeyAndIvFrom(String secret, Uint8List salt) =>
       inxt_crypto.getKeyAndIvFrom(secret, salt);
 
-  // --- Caching ---
-  // Implementations live in cache.dart. drive.dart calls into cache.dart
-  // directly, so the only caller still needing this wrapper is the
-  // upload pipeline (still in cli.dart for now). _clearParentCache
-  // moved out with the mv/rename/trash extraction.
-
-  void _invalidateCache(String folderUuid) =>
-      inxt_cache.invalidateCache(_folderCache, _fileCache, folderUuid);
-
-  // --- List Operations ---
-
   // --- List + path resolution ---
   // Implementations live in drive.dart. These wrappers thread the
   // (URL, token) snapshot and the relevant cache map through.
@@ -2335,204 +2324,10 @@ class InternxtClient {
           creationTime: creationTime,
           modificationTime: modificationTime);
 
-  Future<Map<String, dynamic>> _startUpload(
-    String bucketId,
-    int fileSize,
-    String user,
-    String pass,
-  ) async {
-    final url =
-        Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1');
-    final body = json.encode({
-      'uploads': [
-        {'index': 0, 'size': fileSize}
-      ]
-    });
-
-    // Uses your actual _makeRequest signature
-    final response = await _makeRequest(
-      'POST',
-      url,
-      body: body,
-      useAuth: false, // Disable Bearer token
-      isNetworkAuth: true, // Enable Basic Auth
-      networkUser: user,
-      networkPass: pass,
-    );
-
-    return json.decode(response.body);
-  }
-
-  Future<void> _uploadChunkWithProgress(
-      String uploadUrl, Uint8List chunkData, String fileName) async {
-    final totalBytes = chunkData.length;
-    int bytesSent = 0;
-    final stopwatch = Stopwatch()..start();
-
-    print("     ☁️  [STEP 3/5] Streamed Network Transfer: $fileName");
-
-    final request = http.StreamedRequest('PUT', Uri.parse(uploadUrl));
-    request.headers['Content-Type'] = 'application/octet-stream';
-    request.headers['internxt-client'] = 'cli';
-    request.contentLength = totalBytes;
-
-    // Use smaller chunks (128KB) to see more granular percentage growth
-    const int internalBuffer = 128 * 1024;
-    final responseFuture = request.send();
-
-    try {
-      for (int i = 0; i < totalBytes; i += internalBuffer) {
-        final end =
-            (i + internalBuffer < totalBytes) ? i + internalBuffer : totalBytes;
-        final chunk = chunkData.sublist(i, end);
-
-        request.sink.add(chunk);
-        bytesSent += chunk.length;
-
-        // Progress Calculation
-        final percent = (bytesSent / totalBytes * 100).toStringAsFixed(1);
-        final elapsed = stopwatch.elapsedMilliseconds / 1000.0;
-        final speed = bytesSent / (elapsed > 0 ? elapsed : 0.001);
-
-        // High verbosity UI update
-        io.stdout.write(
-            '\r        Progress: $percent% (${formatSize(bytesSent)}/${formatSize(totalBytes)}) [${formatSize(speed)}/s]   ');
-
-        // CRITICAL FIX: Mandatory delay to prevent socket saturation and allow UI repaint
-        // This is how the Go adapter prevents "jumping" to the end
-        await Future.delayed(const Duration(milliseconds: 5));
-      }
-    } finally {
-      await request.sink.close();
-    }
-
-    final response = await http.Response.fromStream(await responseFuture);
-    print('');
-
-    if (response.statusCode != 200 && response.statusCode != 201) {
-      throw Exception(
-          'Upload failed: ${response.statusCode} - ${response.body}');
-    }
-  }
-
-  Future<Map<String, dynamic>> _finishUpload(String bucketId,
-      Map<String, dynamic> payload, String user, String pass) async {
-    final url = Uri.parse('$networkUrl/v2/buckets/$bucketId/files/finish');
-
-    final response = await _makeRequest(
-      'POST',
-      url,
-      body: json.encode(payload),
-      useAuth: false,
-      isNetworkAuth: true,
-      networkUser: user,
-      networkPass: pass,
-    );
-
-    return json.decode(response.body);
-  }
-
-  Future<Map<String, dynamic>> _createFileEntry(
-      Map<String, dynamic> payload) async {
-    final url = Uri.parse('$driveApiUrl/files');
-    log('POST $url (create file entry)');
-
-    final response = await _makeRequest(
-      'POST',
-      url,
-      body: json.encode(payload),
-    );
-
-    if (payload['folderUuid'] != null) {
-      _invalidateCache(payload['folderUuid']);
-    }
-
-    return json.decode(response.body);
-  }
-
-  Future<Map<String, dynamic>> _uploadFile(
-    io.File localFile,
-    String destinationFolderUuid,
-    String remoteFileName, {
-    required String bridgeUser,
-    required String userIdForAuth,
-    String? creationTime,
-    String? modificationTime,
-  }) async {
-    final fileSize = await localFile.length();
-
-    // STEP 1: Encryption Verbosity (Python style)
-    print(
-        "\n     🔐 [STEP 1/5] Starting Encryption for ${formatSize(fileSize)}...");
-    final fileBytes = await localFile.readAsBytes();
-    final encryptClock = Stopwatch()..start();
-
-    final encryptedResult = encryptStream(fileBytes, mnemonic!, bucketId!);
-    final encryptedData = encryptedResult['data']!;
-    final fileIndexHex = encryptedResult['index']!;
-
-    encryptClock.stop();
-    print(
-        "     ✅ Encryption complete! (${encryptClock.elapsed.inSeconds}s, ${formatSize(fileSize / (encryptClock.elapsed.inSeconds + 0.001))}/s)");
-
-    // STEP 2: Start (Network Auth check)
-    final bridgePass =
-        crypto.sha256.convert(utf8.encode(userIdForAuth)).toString();
-    log("📡 [DEBUG] Requesting Network Shard URL (Basic Auth via SHA256 of UID)");
-    final startResponse = await _startUpload(
-        bucketId!, encryptedData.length, bridgeUser, bridgePass);
-
-    // STEP 3: The Optimized Stream (Fixed in #1 above)
-    await _uploadChunkWithProgress(
-        startResponse['uploads'][0]['url'], encryptedData, remoteFileName);
-
-    // STEP 4: Finalize
-    print("     ✅ [STEP 4/5] Finalizing network storage...");
-    final encryptedHash = crypto.sha256.convert(encryptedData).toString();
-    final finishResponse = await _finishUpload(
-        bucketId!,
-        {
-          'index': fileIndexHex,
-          'shards': [
-            {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
-          ]
-        },
-        bridgeUser,
-        bridgePass);
-
-    // STEP 5: Register
-    print("     📋 [STEP 5/5] Creating Drive file entry...");
-    return await _createFileEntry({
-      'folderUuid': destinationFolderUuid,
-      'plainName': p.basenameWithoutExtension(remoteFileName),
-      'type': p.extension(remoteFileName).replaceAll('.', ''),
-      'size': fileSize,
-      'bucket': bucketId,
-      'fileId': finishResponse['id'],
-      'encryptVersion': 'Aes03',
-      'name': '',
-      'creationTime': creationTime,
-      'modificationTime': modificationTime,
-    });
-  }
-
-  /// Background thumbnail upload (Go-style parallelization)
-  Future<void> uploadThumbnailAsync(
-      String fileUuid, String fileType, Uint8List originalData) async {
-    // We don't 'await' this inside the main loop to keep upload speeds high
-    log("🖼️ [DEBUG] Background thumbnail generation started for $fileUuid");
-
-    try {
-      // 1. Check if format is supported (Images only)
-      if (!['jpg', 'jpeg', 'png'].contains(fileType.toLowerCase())) return;
-
-      // Logic for thumbnail would go here (resizing, encrypting, uploading to /thumbnail)
-      // This follows the same _startUpload -> _uploadChunk flow but targets the thumbnail bucket.
-      log("✅ [DEBUG] Thumbnail registered for $fileUuid");
-    } catch (e) {
-      log("⚠️ [DEBUG] Async thumbnail failed (Non-fatal): $e");
-    }
-  }
+  // --- Upload pipeline ---
+  // Implementations live in upload.dart. These wrappers thread
+  // session state (URLs, token, mnemonic, bucketId, root, caches)
+  // through to the free functions.
 
   Future<String> uploadSingleItem(
     io.File localFile,
@@ -2543,115 +2338,25 @@ class InternxtClient {
     required String userIdForAuth,
     required bool preserveTimestamps,
     String? remoteFileName,
-  }) async {
-    final effectiveRemoteFilename =
-        remoteFileName ?? p.basename(localFile.path);
-    final fullTargetRemotePath = p
-        .join(targetRemoteParentPath, effectiveRemoteFilename)
-        .replaceAll('\\', '/');
-    print(
-        "  -> Preparing upload: '${p.basename(localFile.path)}' to '$fullTargetRemotePath'");
-
-    Map<String, dynamic>? existingItemInfo;
-    try {
-      existingItemInfo = await resolvePath(fullTargetRemotePath);
-      print(
-          "  -> Target exists: $fullTargetRemotePath (Type: ${existingItemInfo['type']})");
-    } on Exception catch (e) {
-      if (e.toString().contains("Path not found")) {
-        print("  -> Target does not exist, proceeding with upload");
-      } else {
-        print("  -> ⚠️  Error checking target existence: $e");
-      }
-    }
-
-    if (existingItemInfo != null) {
-      if (onConflict == 'skip') {
-        print("  -> ⏭️  Skipping due to conflict policy (file exists)");
-        return "skipped";
-      } else if (onConflict == 'overwrite') {
-        if (existingItemInfo['type'] == 'folder') {
-          print(
-              "  -> ❌ Cannot overwrite folder with a file: $fullTargetRemotePath");
-          return "error";
-        } else {
-          print("  -> 🔄 Overwriting existing file...");
-          try {
-            await deletePermanently(existingItemInfo['uuid'], 'file');
-            print("  -> 🗑️  Deleted existing file for overwrite");
-          } catch (delErr) {
-            print("  -> ❌ Error deleting existing file for overwrite: $delErr");
-            return "error";
-          }
-        }
-      }
-    }
-
-    try {
-      String? creationTime;
-      String? modificationTime;
-
-      if (preserveTimestamps) {
-        try {
-          final stat = await localFile.stat();
-          modificationTime = stat.modified.toUtc().toIso8601String();
-          creationTime = stat.changed.toUtc().toIso8601String();
-          log(// <-- FIX: Use public log
-              "     🕐 Preserving timestamps: Mod=$modificationTime, Cre=$creationTime");
-        } catch (e) {
-          log("     ⚠️  Could not read timestamps: $e"); // <-- FIX: Use public log
-        }
-      }
-
-      await _uploadFile(
+  }) =>
+      inxt_upload.uploadSingleItem(
+        networkUrl,
+        driveApiUrl,
+        newToken,
+        rootFolderId,
+        mnemonic!,
+        bucketId!,
+        _folderCache,
+        _fileCache,
         localFile,
+        targetRemoteParentPath,
         targetFolderUuid,
-        effectiveRemoteFilename,
+        onConflict,
         bridgeUser: bridgeUser,
         userIdForAuth: userIdForAuth,
-        creationTime: creationTime,
-        modificationTime: modificationTime,
+        preserveTimestamps: preserveTimestamps,
+        remoteFileName: remoteFileName,
       );
-      print("  -> ✅ Successfully uploaded: $effectiveRemoteFilename");
-      return "uploaded";
-    } catch (upErr) {
-      if (upErr.toString().contains("SKIPPED_EMPTY_FILE")) {
-        print(
-            "  -> ⏭️  Skipped empty file (API policy): $effectiveRemoteFilename");
-        return "skipped";
-      }
-      print("  -> ❌ Error during upload: $upErr");
-      return "error";
-    }
-  }
-
-  /// Returns a Map where key is fileName and value is existence data.
-  istence(String folderUuid, List<Map<String, String>> files) async {
-    final url =
-        Uri.parse('$driveApiUrl/folders/content/$folderUuid/files/existence');
-    log('🔍 [DEBUG] Checking existence for ${files.length} items in folder $folderUuid');
-
-    final payload = {
-      'files': files
-          .map((f) => {
-                'plainName': f['name'],
-                'type': f['type'],
-              })
-          .toList()
-    };
-
-    final response =
-        await _makeRequest('POST', url, body: json.encode(payload));
-    final data = json.decode(response.body);
-
-    final results = <String, dynamic>{};
-    for (var item in (data['existentFiles'] as List)) {
-      final key =
-          "${item['plainName']}${item['type'] != null ? '.${item['type']}' : ''}";
-      results[key] = item;
-    }
-    return results;
-  }
 
   Future<void> upload(
     List<String> sources,
@@ -2666,187 +2371,29 @@ class InternxtClient {
     required String batchId,
     Map<String, dynamic>? initialBatchState,
     required Future<void> Function(Map<String, dynamic>) saveStateCallback,
-  }) async {
-    print("🎯 Preparing upload to remote path: $targetPath");
-
-    Map<String, dynamic> batchState;
-    List<dynamic> tasks;
-
-    if (initialBatchState != null) {
-      print("🔄 Resuming previous batch operation...");
-      batchState = initialBatchState;
-      tasks = batchState['tasks'] as List<dynamic>;
-    } else {
-      print("🔍 Generating new batch task list...");
-      tasks = [];
-      final targetFolderInfo = await _resolveOrCreateRemoteFolder(targetPath);
-      final targetFolderPathStr =
-          targetFolderInfo['path'] as String? ?? targetPath;
-
-      for (final sourceArg in sources) {
-        final hasTrailingSlash =
-            sourceArg.endsWith('/') || sourceArg.endsWith('\\');
-        final glob = Glob(sourceArg.replaceAll('\\', '/'));
-
-        await for (final entity in glob.list()) {
-          if (await io.FileSystemEntity.isDirectory(entity.path)) {
-            if (!recursive) continue;
-            final localDir = io.Directory(entity.path);
-
-            String? dirCreationTime;
-            String? dirModTime;
-            if (preserveTimestamps) {
-              try {
-                final stat = await localDir.stat();
-                dirModTime = stat.modified.toUtc().toIso8601String();
-                dirCreationTime = stat.changed.toUtc().toIso8601String();
-              } catch (e) {
-                log("     ⚠️  Could not read dir timestamps for ${localDir.path}: $e");
-              }
-            }
-
-            String remoteBase = hasTrailingSlash
-                ? targetFolderPathStr
-                : p
-                    .join(targetFolderPathStr, p.basename(localDir.path))
-                    .replaceAll('\\', '/');
-
-            await createFolderRecursive(
-              remoteBase,
-              creationTime: dirCreationTime,
-              modificationTime: dirModTime,
-            );
-
-            final filesInDir =
-                localDir.list(recursive: true, followLinks: false);
-            await for (final fileEntity in filesInDir) {
-              if (fileEntity is io.File) {
-                // <-- FIX
-                final localFile = fileEntity;
-                final relativePath =
-                    p.relative(localFile.path, from: localDir.path);
-                final remoteFilePath =
-                    p.join(remoteBase, relativePath).replaceAll('\\', '/');
-
-                if (shouldIncludeFile(
-                    p.basename(localFile.path), include, exclude)) {
-                  tasks.add({
-                    'localPath': localFile.path,
-                    'remotePath': remoteFilePath,
-                    'status': 'pending',
-                  });
-                }
-              }
-            }
-          } else if (await io.FileSystemEntity.isFile(entity.path)) {
-            final localFile = io.File(entity.path); // <-- FIX
-            final remoteFilePath = p
-                .join(targetFolderPathStr, p.basename(localFile.path))
-                .replaceAll('\\', '/');
-
-            if (shouldIncludeFile(
-                p.basename(localFile.path), include, exclude)) {
-              tasks.add({
-                'localPath': localFile.path,
-                'remotePath': remoteFilePath,
-                'status': 'pending',
-              });
-            }
-          }
-        }
-      }
-      batchState = {
-        'operationType': 'upload',
-        'targetRemotePath': targetPath,
-        'tasks': tasks,
-      };
-      await saveStateCallback(batchState);
-      print("📝 Task list generated with ${tasks.length} files.");
-    }
-
-    int successCount = 0;
-    int skippedCount = 0;
-    int errorCount = 0;
-    int completedPreviously = 0;
-
-    for (int i = 0; i < tasks.length; i++) {
-      final task = tasks[i] as Map<String, dynamic>;
-      final localPath = task['localPath'] as String;
-      final remotePath = task['remotePath'] as String;
-      final status = task['status'] as String;
-
-      final localFile = io.File(localPath); // <-- FIX
-      if (!await localFile.exists()) {
-        print("⚠️ Source file no longer exists, skipping: $localPath");
-        skippedCount++;
-        task['status'] = 'skipped_missing_source';
-        await saveStateCallback(batchState);
-        continue;
-      }
-
-      if (status == 'completed') {
-        log("✅ Already completed: ${p.basename(localPath)}");
-        completedPreviously++;
-        continue;
-      }
-
-      if (status.startsWith('skipped')) {
-        log("⏭️ Previously skipped: ${p.basename(localPath)} ($status)");
-        skippedCount++;
-        continue;
-      }
-
-      final remoteParentPath = p.dirname(remotePath).replaceAll('\\', '/');
-      Map<String, dynamic> parentFolderInfo;
-      try {
-        parentFolderInfo = await createFolderRecursive(remoteParentPath);
-      } catch (createErr) {
-        print(
-            "     ❌ Error ensuring parent folder $remoteParentPath: $createErr");
-        errorCount++;
-        task['status'] = 'error_create_parent';
-        await saveStateCallback(batchState);
-        continue;
-      }
-
-      final result = await uploadSingleItem(
-        localFile,
-        remoteParentPath,
-        parentFolderInfo['uuid'],
-        onConflict,
+  }) =>
+      inxt_upload.upload(
+        networkUrl,
+        driveApiUrl,
+        newToken,
+        rootFolderId,
+        mnemonic!,
+        bucketId!,
+        _folderCache,
+        _fileCache,
+        sources,
+        targetPath,
+        recursive: recursive,
+        onConflict: onConflict,
+        preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
         bridgeUser: bridgeUser,
         userIdForAuth: userIdForAuth,
-        preserveTimestamps: preserveTimestamps,
-        remoteFileName: p.basename(remotePath),
+        batchId: batchId,
+        initialBatchState: initialBatchState,
+        saveStateCallback: saveStateCallback,
       );
-
-      if (result == "uploaded") {
-        successCount++;
-        task['status'] = 'completed';
-      } else if (result == "skipped") {
-        skippedCount++;
-        task['status'] = 'skipped_conflict';
-      } else {
-        errorCount++;
-        task['status'] = 'error_upload';
-      }
-      await saveStateCallback(batchState);
-    }
-
-    print("=" * 40);
-    print("📊 Batch Upload Summary:");
-    if (completedPreviously > 0)
-      print("  ✅ Completed (previous run): $completedPreviously");
-    print("  ✅ Uploaded (this run): $successCount");
-    print("  ⏭️  Skipped:  $skippedCount");
-    print("  ❌ Errors:   $errorCount");
-    print("=" * 40);
-
-    if (errorCount > 0) {
-      throw Exception(
-          "Upload completed with $errorCount errors. State file kept for inspection/retry.");
-    }
-  }
 
   Future<Map<String, dynamic>> _resolveOrCreateRemoteFolder(
           String targetPath) =>

@@ -13,35 +13,30 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 ## Phase 4: split the monolith (in progress)
 
 **Status:** ConfigService, crypto, utils, cache, the HTTP transport
-(including raw drive endpoint helpers), the auth protocol, and
-drive.dart in full have been extracted. cli.dart down from 4317
-→ 2986 LOC (under 3000 for the first time). Seven new modules at
-the project root: `config.dart` (152), `crypto.dart` (211),
+(including raw drive endpoint helpers), the auth protocol,
+drive.dart in full, and the upload pipeline have been extracted.
+cli.dart down from 4317 → 2533 LOC. Eight new modules at the
+project root: `config.dart` (152), `crypto.dart` (211),
 `utils.dart` (45), `cache.dart` (84), `api.dart` (228), `auth.dart`
-(167), `drive.dart` (1022). Tests stay green via thin delegating
-wrappers + re-exports. Each extraction got its own commit
-(4.a–4.h.3).
+(167), `drive.dart` (1022), `upload.dart` (594). Tests stay green
+via thin delegating wrappers + re-exports. Each extraction got its
+own commit (4.a–4.i).
 
 The state-vs-protocol split is now consistent across all layers:
 instance state (the 7 session fields, `_isRefreshingToken` lock,
 two cache maps) lives on `InternxtClient`; the protocol / helper
 functions live in their respective modules and take their
-dependencies as parameters. Drive ops take the cache maps plus the
-(URL, token) snapshot, and call `inxt_cache` / `inxt_api`
-directly.
+dependencies as parameters. The dead `_invalidateCache` cli.dart
+wrapper was dropped along with the upload extraction (no remaining
+callers outside drive.dart, which goes direct).
 
 **Still ahead (in this phase):**
-- `upload.dart` — `_startUpload`, `_uploadChunkWithProgress`,
-  `_finishUpload`, `_createFileEntry`, `_uploadFile`,
-  `uploadThumbnailAsync`, `uploadSingleItem`, `upload`. Memory-gated
-  concurrency lives here. Also still has the `_invalidateCache`
-  call sites that justify keeping that wrapper on `InternxtClient`.
-  Likely needs to be staged across two commits because of size
-  (~700 LOC) and the network-auth + crypto integration.
 - `download.dart` — `downloadFile`, `downloadFileStreamed`,
   `downloadPath`, `_getDownloadLinks`, `_getNetworkAuth`. The bridge-
-  auth helper currently lives near the upload code but belongs with
-  download since download.dart is the consumer of bridge auth.
+  auth helper (`_getNetworkAuth`) currently lives near the upload
+  code but its only callers are the download paths; it should move
+  with download.dart. ~250 LOC of code to extract — the smallest
+  remaining chunk.
 - `upload.dart` — encrypt → push → finalize → drive-entry pipeline +
   memory-gated concurrency.
 - `download.dart` — download + decrypt + write + timestamp preserve.
