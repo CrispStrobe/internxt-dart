@@ -2220,10 +2220,16 @@ class InternxtClient {
     try {
       if (itemType == 'file') {
         final metadata = await getFileMetadata(itemUuid);
-        parentUuid = metadata['folderId'] ?? metadata['folderUuid'];
+        // PREFER folderUuid (string UUID) over folderId (legacy integer).
+        // The cache is keyed by string UUID; using the int silently fails to
+        // invalidate. Found via live test: file would still resolve after
+        // trash because the parent listing was served from stale cache.
+        parentUuid = (metadata['folderUuid'] as String?) ??
+            metadata['folderId']?.toString();
       } else {
         final metadata = await getFolderMetadata(itemUuid);
-        parentUuid = metadata['parentId'] ?? metadata['parentUuid'];
+        parentUuid = (metadata['parentUuid'] as String?) ??
+            metadata['parentId']?.toString();
       }
       if (parentUuid != null) {
         _invalidateCache(parentUuid);
