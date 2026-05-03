@@ -226,3 +226,41 @@ Future<List<dynamic>> getFolderAncestors(
   final data = json.decode(response.body);
   return data is List ? data : <dynamic>[];
 }
+
+/// GET /users/usage — current storage usage. Shape varies by backend
+/// version (`{usage, limit}` historically; sometimes just `{used}`).
+/// Returns the raw map for the caller to interpret.
+Future<Map<String, dynamic>> getStorageUsage(
+  String driveApiUrl,
+  String? bearerToken,
+) async {
+  final response = await makeRequest(
+    'GET',
+    Uri.parse('$driveApiUrl/users/usage'),
+    bearerToken: bearerToken,
+  );
+  return json.decode(response.body);
+}
+
+/// GET /users/me — current user info.
+///
+/// REGRESSION MARKER: as of the Phase 5.a port, the live backend
+/// returns 404 ("Cannot GET /api/users/me") for this endpoint. The
+/// helper is provided for parity with the Python sibling and will
+/// surface that 404 via [makeRequest]'s standard `Exception('API
+/// Error: 404 - ...')` message.
+///
+/// If the endpoint comes online later, the live regression test
+/// `users/me known-404 marker` will fail and remind us to wire
+/// real callers (e.g. a richer `whoami` or `config` command).
+Future<Map<String, dynamic>> getUserInfo(
+  String driveApiUrl,
+  String? bearerToken,
+) async {
+  final response = await makeRequest(
+    'GET',
+    Uri.parse('$driveApiUrl/users/me'),
+    bearerToken: bearerToken,
+  );
+  return json.decode(response.body);
+}

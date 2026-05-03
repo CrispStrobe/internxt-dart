@@ -1008,15 +1008,27 @@ void main() {
   // implementation roadmap.
   // ===========================================================================
 
-  test('PINNED GAP: storage usage endpoint',
-      () {},
-      skip: 'No quota / storage-usage endpoint in the Dart CLI yet '
-          '(PLAN.md: "whoami, quota, config commands").');
+  liveTest('storage usage endpoint returns a Map', () async {
+    final usage = await getStorageUsage(
+      InternxtClient.driveApiUrl,
+      client.newToken,
+    );
+    expect(usage, isA<Map<String, dynamic>>());
+  });
 
-  test('PINNED GAP: /drive/users/me known-404 regression marker',
-      () {},
-      skip: 'No get_user_info equivalent in the Dart CLI; the /users/me '
-          'endpoint regression is irrelevant here since we never call it.');
+  liveTest('users/me known-404 marker (regression pin)', () async {
+    // Pinned regression: /drive/users/me does not exist on the live
+    // backend (returns 404 "Cannot GET /api/users/me"). If this test
+    // starts passing the call without throwing, the endpoint has come
+    // online and we should wire real callers.
+    expect(
+      () => getUserInfo(InternxtClient.driveApiUrl, client.newToken),
+      throwsA(predicate((e) =>
+          e.toString().contains('404') ||
+          e.toString().contains('Not Found') ||
+          e.toString().contains('Cannot GET'))),
+    );
+  });
 
   test('PINNED GAP: list_folder_with_paths enriched entries',
       () {},
