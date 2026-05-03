@@ -1999,6 +1999,26 @@ class InternxtClient {
   // session state (URLs, token, mnemonic, bucketId, root, caches)
   // through to the free functions.
 
+  Future<Map<String, dynamic>> copyItem(
+    String itemUuid,
+    String destinationFolderUuid, {
+    required String bridgeUser,
+    required String userIdForAuth,
+  }) =>
+      inxt_upload.copyItem(
+        driveApiUrl,
+        networkUrl,
+        newToken,
+        mnemonic!,
+        bucketId!,
+        _folderCache,
+        _fileCache,
+        itemUuid,
+        destinationFolderUuid,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+      );
+
   Future<String> uploadSingleItem(
     io.File localFile,
     String targetRemoteParentPath,

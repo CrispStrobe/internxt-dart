@@ -1070,10 +1070,65 @@ void main() {
     expect(probe['modified'], isNotNull);
   });
 
-  test('PINNED GAP: file copy preserves content',
-      () {},
-      skip: 'copy_item is not implemented in the Dart CLI. Python '
-          'has it; we never ported the endpoint or the command.');
+  liveTest('copy file to another folder preserves content', () async {
+    // Source + destination folders.
+    final srcInfo = await client.createFolderRecursive(_uniqueSubpath('copy-src'));
+    final dstInfo = await client.createFolderRecursive(_uniqueSubpath('copy-dst'));
+
+    // Upload an original file under src.
+    final stem = _uniqueName('original');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 128);
+    await client.uploadSingleItem(
+      w.file,
+      srcInfo['path'] as String,
+      srcInfo['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+
+    // Find original uuid by listing src.
+    final srcFiles = await client.listFolderFiles(srcInfo['uuid'] as String);
+    final originalUuid = srcFiles
+        .firstWhere((f) => f['name'] == stem)['uuid'] as String;
+
+    // Copy it.
+    await client.copyItem(
+      originalUuid,
+      dstInfo['uuid'] as String,
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+    );
+
+    // Original still in src.
+    final srcAfter = await client.listFolderFiles(srcInfo['uuid'] as String);
+    expect(srcAfter.any((f) => f['uuid'] == originalUuid), isTrue,
+        reason: 'original removed by copy operation');
+
+    // Copy in dst with a different uuid.
+    final dstFiles = await client.listFolderFiles(dstInfo['uuid'] as String);
+    expect(dstFiles.length, equals(1),
+        reason: 'expected 1 file in dst after copy, got ${dstFiles.length}');
+    final copyUuid = dstFiles.first['uuid'] as String;
+    expect(copyUuid, isNot(equals(originalUuid)),
+        reason: 'copy has same uuid as original (expected new uuid)');
+
+    // Both UUIDs decrypt to the same payload.
+    final origDl = await client.downloadFile(
+      originalUuid,
+      _creds!['bridgeUser'] as String,
+      _creds!['userId'].toString(),
+    );
+    final copyDl = await client.downloadFile(
+      copyUuid,
+      _creds!['bridgeUser'] as String,
+      _creds!['userId'].toString(),
+    );
+    expect(origDl['data'] as Uint8List, equals(w.payload));
+    expect(copyDl['data'] as Uint8List, equals(w.payload));
+  });
 
   test('PINNED GAP: update_file replaces content in-place',
       () {},

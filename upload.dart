@@ -34,6 +34,7 @@ import 'api.dart' as inxt_api;
 import 'auth.dart' as inxt_auth;
 import 'cache.dart' as inxt_cache;
 import 'crypto.dart' as inxt_crypto;
+import 'download.dart' as inxt_download;
 import 'drive.dart' as inxt_drive;
 import 'utils.dart' as inxt_utils;
 
@@ -590,5 +591,77 @@ Future<void> upload(
   if (errorCount > 0) {
     throw Exception(
         'Upload completed with $errorCount errors. State file kept for inspection/retry.');
+  }
+}
+
+/// Copy a file to a different folder, preserving timestamps.
+///
+/// Mirrors the Python sibling's `copy_item` exactly: there's no
+/// server-side copy endpoint, so this downloads the source to a
+/// temp file, then re-uploads it under its original plainName +
+/// type with the original creationTime/modificationTime preserved.
+///
+/// The result has a *new* file UUID — copy is upload-shaped, not a
+/// pointer duplication. The original is left untouched.
+///
+/// Returns the new file's drive entry record (the `createFileEntry`
+/// response).
+Future<Map<String, dynamic>> copyItem(
+  String driveApiUrl,
+  String networkUrl,
+  String? bearerToken,
+  String mnemonic,
+  String bucketId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String itemUuid,
+  String destinationFolderUuid, {
+  required String bridgeUser,
+  required String userIdForAuth,
+}) async {
+  final metadata =
+      await inxt_api.getFileMetadata(driveApiUrl, bearerToken, itemUuid);
+  final plainName = (metadata['plainName'] ?? '') as String;
+  final fileType = (metadata['type'] ?? '') as String;
+  final creationTime = (metadata['creationTime'] ?? metadata['createdAt']) as String?;
+  final modificationTime = (metadata['modificationTime'] ?? metadata['updatedAt']) as String?;
+
+  final tempDir = await io.Directory.systemTemp.createTemp('inxt-copy-');
+  final tempPath = '${tempDir.path}/${plainName.isEmpty ? 'copy' : plainName}';
+  try {
+    await inxt_download.downloadFileStreamed(
+      driveApiUrl,
+      networkUrl,
+      bearerToken,
+      mnemonic,
+      itemUuid,
+      tempPath,
+      bridgeUser,
+      userIdForAuth,
+    );
+
+    final remoteFileName = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+    return await uploadFile(
+      networkUrl,
+      driveApiUrl,
+      bearerToken,
+      mnemonic,
+      bucketId,
+      folderCache,
+      fileCache,
+      io.File(tempPath),
+      destinationFolderUuid,
+      remoteFileName,
+      bridgeUser: bridgeUser,
+      userIdForAuth: userIdForAuth,
+      creationTime: creationTime,
+      modificationTime: modificationTime,
+    );
+  } finally {
+    try {
+      await tempDir.delete(recursive: true);
+    } catch (_) {
+      // best-effort cleanup; OS will reclaim eventually
+    }
   }
 }
