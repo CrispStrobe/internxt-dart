@@ -27,10 +27,12 @@ import 'utils.dart' as inxt_utils;
 import 'utils.dart' show formatSize; // unprefixed for in-file callers
 import 'cache.dart' as inxt_cache;
 import 'cache.dart' show CacheEntry; // unprefixed: used in field types
+import 'api.dart' as inxt_api;
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
 export 'utils.dart';
 export 'cache.dart';
+export 'api.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -1856,7 +1858,9 @@ class InternxtClient {
     }
   }
 
-  /// Central request handler with automatic token refresh.
+  /// Central HTTP transport. Implementation in api.dart; this wrapper
+  /// snapshots the current bearer token so callers don't have to pass
+  /// it explicitly. Refresh-on-401 is still driven by the caller.
   Future<http.Response> _makeRequest(
     String method,
     Uri url, {
@@ -1867,78 +1871,19 @@ class InternxtClient {
     String? networkUser,
     String? networkPass,
     int retryCount = 0,
-  }) async {
-    final maxRetries = 3;
-    final requestHeaders = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'internxt-client': 'cli',
-      'User-Agent': 'InternxtCLI/1.0.0 (Dart)',
-      ...?headers,
-    };
-
-    if (isNetworkAuth && networkUser != null && networkPass != null) {
-      final auth = base64Encode(utf8.encode('$networkUser:$networkPass'));
-      requestHeaders['Authorization'] = 'Basic $auth';
-    } else if (useAuth && newToken != null) {
-      requestHeaders['Authorization'] = 'Bearer $newToken';
-    }
-
-    try {
-      http.Response response;
-      switch (method.toUpperCase()) {
-        case 'GET':
-          response = await http.get(url, headers: requestHeaders);
-          break;
-        case 'POST':
-          response = await http.post(url, headers: requestHeaders, body: body);
-          break;
-        case 'PUT':
-          response = await http.put(url, headers: requestHeaders, body: body);
-          break;
-        case 'PATCH':
-          response = await http.patch(url, headers: requestHeaders, body: body);
-          break;
-        case 'DELETE':
-          response =
-              await http.delete(url, headers: requestHeaders, body: body);
-          break;
-        default:
-          throw Exception('Unsupported method');
-      }
-
-      // Optimization: Handle transient 5xx errors with exponential backoff (Go style)
-      if (response.statusCode >= 500 && retryCount < maxRetries) {
-        final delay = Duration(seconds: pow(2, retryCount).toInt());
-        log("🔄 [DEBUG] Server Error ${response.statusCode}. Retrying in ${delay.inSeconds}s...");
-        await Future.delayed(delay);
-        return _makeRequest(method, url,
-            headers: headers,
-            body: body,
-            useAuth: useAuth,
-            isNetworkAuth: isNetworkAuth,
-            networkUser: networkUser,
-            networkPass: networkPass,
-            retryCount: retryCount + 1);
-      }
-
-      if (response.statusCode >= 400) {
-        throw Exception('API Error: ${response.statusCode} - ${response.body}');
-      }
-
-      return response;
-    } catch (e) {
-      if (retryCount < maxRetries) {
-        log("📡 [DEBUG] Network Error. Retrying... ($retryCount)");
-        return _makeRequest(method, url,
-            headers: headers,
-            body: body,
-            useAuth: useAuth,
-            retryCount: retryCount + 1);
-      }
-      rethrow;
-    }
-  }
+  }) =>
+      inxt_api.makeRequest(
+        method,
+        url,
+        bearerToken: newToken,
+        headers: headers,
+        body: body,
+        useAuth: useAuth,
+        isNetworkAuth: isNetworkAuth,
+        networkUser: networkUser,
+        networkPass: networkPass,
+        retryCount: retryCount,
+      );
 
   // --- Auth ---
 

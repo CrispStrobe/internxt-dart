@@ -12,21 +12,26 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
 ## Phase 4: split the monolith (in progress)
 
-**Status:** ConfigService, crypto, utils, and cache have been extracted.
-cli.dart down from 4317 → 3976 LOC. Four new modules at the project
-root: `config.dart` (152), `crypto.dart` (211), `utils.dart` (45),
-`cache.dart` (84). Tests stay green via thin delegating wrappers +
-re-exports. Each extraction got its own commit (4.a, 4.b, 4.c, 4.d).
+**Status:** ConfigService, crypto, utils, cache, and the HTTP
+transport have been extracted. cli.dart down from 4317 → 3921 LOC.
+Five new modules at the project root: `config.dart` (152),
+`crypto.dart` (211), `utils.dart` (45), `cache.dart` (84),
+`api.dart` (118). Tests stay green via thin delegating wrappers +
+re-exports. Each extraction got its own commit (4.a–4.e).
 
 **Still ahead (in this phase):**
 - `auth.dart` — login orchestration, refresh, bridge auth, credential
   rotation. Touches a lot of `InternxtClient` instance state (token,
   mnemonic, bucketId, rootFolderId) — extraction will need a clear
   decision on whether auth holds those fields or `InternxtClient` does.
-- `api.dart` — `_makeRequest`, pagination helpers, raw endpoint
-  methods. Probably extract before `auth` since auth depends on it.
+  The bearer token now flows through `makeRequest` as a snapshot
+  parameter (Phase 4.e), which makes auth.dart's refresh logic easier
+  to extract since it no longer has to live next to the transport.
 - `drive.dart` — path resolution, list, mv, rename, copy, trash,
-  recursive folder ops. Largest remaining chunk.
+  recursive folder ops. Largest remaining chunk. Could pull the raw
+  endpoint methods (`getFileMetadata`, `getFolderMetadata`, etc.) into
+  api.dart first as a separate sub-extraction if it makes drive.dart
+  more tractable.
 - `upload.dart` — encrypt → push → finalize → drive-entry pipeline +
   memory-gated concurrency.
 - `download.dart` — download + decrypt + write + timestamp preserve.
