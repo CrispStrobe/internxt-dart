@@ -10,9 +10,38 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
 ---
 
-## Phase 4: split the monolith (next up)
+## Phase 4: split the monolith (in progress)
 
-`cli.dart` is **4317 lines** in a single file. It mixes:
+**Status:** ConfigService, crypto, and utils have been extracted. cli.dart
+down from 4317 → 3997 LOC. Three new modules at the project root:
+`config.dart` (152), `crypto.dart` (211), `utils.dart` (45). Tests stay
+green via thin delegating wrappers + re-exports. Each extraction got
+its own commit (4.a, 4.b, 4.c).
+
+**Still ahead (in this phase):**
+- `auth.dart` — login orchestration, refresh, bridge auth, credential
+  rotation. Touches a lot of `InternxtClient` instance state (token,
+  mnemonic, bucketId, rootFolderId) — extraction will need a clear
+  decision on whether auth holds those fields or `InternxtClient` does.
+- `api.dart` — `_makeRequest`, pagination helpers, raw endpoint
+  methods. Probably extract before `auth` since auth depends on it.
+- `cache.dart` — `_CacheEntry`, `_folderCache`, `_fileCache`,
+  `_invalidateCache`, `_clearParentCache`. The cache layer is where
+  the bug we found in Phase 3 lived; a dedicated module makes future
+  cache-correctness audits tractable.
+- `drive.dart` — path resolution, list, mv, rename, copy, trash,
+  recursive folder ops. Largest remaining chunk.
+- `upload.dart` — encrypt → push → finalize → drive-entry pipeline +
+  memory-gated concurrency.
+- `download.dart` — download + decrypt + write + timestamp preserve.
+
+After all extractions land, drop the delegating wrappers on
+InternxtClient and migrate tests to call the top-level functions
+directly.
+
+---
+
+`cli.dart` was originally **4317 lines** in a single file. It mixed:
 
 - CLI entrypoint + Click-equivalent (`args` package) command parsing
 - HTTP client + endpoint methods
@@ -70,6 +99,86 @@ mitigates that. Each extraction commit should keep the full 73-test
 suite green.
 
 Estimated work: ~4 hours, +150 LOC of test imports / facade re-exports.
+
+---
+
+## Phase 6: publish as a library + reunify with `cloud-dart`
+
+A separate Flutter app at `~/code/cloud-dart/` (the `CrispCloud`
+repo) embeds its own copy of `internxt_client.dart`. As of this
+audit it diverges by ~2700 lines from this CLI's version: same
+underlying protocol, but with Flutter-specific integration classes
+(`extends FilenFileSystem`, isolate-friendly callbacks, UI-thread-
+aware error reporting) bolted on. The two copies will keep drifting
+unless we unify them.
+
+The plan, **after Phase 4 finishes**:
+
+### Step 6a: convert internxt-dart to a real Dart package
+
+Once cli.dart is fully decomposed (auth/api/cache/drive/upload/
+download all extracted), restructure for `package:` import:
+
+- Move modules to `lib/internxt_client/`
+- Add `lib/internxt_client.dart` as the public barrel (re-exports
+  everything CrispCloud-or-other consumers might want)
+- Keep `bin/inxt.dart` as the CLI entrypoint
+- Keep root `cli.dart` as a backwards-compat shim if/when needed
+- Tag a version (`v0.1.0`) and pin it from `cloud-dart`'s pubspec.yaml
+  via `git: { url: ..., ref: v0.1.0 }`
+
+Estimated work: ~2 hours after Phase 4 lands.
+
+### Step 6b: audit cloud-dart's divergence
+
+Three buckets to classify every divergent block in
+`~/code/cloud-dart/lib/services/internxt_client.dart`:
+
+- **(a) Bug fixes / improvements** that should backport into
+  internxt-dart. The `cloud-dart` copy may have features or fixes
+  the CLI version is missing. Each one becomes its own PR.
+- **(b) Genuinely Flutter-specific code** that stays in cloud-dart:
+  `FilenFileSystem` integration, isolate spawning, UI-thread error
+  channels, anything that needs `package:flutter`. Extract these
+  into focused modules in `cloud-dart/lib/services/internxt_flutter/`.
+- **(c) Accidental drift** — places where one copy was edited and
+  the other wasn't. Delete the older version in favour of whichever
+  is currently correct.
+
+This is read-and-classify work, no code changes. Estimated ~2 hours.
+
+### Step 6c: rewire cloud-dart to consume the library
+
+- Remove the embedded `internxt_client.dart`
+- Add the dependency in cloud-dart's pubspec.yaml
+- Update imports throughout cloud-dart (`import
+  'package:internxt_client/internxt_client.dart'`)
+- Keep only the (b)-bucket modules locally
+- Run cloud-dart's existing test suite (or smoke-test the Flutter app)
+  to confirm nothing regressed
+
+Estimated work: ~3 hours.
+
+### Risks
+
+- **API surface lock-in.** The first version we publish becomes a
+  contract with cloud-dart. Worth keeping `v0.x` so we can iterate
+  on the API without semver pain.
+- **`pointycastle` and `bip39` versioning.** Both packages have had
+  breaking releases in recent history. Pinning compatible ranges in
+  internxt-dart's pubspec is critical — cloud-dart's app may already
+  be on a different range.
+- **Flutter SDK constraints.** internxt-dart targets pure Dart; if
+  cloud-dart pins a specific Flutter version that constrains the
+  Dart SDK floor, internxt-dart may need to widen its
+  `environment: sdk:` constraint to match.
+
+### Why this is worth it
+
+Two divergent 4000+ line files in two repos is unmaintainable. Every
+audit fix from Phases 0–5 (the cache-coherency bug, the `@override`
+fixes, the dropped dead code) currently lives in only one of them.
+Unifying lets the next audit cover both at once.
 
 ---
 

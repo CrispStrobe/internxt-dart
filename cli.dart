@@ -23,8 +23,11 @@ import 'webdav_filesystem.dart'; // Our custom implementation
 // `import '../cli.dart';` keep finding ConfigService etc.
 import 'config.dart';
 import 'crypto.dart' as inxt_crypto;
+import 'utils.dart' as inxt_utils;
+import 'utils.dart' show formatSize; // unprefixed for in-file callers
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
+export 'utils.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -2535,29 +2538,15 @@ class InternxtClient {
     };
   }
 
+  /// Thin delegate to `utils.shouldIncludeFile`. Kept as a method on
+  /// InternxtClient so existing callers (`client.shouldIncludeFile(...)`)
+  /// keep working; new code should call the top-level function directly.
   bool shouldIncludeFile(
     String fileName,
     List<String> include,
     List<String> exclude,
-  ) {
-    if (include.isNotEmpty) {
-      final matchesInclude =
-          include.any((pattern) => Glob(pattern).matches(fileName));
-      if (!matchesInclude) {
-        return false;
-      }
-    }
-
-    if (exclude.isNotEmpty) {
-      final matchesExclude =
-          exclude.any((pattern) => Glob(pattern).matches(fileName));
-      if (matchesExclude) {
-        return false;
-      }
-    }
-
-    return true;
-  }
+  ) =>
+      inxt_utils.shouldIncludeFile(fileName, include, exclude);
 
   Future<void> downloadPath(
     String remotePath, {
@@ -4004,19 +3993,5 @@ class InternxtClient {
 // ConfigService lives in config.dart; the export at the top of this
 // file makes it visible to anyone who does `import 'cli.dart';`.
 
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
-
-String formatSize(dynamic bytes) {
-  if (bytes == null) return 'N/A';
-  if (bytes is String) bytes = int.tryParse(bytes) ?? 0;
-  if (bytes is! int) return 'N/A';
-  if (bytes == 0) return '0 B';
-
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  if (bytes < 1024 * 1024 * 1024)
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-}
+// formatSize lives in utils.dart; re-exported via the export at the
+// top of this file.

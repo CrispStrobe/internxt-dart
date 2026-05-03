@@ -4,6 +4,29 @@ A historical record of the work done in this Dart port. New work is added
 to the top. For forward-looking work see [`PLAN.md`](PLAN.md); for the
 retrospective lessons see [`LEARNINGS.md`](LEARNINGS.md).
 
+---
+
+## Phase 4 (in progress): module split
+
+`cli.dart` is being decomposed from a 4317-line monolith into focused
+sibling modules at the project root. Each extraction is its own commit
+and re-runs the full 73-test suite (61 unit + 12 live) to confirm no
+behaviour change. Tests stay green via thin delegating wrappers on
+`InternxtClient` plus `export` directives in cli.dart, so existing
+`import '../cli.dart';` keeps working.
+
+| Commit | Module | Lines | Notes |
+|---|---|---|---|
+| 4.a | `config.dart` | 152 | `ConfigService` — credential / batch-state / WebDAV PID persistence. No instance-state coupling. |
+| 4.b | `crypto.dart` | 211 | Trust root: AES-256-CBC + EVP_BytesToKey, PBKDF2-SHA1, AES-256-CTR, SHA-512 key derivation. Live tests confirm wire-compat with the real backend. Dropped per-call `log()` debug noise. |
+| 4.c | `utils.dart` | 45 | `formatSize` + `shouldIncludeFile`. Pure functions, already test-covered. |
+
+cli.dart down from 4317 → 3997 LOC. Still ahead: `auth.dart`,
+`api.dart`, `cache.dart`, `drive.dart`, `upload.dart`, `download.dart`.
+See [`PLAN.md`](PLAN.md) for the full Phase 4 roadmap and a planned
+Phase 6 that publishes the result as a library for cloud-dart to
+consume.
+
 The Python sibling at [`internxt-cli`](https://github.com/CrispStrobe/internxt-cli)
 got the same audit + test treatment first. Several of the bug-shapes
 caught here mirror what surfaced there — they're called out as such.
