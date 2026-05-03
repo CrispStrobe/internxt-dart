@@ -310,6 +310,37 @@ Here's a list of available commands:
 
 -----
 
+## 🧭 Project docs
+
+  * [`HISTORY.md`](HISTORY.md) — record of audit fixes, bug finds, and the test suite that was built up alongside.
+  * [`PLAN.md`](PLAN.md) — known gaps vs. the Python sibling, planned work (notably Phase 4: split the monolith).
+  * [`LEARNINGS.md`](LEARNINGS.md) — retrospective lessons from the audit + test build-out.
+
+A Python sibling lives at [`CrispStrobe/internxt-cli`](https://github.com/CrispStrobe/internxt-cli) — same goals, same author, more mature test suite. Worth comparing if you're hacking on either.
+
+-----
+
+## 🧪 Running the tests
+
+```bash
+# Unit tests (~30s, no creds needed, no network)
+dart test test/crypto_test.dart test/config_test.dart test/utils_test.dart
+
+# Live integration smoke (~45s, needs creds in .env or env vars)
+echo 'IXT_ACCOUNT=you@example.com' > .env
+echo 'IXT_PWD=your-password' >> .env
+dart test test/live_smoke_test.dart
+
+# Force-skip live (e.g. in CI)
+DART_TEST_SKIP_LIVE=1 dart test
+```
+
+The live tests confine all operations to a sentinel folder
+(`/__test_inxt_dart_smoke__/<run-uuid>/`) and clean up on teardown — see
+[`HISTORY.md`](HISTORY.md) for the full safety properties.
+
+-----
+
 ## 📄 License
 
 This project is licensed under the **GNU Affero General Public License v3.0**. See the `LICENSE` file for details.
