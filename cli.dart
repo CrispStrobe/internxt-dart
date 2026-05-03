@@ -6,7 +6,6 @@ import 'dart:io' as io; // Use a prefix for dart:io
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:args/args.dart';
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
 import 'package:bip39/bip39.dart' as bip39;
 import 'package:hex/hex.dart';
@@ -29,6 +28,7 @@ import 'api.dart' as inxt_api;
 import 'auth.dart' as inxt_auth;
 import 'drive.dart' as inxt_drive;
 import 'upload.dart' as inxt_upload;
+import 'download.dart' as inxt_download;
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
 export 'utils.dart';
@@ -37,6 +37,7 @@ export 'api.dart';
 export 'auth.dart';
 export 'drive.dart';
 export 'upload.dart';
+export 'download.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -1834,33 +1835,6 @@ class InternxtClient {
     }
   }
 
-  /// Central HTTP transport. Implementation in api.dart; this wrapper
-  /// snapshots the current bearer token so callers don't have to pass
-  /// it explicitly. Refresh-on-401 is still driven by the caller.
-  Future<http.Response> _makeRequest(
-    String method,
-    Uri url, {
-    Map<String, String>? headers,
-    dynamic body,
-    bool useAuth = true,
-    bool isNetworkAuth = false,
-    String? networkUser,
-    String? networkPass,
-    int retryCount = 0,
-  }) =>
-      inxt_api.makeRequest(
-        method,
-        url,
-        bearerToken: newToken,
-        headers: headers,
-        body: body,
-        useAuth: useAuth,
-        isNetworkAuth: isNetworkAuth,
-        networkUser: networkUser,
-        networkPass: networkPass,
-        retryCount: retryCount,
-      );
-
   // --- Auth ---
   // Protocol implementations live in auth.dart; these wrappers thread
   // the InternxtClient's static URL/secret constants through.
@@ -1927,134 +1901,43 @@ class InternxtClient {
 
   // --- Download Operations ---
 
+  // --- Download pipeline ---
+  // Implementations live in download.dart. These wrappers thread
+  // session state through to the free functions.
+
   Future<Map<String, dynamic>> downloadFile(
     String fileUuid,
     String bridgeUser,
     String userIdForAuth, {
     bool preserveTimestamps = false,
-  }) async {
-    log('Starting file download: $fileUuid');
-
-    print('   📋 Fetching file metadata...');
-    final metadataUrl = Uri.parse('$driveApiUrl/files/$fileUuid/meta');
-
-    final metadataResponse = await _makeRequest('GET', metadataUrl);
-
-    final metadata = json.decode(metadataResponse.body);
-    final bucketId = metadata['bucket'];
-    final networkFileId = metadata['fileId'];
-
-    final fileSize = metadata['size'] is int
-        ? metadata['size'] as int
-        : int.tryParse(metadata['size'].toString()) ?? 0;
-
-    final fileName = metadata['plainName'] ?? 'file';
-    final fileType = metadata['type'] ?? '';
-    final filename = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
-
-    String? modificationTime =
-        metadata['modificationTime'] ?? metadata['updatedAt'];
-
-    print('   📄 File: $filename');
-    print('   📊 Size: ${formatSize(fileSize)}');
-
-    final networkAuth = _getNetworkAuth(bridgeUser, userIdForAuth);
-    final networkUser = networkAuth['user']!;
-    final networkPass = networkAuth['pass']!;
-
-    print('   🔗 Fetching download links...');
-    final linksResponse = await _getDownloadLinks(
-        bucketId, networkFileId, networkUser, networkPass);
-    final downloadUrl = linksResponse['shards'][0]['url'];
-    final fileIndexHex = linksResponse['index'];
-
-    print('   ☁️  Downloading encrypted data...');
-    final downloadResponse = await http.get(Uri.parse(downloadUrl));
-
-    if (downloadResponse.statusCode != 200) {
-      throw Exception(
-          'Failed to download file: ${downloadResponse.statusCode}');
-    }
-
-    final encryptedData = downloadResponse.bodyBytes;
-
-    print('   🔐 Decrypting...');
-    final decryptedData = decryptStream(
-      encryptedData,
-      mnemonic!,
-      bucketId,
-      fileIndexHex,
-    );
-
-    final trimmedData = decryptedData.sublist(0, fileSize);
-
-    return {
-      'data': trimmedData,
-      'filename': filename,
-      'modificationTime': modificationTime,
-      'preserveTimestamps': preserveTimestamps,
-    };
-  }
+  }) =>
+      inxt_download.downloadFile(
+        driveApiUrl,
+        networkUrl,
+        newToken,
+        mnemonic!,
+        fileUuid,
+        bridgeUser,
+        userIdForAuth,
+        preserveTimestamps: preserveTimestamps,
+      );
 
   Future<Map<String, dynamic>> downloadFileStreamed(
     String fileUuid,
     String destinationPath,
     String bridgeUser,
     String userIdForAuth,
-  ) async {
-    log('📥 Starting optimized streamed download: $fileUuid');
-
-    // 1. Fetch Metadata (Python style)
-    final metadata = await getFileMetadata(fileUuid);
-    final fileSize = int.parse(metadata['size'].toString());
-    final fileName = metadata['plainName'] ?? 'file';
-    final fileType = metadata['type'] ?? '';
-    final fullFileName = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
-
-    // 2. Fetch Network Links
-    final networkAuth = _getNetworkAuth(bridgeUser, userIdForAuth);
-    final links = await _getDownloadLinks(metadata['bucket'],
-        metadata['fileId'], networkAuth['user']!, networkAuth['pass']!);
-    final downloadUrl = links['shards'][0]['url'];
-    final fileIndexHex = links['index'];
-
-    // 3. Streamed Download (Go adapter style)
-    final client = http.Client();
-    final request = http.Request('GET', Uri.parse(downloadUrl));
-    final response = await client.send(request);
-
-    int downloaded = 0;
-    final List<int> encryptedBuffer = [];
-    final stopwatch = Stopwatch()..start();
-
-    log('     ☁️  [DEBUG] Downloading encrypted shards...');
-
-    await for (var chunk in response.stream) {
-      encryptedBuffer.addAll(chunk);
-      downloaded += chunk.length;
-
-      // Update progress bar
-      final percent =
-          (downloaded / response.contentLength! * 100).toStringAsFixed(1);
-      io.stdout.write(
-          '\r        Progress: $percent% (${formatSize(downloaded)}) [${formatSize(downloaded / (stopwatch.elapsedMilliseconds / 1000 + 0.001))}/s]   ');
-    }
-    print('');
-
-    // 4. Decrypt and write to disk
-    log('     🔐 [DEBUG] Decrypting and saving to disk...');
-    final decryptedData = decryptStream(Uint8List.fromList(encryptedBuffer),
-        mnemonic!, metadata['bucket'], fileIndexHex);
-
-    final file = io.File(destinationPath);
-    await file.writeAsBytes(decryptedData.sublist(0, fileSize));
-
-    return {
-      'filename': fullFileName,
-      'size': fileSize,
-      'modificationTime': metadata['modificationTime'] ?? metadata['updatedAt']
-    };
-  }
+  ) =>
+      inxt_download.downloadFileStreamed(
+        driveApiUrl,
+        networkUrl,
+        newToken,
+        mnemonic!,
+        fileUuid,
+        destinationPath,
+        bridgeUser,
+        userIdForAuth,
+      );
 
   /// Thin delegate to `utils.shouldIncludeFile`. Kept as a method on
   /// InternxtClient so existing callers (`client.shouldIncludeFile(...)`)
@@ -2079,241 +1962,28 @@ class InternxtClient {
     required String batchId,
     Map<String, dynamic>? initialBatchState,
     required Future<void> Function(Map<String, dynamic>) saveStateCallback,
-  }) async {
-    final itemInfo = await resolvePath(remotePath);
-
-    if (itemInfo['type'] == 'file') {
-      log('Path resolved to a file. Starting single file download.');
-
-      final metadata = itemInfo['metadata'] as Map<String, dynamic>;
-      final plainName = metadata['name'] ?? 'file';
-      final fileType = metadata['fileType'] ?? '';
-      final remoteFilename =
-          fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
-
-      if (!shouldIncludeFile(remoteFilename, include, exclude)) {
-        print(
-            '🚫 File filtered out by include/exclude patterns: $remoteFilename');
-        return;
-      }
-
-      String localPath;
-      if (localDestination != null) {
-        final destEntity = io.FileSystemEntity.typeSync(localDestination);
-        if (destEntity == io.FileSystemEntityType.directory) {
-          localPath = p.join(localDestination, remoteFilename);
-        } else {
-          localPath = localDestination;
-        }
-      } else {
-        localPath = remoteFilename;
-      }
-
-      final localFile = io.File(localPath);
-
-      if (await localFile.exists() && onConflict == 'skip') {
-        print('⏭️  File exists, skipping: $localPath');
-        return;
-      }
-
-      final downloadResult = await downloadFile(
-        itemInfo['uuid'],
-        bridgeUser,
-        userIdForAuth,
+  }) =>
+      inxt_download.downloadPath(
+        driveApiUrl,
+        networkUrl,
+        newToken,
+        rootFolderId,
+        mnemonic!,
+        _folderCache,
+        _fileCache,
+        remotePath,
+        localDestination: localDestination,
+        recursive: recursive,
+        onConflict: onConflict,
         preserveTimestamps: preserveTimestamps,
+        include: include,
+        exclude: exclude,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        batchId: batchId,
+        initialBatchState: initialBatchState,
+        saveStateCallback: saveStateCallback,
       );
-
-      await localFile.parent.create(recursive: true);
-      await localFile.writeAsBytes(downloadResult['data']);
-
-      if (preserveTimestamps && downloadResult['modificationTime'] != null) {
-        try {
-          final mTime = DateTime.parse(downloadResult['modificationTime']);
-          await localFile.setLastModified(mTime);
-          print('   🕐 Set modification time: $mTime');
-        } catch (e) {
-          print('   ⚠️  Could not set modification time: $e');
-        }
-      }
-
-      print('\n🎉 Downloaded successfully!');
-      print('📄 From: $remotePath');
-      print('💾 To: $localPath');
-      return;
-    }
-
-    if (itemInfo['type'] == 'folder') {
-      if (!recursive) {
-        throw Exception(
-            "'$remotePath' is a folder. Use -r to download recursively.");
-      }
-
-      log('Path resolved to a folder. Starting recursive download.');
-
-      String baseDestPath;
-      if (localDestination != null) {
-        baseDestPath = localDestination;
-      } else {
-        final folderName = itemInfo['metadata']?['name'] ?? 'download';
-        baseDestPath = folderName;
-      }
-      final baseDestDir = io.Directory(baseDestPath);
-      await baseDestDir.create(recursive: true);
-
-      print('📂 Downloading folder recursively: $remotePath');
-      print('💾 Target directory: ${baseDestDir.path}');
-
-      Map<String, dynamic> batchState;
-      List<dynamic> tasks;
-
-      if (initialBatchState != null) {
-        print("🔄 Resuming previous batch operation...");
-        batchState = initialBatchState;
-        tasks = batchState['tasks'] as List<dynamic>;
-      } else {
-        print("🔍 Generating new batch task list...");
-        tasks = [];
-        Future<void> buildDownloadTasks(
-            String currentRemoteFolderUuid, String currentLocalRelPath) async {
-          final files =
-              await listFolderFiles(currentRemoteFolderUuid, detailed: true);
-          final folders =
-              await listFolders(currentRemoteFolderUuid, detailed: true);
-
-          for (var fileInfo in files) {
-            final plainName = fileInfo['name'] ?? 'file';
-            final fileType = fileInfo['fileType'] ?? '';
-            final remoteFilename =
-                fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
-            final localFilePath =
-                p.join(baseDestPath, currentLocalRelPath, remoteFilename);
-
-            if (shouldIncludeFile(remoteFilename, include, exclude)) {
-              tasks.add({
-                'remoteUuid': fileInfo['uuid'],
-                'localPath': localFilePath,
-                'status': 'pending',
-                'remoteModificationTime':
-                    fileInfo['modificationTime'] ?? fileInfo['updatedAt'],
-              });
-            }
-          }
-
-          for (var folderInfo in folders) {
-            final folderName = folderInfo['name'] ?? 'subfolder';
-            final nextLocalRelPath = p.join(currentLocalRelPath, folderName);
-            final localSubDir =
-                io.Directory(p.join(baseDestPath, nextLocalRelPath));
-            await localSubDir.create(recursive: true);
-
-            if (preserveTimestamps) {
-              try {
-                final modTimeStr =
-                    folderInfo['modificationTime'] ?? folderInfo['updatedAt'];
-                if (modTimeStr != null) {
-                  log('   ℹ️  Cannot set mod time for dir ${folderName} (Dart limitation).');
-                }
-              } catch (e) {
-                log('   ⚠️  Error during dir timestamp logic for $folderName: $e');
-              }
-            }
-
-            await buildDownloadTasks(folderInfo['uuid'], nextLocalRelPath);
-          }
-        }
-
-        await buildDownloadTasks(itemInfo['uuid'], '');
-        batchState = {
-          'operationType': 'download',
-          'remotePath': remotePath,
-          'localDestination': baseDestPath,
-          'tasks': tasks,
-        };
-        await saveStateCallback(batchState);
-        print("📝 Task list generated with ${tasks.length} files.");
-      }
-
-      int successCount = 0;
-      int skippedCount = 0;
-      int errorCount = 0;
-      int completedPreviously = 0;
-
-      for (int i = 0; i < tasks.length; i++) {
-        final task = tasks[i] as Map<String, dynamic>;
-        final remoteUuid = task['remoteUuid'] as String;
-        final localPath = task['localPath'] as String;
-        final status = task['status'] as String;
-        final remoteModTime = task['remoteModificationTime'] as String?;
-
-        if (status == 'completed') {
-          log("✅ Already completed: $localPath");
-          completedPreviously++;
-          continue;
-        }
-        if (status.startsWith('skipped')) {
-          log("⏭️ Previously skipped: $localPath ($status)");
-          skippedCount++;
-          continue;
-        }
-
-        final localFile = io.File(localPath);
-
-        if (await localFile.exists() && onConflict == 'skip') {
-          print('   ⏭️  Skipping existing: ${p.basename(localPath)}');
-          skippedCount++;
-          task['status'] = 'skipped_conflict';
-          await saveStateCallback(batchState);
-          continue;
-        }
-
-        try {
-          print('   -> Downloading: ${p.basename(localPath)}');
-          final downloadResult = await downloadFile(
-            remoteUuid,
-            bridgeUser,
-            userIdForAuth,
-            preserveTimestamps: preserveTimestamps,
-          );
-
-          await localFile.parent.create(recursive: true);
-          await localFile.writeAsBytes(downloadResult['data']);
-
-          final modTimeStr =
-              downloadResult['modificationTime'] ?? remoteModTime;
-          if (preserveTimestamps && modTimeStr != null) {
-            try {
-              final mTime = DateTime.parse(modTimeStr);
-              await localFile.setLastModified(mTime);
-              log('   🕐 Set modification time: $mTime');
-            } catch (e) {
-              log('   ⚠️  Could not set modification time: $e');
-            }
-          }
-          successCount++;
-          task['status'] = 'completed';
-        } catch (e) {
-          print('   -> ❌ Error downloading ${p.basename(localPath)}: $e');
-          errorCount++;
-          task['status'] = 'error_download';
-        }
-        await saveStateCallback(batchState);
-      }
-
-      print("=" * 40);
-      print("📊 Batch Download Summary:");
-      if (completedPreviously > 0)
-        print("  ✅ Completed (previous run): $completedPreviously");
-      print("  ✅ Downloaded (this run): $successCount");
-      print("  ⏭️  Skipped:  $skippedCount");
-      print("  ❌ Errors:   $errorCount");
-      print("=" * 40);
-
-      if (errorCount > 0) {
-        throw Exception(
-            "Download completed with $errorCount errors. State file kept for inspection/retry.");
-      }
-    }
-  }
 
   // --- Upload Operations ---
 
@@ -2399,33 +2069,6 @@ class InternxtClient {
           String targetPath) =>
       inxt_drive.resolveOrCreateRemoteFolder(driveApiUrl, newToken,
           rootFolderId, _folderCache, _fileCache, targetPath);
-
-  Future<Map<String, dynamic>> _getDownloadLinks(
-      String bucketId, String fileId, String user, String pass) async {
-    final url = Uri.parse('$networkUrl/buckets/$bucketId/files/$fileId/info');
-
-    final response = await _makeRequest(
-      'GET',
-      url,
-      headers: {'x-api-version': '2'},
-      useAuth: false,
-      isNetworkAuth: true,
-      networkUser: user,
-      networkPass: pass, // This must be the SHA256 bridgePass
-    );
-
-    return json.decode(response.body);
-  }
-
-  Map<String, String> _getNetworkAuth(String bridgeUser, String userId) {
-    log("🔑 TRACE: Generating Network Auth using SHA256 of UserID");
-    final bridgePass =
-        crypto.sha256.convert(utf8.encode(userId.toString())).toString();
-    return {
-      'user': bridgeUser,
-      'pass': bridgePass,
-    };
-  }
 
   // --- File/Trash Operations ---
   // Implementations live in drive.dart. These wrappers thread the

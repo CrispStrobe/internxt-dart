@@ -10,33 +10,33 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
 ---
 
-## Phase 4: split the monolith (in progress)
+## Phase 4: split the monolith (complete)
 
-**Status:** ConfigService, crypto, utils, cache, the HTTP transport
-(including raw drive endpoint helpers), the auth protocol,
-drive.dart in full, and the upload pipeline have been extracted.
-cli.dart down from 4317 → 2533 LOC. Eight new modules at the
-project root: `config.dart` (152), `crypto.dart` (211),
-`utils.dart` (45), `cache.dart` (84), `api.dart` (228), `auth.dart`
-(167), `drive.dart` (1022), `upload.dart` (594). Tests stay green
-via thin delegating wrappers + re-exports. Each extraction got its
-own commit (4.a–4.i).
+**Status:** complete. cli.dart down from 4317 → 2176 LOC (a 50%
+reduction). Nine sibling modules at the project root: `config.dart`
+(152), `crypto.dart` (211), `utils.dart` (45), `cache.dart` (84),
+`api.dart` (228), `auth.dart` (167), `drive.dart` (1022),
+`upload.dart` (594), `download.dart` (460). Tests stay green via
+thin delegating wrappers + re-exports. See `HISTORY.md` for the
+per-extraction details and the final module layout table.
 
-The state-vs-protocol split is now consistent across all layers:
-instance state (the 7 session fields, `_isRefreshingToken` lock,
-two cache maps) lives on `InternxtClient`; the protocol / helper
-functions live in their respective modules and take their
-dependencies as parameters. The dead `_invalidateCache` cli.dart
-wrapper was dropped along with the upload extraction (no remaining
-callers outside drive.dart, which goes direct).
+**State-vs-protocol split, consistent across all layers:** instance
+state (the 7 session fields, `_isRefreshingToken` lock, two cache
+maps) lives on `InternxtClient`; protocol / helper functions live
+in their respective modules and take their dependencies as
+parameters.
 
-**Still ahead (in this phase):**
-- `download.dart` — `downloadFile`, `downloadFileStreamed`,
-  `downloadPath`, `_getDownloadLinks`, `_getNetworkAuth`. The bridge-
-  auth helper (`_getNetworkAuth`) currently lives near the upload
-  code but its only callers are the download paths; it should move
-  with download.dart. ~250 LOC of code to extract — the smallest
-  remaining chunk.
+**Side-effects of the extraction worth keeping in mind:**
+- `dart analyze` info-level lints fell from 39 → 19 because the
+  long monolith methods carried several `prefer_final_locals` /
+  `unnecessary_this` nits that disappeared with them.
+- Three pre-existing dead-code follow-ups were caught in passing
+  (the `istence` and `uploadThumbnailAsync` methods + the
+  `_makeRequest` / `_invalidateCache` / `_getNetworkAuth` wrappers
+  that became orphaned). Same shape as the Phase 1 dead-private-
+  method audit; these were missed because the original audit rule
+  was scoped to `_`-prefixed names and these had different
+  naming.
 - `upload.dart` — encrypt → push → finalize → drive-entry pipeline +
   memory-gated concurrency.
 - `download.dart` — download + decrypt + write + timestamp preserve.

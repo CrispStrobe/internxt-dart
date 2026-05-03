@@ -6,14 +6,14 @@ retrospective lessons see [`LEARNINGS.md`](LEARNINGS.md).
 
 ---
 
-## Phase 4 (in progress): module split
+## Phase 4 (complete): module split
 
-`cli.dart` is being decomposed from a 4317-line monolith into focused
-sibling modules at the project root. Each extraction is its own commit
-and re-runs the full 73-test suite (61 unit + 12 live) to confirm no
-behaviour change. Tests stay green via thin delegating wrappers on
-`InternxtClient` plus `export` directives in cli.dart, so existing
-`import '../cli.dart';` keeps working.
+`cli.dart` was decomposed from a 4317-line monolith into focused
+sibling modules at the project root. Each extraction is its own
+commit and re-runs the full 73-test suite (61 unit + 12 live) to
+confirm no behaviour change. Tests stay green via thin delegating
+wrappers on `InternxtClient` plus `export` directives in cli.dart,
+so existing `import '../cli.dart';` keeps working.
 
 | Commit | Module | Lines | Notes |
 |---|---|---|---|
@@ -29,8 +29,24 @@ behaviour change. Tests stay green via thin delegating wrappers on
 | 4.h.3 | `drive.dart` (extended) | +452 → 1022 | Recursive folder creation + search / find / tree: `createFolder`, `createFolderRecursive` (with the 409-conflict recovery preserved exactly — invalidate, sleep 1s, refetch, look for the colliding folder), `resolveOrCreateRemoteFolder`, `buildFullPath`, `search`, `findFiles`, `printTree`. `printTree` keeps the `printLine` callback so the caller can route output anywhere (stdout, buffer, log). The `_apiSearchFiles` and `_apiGetFolderAncestors` underscore wrappers were dropped — drive.dart calls `inxt_api.searchFiles` / `inxt_api.getFolderAncestors` directly. The dead `_createFolder` cli.dart wrapper was also dropped (only caller was `createFolderRecursive`, which moved). Info-level lints fell further from 34 → 24. |
 | 4.i | `upload.dart` | 594 | Full upload pipeline: `startUpload` (POST start), `uploadChunkWithProgress` (streamed PUT with stdout progress), `finishUpload` (POST finish), `createFileEntry` (POST /files + parent invalidation), `uploadFile` (encrypt → push → finalize → register), `uploadSingleItem` (conflict policy + timestamp prep + uploadFile), `upload` (top-level batch driver with resumable state). The 5 ms inter-chunk delay is preserved exactly — it prevents socket saturation that otherwise causes progress to "jump" to 100% before the network catches up. The inline SHA-256 in `uploadFile` was replaced with `inxt_auth.computeBridgePass` (deduped). User-facing `print()` UX preserved; `log()` debug noise dropped. |
 | Dead-code cleanup | — | -43 | Two never-called methods that survived the Phase 1 dead-private-method audit because they weren't underscore-prefixed: `istence` (a half-written batch existence-check from commit `392bbe9` "chunking etc") and `uploadThumbnailAsync` (a stub with a TODO that just logged). Same shape as the 7 dead private declarations removed in Phase 1; these were missed because the audit rule was scoped to `_`-prefixed methods. |
+| 4.j | `download.dart` | 460 | Final extraction. `getDownloadLinks` (network basic-auth GET for shard URL + decryption index), `downloadFile` (in-memory metadata→links→GET→decrypt, returns the bytes), `downloadFileStreamed` (chunked network read with stdout progress, decrypt-then-write-to-disk; note: still buffers full encrypted payload before decrypt), `downloadPath` (top-level resolve-and-dispatch with batch state for recursive folder downloads). The dead `_getNetworkAuth` cli.dart wrapper was dropped — every call site in download.dart inlines `inxt_auth.computeBridgePass(userIdForAuth)` instead, deduping with the upload pipeline. The `_makeRequest` cli.dart wrapper also became dead with this extraction (every endpoint call has been moved to a module that calls `inxt_api.makeRequest` directly) and was dropped, along with the now-unused `package:crypto/crypto.dart` import. |
 
-cli.dart down from 4317 → 2533 LOC. Still ahead: `download.dart`.
+cli.dart down from 4317 → 2176 LOC — a 50% reduction. Phase 4 complete.
+
+### Final module layout
+
+| Module | LOC | Responsibility |
+|---|---|---|
+| `cli.dart` | 2176 | CLI entrypoint, command dispatch (handle*), `InternxtClient` skeleton with the 7 session fields + 2 cache maps + `setAuth` + `refreshToken` orchestrator + thin delegating wrappers. |
+| `config.dart` | 152 | `ConfigService` — credential / batch-state / WebDAV PID file persistence. |
+| `crypto.dart` | 211 | Trust root: AES-256-CBC + EVP_BytesToKey, PBKDF2-SHA1, AES-256-CTR, SHA-512 key derivation. |
+| `utils.dart` | 45 | `formatSize`, `shouldIncludeFile`. Pure functions. |
+| `cache.dart` | 84 | `CacheEntry`, `cacheDuration`, `invalidateCache`, `clearParentCache`. |
+| `api.dart` | 228 | `makeRequest` (HTTP transport with retries) + raw drive endpoint helpers (metadata get/put, search, ancestors). |
+| `auth.dart` | 167 | `is2faNeeded`, `login`, `apiRefreshToken`, `computeBridgePass`. The protocol; orchestration stays in cli.dart. |
+| `drive.dart` | 1022 | All drive domain ops: mv/rename/timestamps/trash, paginated cache-aware listing, path resolution, recursive folder creation, search/find/tree. |
+| `upload.dart` | 594 | Upload pipeline: start/chunk/finish/createFileEntry primitives + per-file orchestrator + per-item conflict policy + top-level batch driver with resumable state. |
+| `download.dart` | 460 | Download pipeline: links primitive + in-memory and streamed downloaders + top-level path dispatcher with resumable state. |
 See [`PLAN.md`](PLAN.md) for the full Phase 4 roadmap and a planned
 Phase 6 that publishes the result as a library for cloud-dart to
 consume.
