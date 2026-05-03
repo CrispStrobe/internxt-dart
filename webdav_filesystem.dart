@@ -7,7 +7,7 @@ import 'dart:typed_data';
 
 import 'package:file/file.dart';
 import 'package:file/local.dart'; // <-- FIX: Import for LocalFileSystem
-import 'cli.dart'; 
+import 'cli.dart';
 import 'package:path/path.dart' as p;
 
 // --- Helper: Virtual FileStat ---
@@ -18,9 +18,10 @@ class _VirtualFileStat implements io.FileStat {
   final int size;
   @override
   final FileSystemEntityType type;
-  
-  _VirtualFileStat({required this.modified, required this.size, required this.type});
-  
+
+  _VirtualFileStat(
+      {required this.modified, required this.size, required this.type});
+
   @override
   int get mode => 0;
   @override
@@ -41,41 +42,45 @@ class _VirtualFileStat implements io.FileStat {
   }
 
   @override
-  String toString() => 'VirtualFileStat(type: $type, size: $size, mod: $modified)';
+  String toString() =>
+      'VirtualFileStat(type: $type, size: $size, mod: $modified)';
 }
 
 // --- Helper: Streaming File Sink ---
 class InternxtFileSink implements io.IOSink {
   final InternxtFile internxtFile;
-  final InternxtClient client; 
+  final InternxtClient client;
   final String remotePath;
   final bool preserveTimestamps;
-  
+
   static const int _maxMemorySize = 100 * 1024 * 1024; // 100MB
   bool _usingDisk = false;
   BytesBuilder _memoryBuffer = BytesBuilder(copy: false);
   io.File? _tempFile;
   io.IOSink? _tempFileSink;
   int _bytesWritten = 0;
-  
+
   final Completer<void> _doneCompleter = Completer<void>();
 
-  InternxtFileSink(this.internxtFile, this.client, this.remotePath, this.preserveTimestamps);
+  InternxtFileSink(
+      this.internxtFile, this.client, this.remotePath, this.preserveTimestamps);
 
   void _switchToDisk() {
     if (_usingDisk) return;
-    
-    client.log('WebDAV: Switching to disk for large upload $remotePath'); // <-- FIX
+
+    client.log(
+        'WebDAV: Switching to disk for large upload $remotePath'); // <-- FIX
     _usingDisk = true;
-    _tempFile = io.File(p.join(io.Directory.systemTemp.path, 'internxt-webdav-upload-${DateTime.now().millisecondsSinceEpoch}'));
+    _tempFile = io.File(p.join(io.Directory.systemTemp.path,
+        'internxt-webdav-upload-${DateTime.now().millisecondsSinceEpoch}'));
     _tempFileSink = _tempFile!.openWrite();
-    
+
     final bufferedBytes = _memoryBuffer.takeBytes();
     if (bufferedBytes.isNotEmpty) {
       _tempFileSink!.add(bufferedBytes);
     }
-    
-    _memoryBuffer = BytesBuilder(copy: false); 
+
+    _memoryBuffer = BytesBuilder(copy: false);
   }
 
   @override
@@ -83,13 +88,13 @@ class InternxtFileSink implements io.IOSink {
     if (_doneCompleter.isCompleted) {
       throw Exception('Cannot write to a closed sink');
     }
-    
+
     _bytesWritten += data.length;
-    
+
     if (!_usingDisk && _bytesWritten > _maxMemorySize) {
       _switchToDisk();
     }
-    
+
     if (_usingDisk) {
       _tempFileSink!.add(data);
     } else {
@@ -102,14 +107,16 @@ class InternxtFileSink implements io.IOSink {
     if (_doneCompleter.isCompleted) {
       return _doneCompleter.future;
     }
-    
-    client.log('WebDAV: close() called on file sink for $remotePath'); // <-- FIX
-    
+
+    client
+        .log('WebDAV: close() called on file sink for $remotePath'); // <-- FIX
+
     try {
       final remoteParentPath = p.dirname(remotePath);
       final remoteFilename = p.basename(remotePath);
       final creds = await client.config.readCredentials();
-      if (creds == null) throw io.FileSystemException('Not logged in', remotePath);
+      if (creds == null)
+        throw io.FileSystemException('Not logged in', remotePath);
 
       final parentResolved = await client.resolvePath(remoteParentPath);
       if (parentResolved['type'] != 'folder') {
@@ -117,19 +124,23 @@ class InternxtFileSink implements io.IOSink {
       }
 
       io.File? localFileToUpload;
-      
+
       if (_usingDisk) {
         await _tempFileSink!.close();
         localFileToUpload = _tempFile;
-        client.log('WebDAV: Uploading large file from disk: ${_tempFile?.path}'); // <-- FIX
+        client.log(
+            'WebDAV: Uploading large file from disk: ${_tempFile?.path}'); // <-- FIX
       } else {
         final bytes = _memoryBuffer.takeBytes();
-        client.log('WebDAV: Uploading small file from memory (${bytes.length} bytes)'); // <-- FIX
-        localFileToUpload = io.File(p.join(io.Directory.systemTemp.path, 'internxt-webdav-upload-small-${DateTime.now().millisecondsSinceEpoch}'));
+        client.log(
+            'WebDAV: Uploading small file from memory (${bytes.length} bytes)'); // <-- FIX
+        localFileToUpload = io.File(p.join(io.Directory.systemTemp.path,
+            'internxt-webdav-upload-small-${DateTime.now().millisecondsSinceEpoch}'));
         await localFileToUpload.writeAsBytes(bytes);
       }
-      
-      final result = await client.uploadSingleItem( // <-- FIX
+
+      final result = await client.uploadSingleItem(
+        // <-- FIX
         localFileToUpload!,
         remoteParentPath,
         parentResolved['uuid'],
@@ -139,13 +150,12 @@ class InternxtFileSink implements io.IOSink {
         preserveTimestamps: preserveTimestamps,
         remoteFileName: remoteFilename,
       );
-      
+
       if (result == "error") {
         throw io.FileSystemException('Upload failed', remotePath);
       }
-      
+
       _doneCompleter.complete();
-      
     } catch (e, s) {
       client.log('WebDAV: Error during sink close: $e\n$s'); // <-- FIX
       _doneCompleter.completeError(e, s);
@@ -155,10 +165,10 @@ class InternxtFileSink implements io.IOSink {
         await _tempFile!.delete();
       }
     }
-    
+
     return _doneCompleter.future;
   }
-  
+
   @override
   void addError(Object error, [StackTrace? stackTrace]) {
     client.log('WebDAV Sink Error: $error'); // <-- FIX
@@ -166,7 +176,7 @@ class InternxtFileSink implements io.IOSink {
       _doneCompleter.completeError(error, stackTrace);
     }
   }
-  
+
   // ... (rest of InternxtFileSink methods are fine) ...
   @override
   Future addStream(Stream<List<int>> stream) async {
@@ -196,17 +206,16 @@ class InternxtFileSink implements io.IOSink {
   }
 }
 
-
 // --- Main FileSystem Implementation ---
 class InternxtFileSystem implements FileSystem {
   final InternxtClient client;
-  
-  @override 
-  final p.Context path; 
+
+  @override
+  final p.Context path;
 
   InternxtFileSystem({required this.client}) : path = p.posix;
-  
-  @override 
+
+  @override
   String getPath(dynamic path) {
     if (path is Uri) {
       return path.toFilePath(windows: false);
@@ -237,7 +246,8 @@ class InternxtFileSystem implements FileSystem {
   }
 
   @override
-  Future<FileSystemEntityType> type(String path, {bool followLinks = true}) async {
+  Future<FileSystemEntityType> type(String path,
+      {bool followLinks = true}) async {
     try {
       final resolved = await client.resolvePath(path);
       if (resolved['type'] == 'folder') return FileSystemEntityType.directory;
@@ -247,19 +257,25 @@ class InternxtFileSystem implements FileSystem {
     }
     return FileSystemEntityType.notFound;
   }
-  
+
   @override
   Future<io.FileStat> stat(String path) async {
     try {
       final resolved = await client.resolvePath(path);
       final metadata = resolved['metadata'] as Map<String, dynamic>;
       final isFolder = resolved['type'] == 'folder';
-      
-      final modTimeStr = metadata['modificationTime'] ?? metadata['updatedAt'] ?? metadata['createdAt'];
-      final mTime = modTimeStr != null ? DateTime.parse(modTimeStr) : DateTime.fromMillisecondsSinceEpoch(0);
+
+      final modTimeStr = metadata['modificationTime'] ??
+          metadata['updatedAt'] ??
+          metadata['createdAt'];
+      final mTime = modTimeStr != null
+          ? DateTime.parse(modTimeStr)
+          : DateTime.fromMillisecondsSinceEpoch(0);
 
       return _VirtualFileStat(
-        type: isFolder ? FileSystemEntityType.directory : FileSystemEntityType.file,
+        type: isFolder
+            ? FileSystemEntityType.directory
+            : FileSystemEntityType.file,
         size: isFolder ? -1 : (metadata['size'] ?? 0),
         modified: mTime,
       );
@@ -271,9 +287,9 @@ class InternxtFileSystem implements FileSystem {
       );
     }
   }
-  
+
   // --- FIX: Implement missing abstract methods ---
-  
+
   @override
   Future<bool> isDirectory(String path) async {
     return await type(path) == FileSystemEntityType.directory;
@@ -286,29 +302,37 @@ class InternxtFileSystem implements FileSystem {
 
   @override
   Future<bool> isLink(String path) async => false;
-  
+
   @override
-  bool isDirectorySync(String path) => throw UnimplementedError('Sync ops not supported');
+  bool isDirectorySync(String path) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  bool isFileSync(String path) => throw UnimplementedError('Sync ops not supported');
+  bool isFileSync(String path) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  bool isLinkSync(String path) => throw UnimplementedError('Sync ops not supported');
-  
+  bool isLinkSync(String path) =>
+      throw UnimplementedError('Sync ops not supported');
+
   @override
   Future<bool> identical(String path1, String path2) async {
     return path.absolute(path1) == path.absolute(path2);
   }
+
   @override
-  bool identicalSync(String path1, String path2) => throw UnimplementedError('Sync ops not supported');
+  bool identicalSync(String path1, String path2) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  io.FileStat statSync(String path) => throw UnimplementedError('Sync ops not supported');
+  io.FileStat statSync(String path) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  FileSystemEntityType typeSync(String path, {bool followLinks = true}) => throw UnimplementedError('Sync ops not supported');
-  
+  FileSystemEntityType typeSync(String path, {bool followLinks = true}) =>
+      throw UnimplementedError('Sync ops not supported');
+
   @override
   Directory get currentDirectory => LocalFileSystem().currentDirectory;
   @override
-  set currentDirectory(dynamic path) => throw UnimplementedError('Not applicable');
+  set currentDirectory(dynamic path) =>
+      throw UnimplementedError('Not applicable');
   @override
   Directory get systemTempDirectory => LocalFileSystem().systemTempDirectory;
 
@@ -318,13 +342,17 @@ class InternxtFileSystem implements FileSystem {
   Directory get homeDirectory => throw UnimplementedError('Not applicable');
 
   @override
-  Link link(dynamic path) => throw UnimplementedError('Links are not supported');
+  Link link(dynamic path) =>
+      throw UnimplementedError('Links are not supported');
 
   String get pathSeparator => '/';
   bool get isWatchSupported => false;
-  Future<String> symbolicLinkTarget(String path) => throw UnimplementedError('Links not supported');
-  Future<File> createTemp(String prefix) => throw UnimplementedError('Temp ops not supported');
-  File createTempSync(String prefix) => throw UnimplementedError('Sync ops not supported');
+  Future<String> symbolicLinkTarget(String path) =>
+      throw UnimplementedError('Links not supported');
+  Future<File> createTemp(String prefix) =>
+      throw UnimplementedError('Temp ops not supported');
+  File createTempSync(String prefix) =>
+      throw UnimplementedError('Sync ops not supported');
 }
 
 // --- Directory Implementation ---
@@ -336,17 +364,19 @@ class InternxtDirectory implements Directory {
   // `fs` for our internal use; @override removed.
   final InternxtFileSystem fs;
 
-  InternxtDirectory({required this.client, required this.path, required this.fs});
+  InternxtDirectory(
+      {required this.client, required this.path, required this.fs});
 
   @override
-  Stream<FileSystemEntity> list({bool recursive = false, bool followLinks = true}) {
+  Stream<FileSystemEntity> list(
+      {bool recursive = false, bool followLinks = true}) {
     if (recursive) throw UnimplementedError('Recursive list not supported');
-    
+
     return Stream.fromFuture(() async {
       try {
         final resolved = await client.resolvePath(path);
         if (resolved['type'] != 'folder') return <FileSystemEntity>[];
-        
+
         final folders = await client.listFolders(resolved['uuid']);
         final files = await client.listFolderFiles(resolved['uuid']);
 
@@ -366,7 +396,8 @@ class InternxtDirectory implements Directory {
         client.log('WebDAV: Error listing $path: $e'); // <-- FIX
         return <FileSystemEntity>[];
       }
-    }()).expand((entities) => entities);
+    }())
+        .expand((entities) => entities);
   }
 
   @override
@@ -375,7 +406,7 @@ class InternxtDirectory implements Directory {
     await client.createFolderRecursive(path);
     return this;
   }
-  
+
   @override
   Future<FileSystemEntity> delete({bool recursive = false}) async {
     client.log('WebDAV: DELETE (Folder) $path'); // <-- FIX
@@ -383,7 +414,7 @@ class InternxtDirectory implements Directory {
     await client.trashItems(resolved['uuid'], 'folder');
     return this;
   }
-  
+
   @override
   Future<Directory> rename(String newPath) async {
     client.log('WebDAV: MOVE (Folder) $path -> $newPath'); // <-- FIX
@@ -392,21 +423,20 @@ class InternxtDirectory implements Directory {
     final oldParentPath = p.dirname(path);
 
     final resolved = await client.resolvePath(path);
-    
+
     if (newParentPath == oldParentPath) {
       await client.renameFolder(resolved['uuid'], newName);
-    } 
-    else {
+    } else {
       final destResolved = await client.resolvePath(newParentPath);
       await client.moveFolder(resolved['uuid'], destResolved['uuid']);
-      
+
       if (p.basename(path) != newName) {
         await client.renameFolder(resolved['uuid'], newName);
       }
     }
     return fs.directory(newPath);
   }
-  
+
   @override
   Future<bool> exists() async {
     try {
@@ -419,7 +449,7 @@ class InternxtDirectory implements Directory {
 
   @override
   Future<io.FileStat> stat() async => fs.stat(path);
-  
+
   // Directory in package:file 7.x doesn't expose setStat as part of the
   // interface; this method is here in case the wsgi layer calls it via
   // dynamic dispatch. @override removed.
@@ -440,17 +470,23 @@ class InternxtDirectory implements Directory {
   @override
   Future<String> resolveSymbolicLinks() async => path;
   @override
-  String resolveSymbolicLinksSync() => throw UnimplementedError('Sync ops not supported');
+  String resolveSymbolicLinksSync() =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  void createSync({bool recursive = false}) => throw UnimplementedError('Sync ops not supported');
+  void createSync({bool recursive = false}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  void deleteSync({bool recursive = false}) => throw UnimplementedError('Sync ops not supported');
+  void deleteSync({bool recursive = false}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
   bool existsSync() => throw UnimplementedError('Sync ops not supported');
-  @override 
-  List<FileSystemEntity> listSync({bool recursive = false, bool followLinks = true}) => throw UnimplementedError('Sync ops not supported');
   @override
-  Directory renameSync(String newPath) => throw UnimplementedError('Sync ops not supported');
+  List<FileSystemEntity> listSync(
+          {bool recursive = false, bool followLinks = true}) =>
+      throw UnimplementedError('Sync ops not supported');
+  @override
+  Directory renameSync(String newPath) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
   Directory get parent => fs.directory(p.dirname(path));
   @override
@@ -466,17 +502,22 @@ class InternxtDirectory implements Directory {
   @override
   io.FileStat statSync() => throw UnimplementedError('Sync ops not supported');
   @override
-  Stream<FileSystemEvent> watch({int events = FileSystemEvent.all, bool recursive = false}) => throw UnimplementedError('Watch not supported');
+  Stream<FileSystemEvent> watch(
+          {int events = FileSystemEvent.all, bool recursive = false}) =>
+      throw UnimplementedError('Watch not supported');
   @override
-  Directory childDirectory(String basename) => fs.directory(p.join(path, basename));
+  Directory childDirectory(String basename) =>
+      fs.directory(p.join(path, basename));
   @override
   File childFile(String basename) => fs.file(p.join(path, basename));
   @override
   Link childLink(String basename) => fs.link(p.join(path, basename));
   @override
-  Future<Directory> createTemp([String? prefix]) => throw UnimplementedError('Temp ops not supported');
+  Future<Directory> createTemp([String? prefix]) =>
+      throw UnimplementedError('Temp ops not supported');
   @override
-  Directory createTempSync([String? prefix]) => throw UnimplementedError('Sync ops not supported');
+  Directory createTempSync([String? prefix]) =>
+      throw UnimplementedError('Sync ops not supported');
 }
 
 // --- File Implementation ---
@@ -495,27 +536,30 @@ class InternxtFile implements File {
     client.log('WebDAV: GET $path'); // <-- FIX
     try {
       final resolved = await client.resolvePath(path);
-      if (resolved['type'] != 'file') throw io.FileSystemException('Path is not a file', path);
-      
+      if (resolved['type'] != 'file')
+        throw io.FileSystemException('Path is not a file', path);
+
       final creds = await client.config.readCredentials();
       if (creds == null) throw io.FileSystemException('Not logged in', path);
-      
+
       final result = await client.downloadFile(
         resolved['uuid'],
         creds['bridgeUser']!,
         creds['userIdForAuth']!,
       );
       return result['data'];
-    } catch(e) {
+    } catch (e) {
       client.log('WebDAV: Error reading $path: $e'); // <-- FIX
       throw io.FileSystemException('Error reading file', path);
     }
   }
 
   @override
-  Future<File> writeAsBytes(List<int> bytes, {io.FileMode mode = io.FileMode.write, bool flush = false}) async {
-    client.log('WebDAV: PUT (writeAsBytes) $path (${bytes.length} bytes)'); // <-- FIX
-    
+  Future<File> writeAsBytes(List<int> bytes,
+      {io.FileMode mode = io.FileMode.write, bool flush = false}) async {
+    client.log(
+        'WebDAV: PUT (writeAsBytes) $path (${bytes.length} bytes)'); // <-- FIX
+
     final sink = openWrite();
     sink.add(bytes);
     await sink.close();
@@ -523,16 +567,17 @@ class InternxtFile implements File {
   }
 
   @override
-  io.IOSink openWrite({io.FileMode mode = io.FileMode.write, Encoding encoding = utf8}) { 
+  io.IOSink openWrite(
+      {io.FileMode mode = io.FileMode.write, Encoding encoding = utf8}) {
     client.log('WebDAV: PUT (openWrite) $path'); // <-- FIX
     return InternxtFileSink(
-      this, 
-      client, 
-      path, 
+      this,
+      client,
+      path,
       true,
     );
   }
-  
+
   @override
   Future<FileSystemEntity> delete({bool recursive = false}) async {
     client.log('WebDAV: DELETE (File) $path'); // <-- FIX
@@ -540,7 +585,7 @@ class InternxtFile implements File {
     await client.trashItems(resolved['uuid'], 'file');
     return this;
   }
-  
+
   @override
   Future<File> rename(String newPath) async {
     client.log('WebDAV: MOVE (File) $path -> $newPath'); // <-- FIX
@@ -549,7 +594,7 @@ class InternxtFile implements File {
     final oldParentPath = p.dirname(path);
 
     final resolved = await client.resolvePath(path);
-    
+
     if (newParentPath == oldParentPath) {
       final String newPlainName;
       final String? newFileType;
@@ -561,13 +606,12 @@ class InternxtFile implements File {
         newFileType = null;
       }
       await client.renameFile(resolved['uuid'], newPlainName, newFileType);
-    } 
-    else {
+    } else {
       final destResolved = await client.resolvePath(newParentPath);
       await client.moveFile(resolved['uuid'], destResolved['uuid']);
-      
+
       if (p.basename(path) != newName) {
-         final String newPlainName;
+        final String newPlainName;
         final String? newFileType;
         if (newName.contains('.')) {
           newPlainName = p.basenameWithoutExtension(newName);
@@ -585,15 +629,15 @@ class InternxtFile implements File {
   @override
   Future<File> copy(String newPath) async {
     client.log('WebDAV: COPY $path -> $newPath'); // <-- FIX
-    
+
     final bytes = await readAsBytes();
-    
+
     final newFile = fs.file(newPath) as InternxtFile;
     await newFile.writeAsBytes(bytes);
-    
+
     return newFile;
   }
-  
+
   @override
   Future<bool> exists() async {
     try {
@@ -620,26 +664,32 @@ class InternxtFile implements File {
       throw io.FileSystemException('Failed to set file stat', path);
     }
   }
-  
+
   // --- (All other stubbed methods are fine) ---
   @override
   File get absolute => this;
   @override
   Future<String> resolveSymbolicLinks() async => path;
   @override
-  String resolveSymbolicLinksSync() => throw UnimplementedError('Sync ops not supported');
+  String resolveSymbolicLinksSync() =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Future<File> create({bool recursive = false, bool exclusive = false}) => throw UnimplementedError('Use writeAsBytes');
+  Future<File> create({bool recursive = false, bool exclusive = false}) =>
+      throw UnimplementedError('Use writeAsBytes');
   @override
-  void createSync({bool recursive = false, bool exclusive = false}) => throw UnimplementedError('Sync ops not supported');
+  void createSync({bool recursive = false, bool exclusive = false}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  void deleteSync({bool recursive = false}) => throw UnimplementedError('Sync ops not supported');
+  void deleteSync({bool recursive = false}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
   bool existsSync() => throw UnimplementedError('Sync ops not supported');
   @override
-  File renameSync(String newPath) => throw UnimplementedError('Sync ops not supported');
-  @override 
-  File copySync(String newPath) => throw UnimplementedError('Sync ops not supported');
+  File renameSync(String newPath) =>
+      throw UnimplementedError('Sync ops not supported');
+  @override
+  File copySync(String newPath) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
   Future<int> length() async => (await stat()).size;
   @override
@@ -647,38 +697,56 @@ class InternxtFile implements File {
   @override
   Future<DateTime> lastModified() async => (await stat()).modified;
   @override
-  DateTime lastModifiedSync() => throw UnimplementedError('Sync ops not supported');
+  DateTime lastModifiedSync() =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Future<io.RandomAccessFile> open({io.FileMode mode = io.FileMode.read}) => throw UnimplementedError('Random access not supported');
+  Future<io.RandomAccessFile> open({io.FileMode mode = io.FileMode.read}) =>
+      throw UnimplementedError('Random access not supported');
   @override
-  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) => throw UnimplementedError('Sync ops not supported');
+  io.RandomAccessFile openSync({io.FileMode mode = io.FileMode.read}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
   Stream<List<int>> openRead([int? start, int? end]) {
     if (start != null || end != null) {
-       return Stream.fromFuture(readAsBytes().then((bytes) {
-          final s = start ?? 0;
-          final e = end ?? bytes.length;
-          return bytes.sublist(s, e);
-       }));
+      return Stream.fromFuture(readAsBytes().then((bytes) {
+        final s = start ?? 0;
+        final e = end ?? bytes.length;
+        return bytes.sublist(s, e);
+      }));
     }
     return Stream.fromFuture(readAsBytes());
   }
+
   @override
-  Future<List<String>> readAsLines({Encoding encoding = utf8}) async => LineSplitter().convert(await readAsString(encoding: encoding));
+  Future<List<String>> readAsLines({Encoding encoding = utf8}) async =>
+      LineSplitter().convert(await readAsString(encoding: encoding));
   @override
-  List<String> readAsLinesSync({Encoding encoding = utf8}) => throw UnimplementedError('Sync ops not supported');
+  List<String> readAsLinesSync({Encoding encoding = utf8}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Future<String> readAsString({Encoding encoding = utf8}) async => encoding.decode(await readAsBytes());
+  Future<String> readAsString({Encoding encoding = utf8}) async =>
+      encoding.decode(await readAsBytes());
   @override
-  String readAsStringSync({Encoding encoding = utf8}) => throw UnimplementedError('Sync ops not supported');
+  String readAsStringSync({Encoding encoding = utf8}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Future<File> writeAsString(String contents, {io.FileMode mode = io.FileMode.write, Encoding encoding = utf8, bool flush = false}) async {
+  Future<File> writeAsString(String contents,
+      {io.FileMode mode = io.FileMode.write,
+      Encoding encoding = utf8,
+      bool flush = false}) async {
     return writeAsBytes(encoding.encode(contents), mode: mode, flush: flush);
   }
+
   @override
-  void writeAsStringSync(String contents, {io.FileMode mode = io.FileMode.write, Encoding encoding = utf8, bool flush = false}) => throw UnimplementedError('Sync ops not supported');
+  void writeAsStringSync(String contents,
+          {io.FileMode mode = io.FileMode.write,
+          Encoding encoding = utf8,
+          bool flush = false}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  void writeAsBytesSync(List<int> bytes, {io.FileMode mode = io.FileMode.write, bool flush = false}) => throw UnimplementedError('Sync ops not supported');
+  void writeAsBytesSync(List<int> bytes,
+          {io.FileMode mode = io.FileMode.write, bool flush = false}) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
   Directory get parent => fs.directory(p.dirname(path));
   @override
@@ -694,19 +762,27 @@ class InternxtFile implements File {
   @override
   io.FileStat statSync() => throw UnimplementedError('Sync ops not supported');
   @override
-  Stream<FileSystemEvent> watch({int events = FileSystemEvent.all, bool recursive = false}) => throw UnimplementedError('Watch not supported');
+  Stream<FileSystemEvent> watch(
+          {int events = FileSystemEvent.all, bool recursive = false}) =>
+      throw UnimplementedError('Watch not supported');
   @override
   Future<DateTime> lastAccessed() => lastModified();
   @override
-  DateTime lastAccessedSync() => throw UnimplementedError('Sync ops not supported');
+  DateTime lastAccessedSync() =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Future setLastAccessed(DateTime time) => throw UnimplementedError('Not supported');
+  Future setLastAccessed(DateTime time) =>
+      throw UnimplementedError('Not supported');
   @override
-  void setLastAccessedSync(DateTime time) => throw UnimplementedError('Sync ops not supported');
+  void setLastAccessedSync(DateTime time) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Future setLastModified(DateTime time) => throw UnimplementedError('Not supported, use setStat');
+  Future setLastModified(DateTime time) =>
+      throw UnimplementedError('Not supported, use setStat');
   @override
-  void setLastModifiedSync(DateTime time) => throw UnimplementedError('Sync ops not supported');
+  void setLastModifiedSync(DateTime time) =>
+      throw UnimplementedError('Sync ops not supported');
   @override
-  Uint8List readAsBytesSync() => throw UnimplementedError('Sync ops not supported');
+  Uint8List readAsBytesSync() =>
+      throw UnimplementedError('Sync ops not supported');
 }
