@@ -1002,6 +1002,76 @@ void main() {
   });
 
   // ===========================================================================
+  // PHASE 7 — performance + UX parity with Python sibling
+  // ===========================================================================
+
+  liveTest('client.upload() parallelism uploads all files', timeout: const Timeout(Duration(minutes: 3)), () async {
+    // Drives the high-level batch driver (`client.upload(...)`) end
+    // to end so the Phase 7.2 parallel pool + Phase 7.1 memory gate +
+    // serialized state-saves all get exercised. Sequential live
+    // tests (above) only call `uploadSingleItem` directly.
+    final localDir = Directory('${tmpRoot.path}/${_uniqueName('parallel-up')}');
+    localDir.createSync();
+    final payloads = <String, Uint8List>{};
+    for (var i = 0; i < 6; i++) {
+      final stem = _uniqueName('p$i');
+      final w = _writePayload(localDir, '$stem.txt', sizeBytes: 64);
+      payloads['$stem.txt'] = w.payload;
+    }
+
+    final remoteRoot = _uniqueSubpath('parallel-target');
+    final batchId =
+        config.generateBatchId('upload', [localDir.path], remoteRoot);
+
+    await client.upload(
+      [localDir.path],
+      remoteRoot,
+      recursive: true,
+      onConflict: 'overwrite',
+      preserveTimestamps: false,
+      include: const [],
+      exclude: const [],
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      batchId: batchId,
+      initialBatchState: null,
+      saveStateCallback: (state) async {
+        await config.saveBatchState(batchId, state);
+      },
+      workers: 4,
+    );
+    await config.deleteBatchState(batchId);
+
+    // The local dir base name becomes a remote subfolder under
+    // `remoteRoot` (the upload pipeline mirrors the local tree).
+    final dirBase = localDir.path.split(Platform.pathSeparator).last;
+    final remoteSubdir = '$remoteRoot/$dirBase';
+    final resolved = await client.resolvePath(remoteSubdir);
+    expect(resolved['type'], equals('folder'));
+
+    // All 6 files landed remote with the right bytes.
+    final remoteFiles = await client.listFolderFiles(resolved['uuid'] as String);
+    final remoteByName = {
+      for (final f in remoteFiles)
+        '${f['name']}.${f['fileType']}': f['uuid'] as String,
+    };
+    for (final entry in payloads.entries) {
+      final fileName = entry.key;
+      final original = entry.value;
+      final fileUuid = remoteByName[fileName];
+      expect(fileUuid, isNotNull,
+          reason: '$fileName missing from remote listing $remoteByName');
+      final downloadResult = await client.downloadFile(
+        fileUuid!,
+        _creds!['bridgeUser'] as String,
+        _creds!['userId'].toString(),
+      );
+      expect(downloadResult['data'] as Uint8List, equals(original),
+          reason: 'bytes mismatch for $fileName');
+    }
+  });
+
+  // ===========================================================================
   // PINNED GAPS — features the Python sibling tests but the Dart CLI
   // doesn't yet implement. Each is a `skip:` test so the gap is visible
   // in the test report without breaking the suite. See PLAN.md for the

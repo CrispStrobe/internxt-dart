@@ -108,9 +108,19 @@ int _availableMemory() {
 /// "wake waiters" pattern is implemented with completers + a 5-second
 /// timeout poll (re-check the OS memory in case the OS released
 /// caches between waits).
-class _MemoryGate {
+///
+/// Public for testability — test/upload_test.dart pokes at the
+/// counter directly. Production callers should not touch this class
+/// outside of `acquire` / `release` / `currentReserved`.
+class MemoryGate {
   static int _reserved = 0;
   static final List<Completer<void>> _waiters = [];
+
+  /// Total currently reserved across all in-flight uploads.
+  static int get currentReserved => _reserved;
+
+  /// Number of waiters parked on the gate. Test-only signal.
+  static int get waiterCount => _waiters.length;
 
   /// Reserve [need] bytes. Returns when the reservation succeeds.
   /// If no other reservation is active but the OS reports tight
@@ -149,6 +159,49 @@ class _MemoryGate {
     for (final w in waiters) {
       if (!w.isCompleted) w.complete();
     }
+  }
+
+  /// Test-only: drop all reservations and waiters back to zero.
+  static void resetForTesting() {
+    _reserved = 0;
+    for (final w in _waiters) {
+      if (!w.isCompleted) w.complete();
+    }
+    _waiters.clear();
+  }
+}
+
+/// Run [tasks] through [work] with at most [concurrency] in flight at
+/// once. Errors thrown by [work] propagate out of the returned
+/// future; tasks beyond the failure are NOT cancelled but the
+/// returned future doesn't wait for them. Order is not preserved.
+///
+/// Public so test/upload_test.dart can verify the concurrency
+/// invariant; production callers inside this module use it
+/// internally for the upload pool.
+Future<void> runBoundedPool<T>(
+  Iterable<T> tasks,
+  int concurrency,
+  Future<void> Function(T) work,
+) async {
+  if (concurrency < 1) concurrency = 1;
+  final iter = tasks.iterator;
+  final inFlight = <Future<void>>[];
+  void launch() {
+    while (inFlight.length < concurrency && iter.moveNext()) {
+      final t = iter.current;
+      late final Future<void> f;
+      f = work(t).whenComplete(() {
+        inFlight.remove(f);
+      });
+      inFlight.add(f);
+    }
+  }
+
+  launch();
+  while (inFlight.isNotEmpty) {
+    await Future.any(inFlight);
+    launch();
   }
 }
 
@@ -318,7 +371,7 @@ Future<Map<String, dynamic>> uploadFile(
   // straight through); under concurrent workers (Phase 7.2) the gate
   // serializes large uploads when RAM is tight.
   final memNeed = fileSize * 2;
-  await _MemoryGate.acquire(memNeed);
+  await MemoryGate.acquire(memNeed);
   try {
     print(
         '\n     🔐 [STEP 1/5] Starting Encryption for ${inxt_utils.formatSize(fileSize)}...');
@@ -371,7 +424,7 @@ Future<Map<String, dynamic>> uploadFile(
       'modificationTime': modificationTime,
     });
   } finally {
-    _MemoryGate.release(memNeed);
+    MemoryGate.release(memNeed);
   }
 }
 
@@ -526,6 +579,7 @@ Future<void> upload(
   required String batchId,
   Map<String, dynamic>? initialBatchState,
   required Future<void> Function(Map<String, dynamic>) saveStateCallback,
+  int workers = 4,
 }) async {
   print('🎯 Preparing upload to remote path: $targetPath');
 
@@ -628,81 +682,130 @@ Future<void> upload(
     print('📝 Task list generated with ${tasks.length} files.');
   }
 
+  // Pass 2 — parallel uploads.
+  //
+  // Pre-create each unique parent folder once, sequentially, so N
+  // concurrent workers don't all hit the 409-conflict-recovery path
+  // on the same path. Then run uploads through a bounded async pool.
+  final uniqueParents = <String>{};
+  for (final t in tasks.cast<Map<String, dynamic>>()) {
+    uniqueParents
+        .add(p.dirname(t['remotePath'] as String).replaceAll('\\', '/'));
+  }
+  final parentInfoCache = <String, Map<String, dynamic>>{};
+  for (final parent in uniqueParents) {
+    try {
+      parentInfoCache[parent] = await inxt_drive.createFolderRecursive(
+          driveApiUrl, bearerToken, rootFolderId, folderCache, fileCache, parent);
+    } catch (e) {
+      print('     ❌ Error ensuring parent folder $parent: $e');
+      // Tasks under this parent will fail; we record the failure
+      // when they run.
+    }
+  }
+
+  // Counters mutated from worker callbacks. Safe under Dart's
+  // single-threaded async model — all increments happen at await
+  // boundaries inside individual workers, never atomically across
+  // workers, but always serialized at the event-loop level.
   var successCount = 0;
   var skippedCount = 0;
   var errorCount = 0;
   var completedPreviously = 0;
 
-  for (var i = 0; i < tasks.length; i++) {
-    final task = tasks[i] as Map<String, dynamic>;
-    final localPath = task['localPath'] as String;
-    final remotePath = task['remotePath'] as String;
-    final status = task['status'] as String;
-
-    final localFile = io.File(localPath);
-    if (!await localFile.exists()) {
-      print('⚠️ Source file no longer exists, skipping: $localPath');
-      skippedCount++;
-      task['status'] = 'skipped_missing_source';
-      await saveStateCallback(batchState);
-      continue;
-    }
-
-    if (status == 'completed') {
-      completedPreviously++;
-      continue;
-    }
-
-    if (status.startsWith('skipped')) {
-      skippedCount++;
-      continue;
-    }
-
-    final remoteParentPath = p.dirname(remotePath).replaceAll('\\', '/');
-    Map<String, dynamic> parentFolderInfo;
-    try {
-      parentFolderInfo = await inxt_drive.createFolderRecursive(driveApiUrl,
-          bearerToken, rootFolderId, folderCache, fileCache, remoteParentPath);
-    } catch (createErr) {
-      print(
-          '     ❌ Error ensuring parent folder $remoteParentPath: $createErr');
-      errorCount++;
-      task['status'] = 'error_create_parent';
-      await saveStateCallback(batchState);
-      continue;
-    }
-
-    final result = await uploadSingleItem(
-      networkUrl,
-      driveApiUrl,
-      bearerToken,
-      rootFolderId,
-      mnemonic,
-      bucketId,
-      folderCache,
-      fileCache,
-      localFile,
-      remoteParentPath,
-      parentFolderInfo['uuid'],
-      onConflict,
-      bridgeUser: bridgeUser,
-      userIdForAuth: userIdForAuth,
-      preserveTimestamps: preserveTimestamps,
-      remoteFileName: p.basename(remotePath),
-    );
-
-    if (result == 'uploaded') {
-      successCount++;
-      task['status'] = 'completed';
-    } else if (result == 'skipped') {
-      skippedCount++;
-      task['status'] = 'skipped_conflict';
-    } else {
-      errorCount++;
-      task['status'] = 'error_upload';
-    }
-    await saveStateCallback(batchState);
+  // Serialize saveStateCallback so concurrent workers don't race on
+  // the on-disk state file. Each call appends to the chain; the
+  // returned Future completes when *this* save lands.
+  var saveTail = Future<void>.value();
+  Future<void> serializedSave() {
+    saveTail = saveTail.then((_) => saveStateCallback(batchState));
+    return saveTail;
   }
+
+  Future<void> runOne(Map<String, dynamic> task) async {
+    try {
+      final localPath = task['localPath'] as String;
+      final remotePath = task['remotePath'] as String;
+      final status = task['status'] as String;
+
+      final localFile = io.File(localPath);
+      if (!await localFile.exists()) {
+        print('⚠️ Source file no longer exists, skipping: $localPath');
+        skippedCount++;
+        task['status'] = 'skipped_missing_source';
+        await serializedSave();
+        return;
+      }
+      if (status == 'completed') {
+        completedPreviously++;
+        return;
+      }
+      if (status.startsWith('skipped')) {
+        skippedCount++;
+        return;
+      }
+
+      final remoteParentPath = p.dirname(remotePath).replaceAll('\\', '/');
+      final parentFolderInfo = parentInfoCache[remoteParentPath];
+      if (parentFolderInfo == null) {
+        // Parent pre-create failed earlier; record the per-task failure.
+        errorCount++;
+        task['status'] = 'error_create_parent';
+        await serializedSave();
+        return;
+      }
+
+      final result = await uploadSingleItem(
+        networkUrl,
+        driveApiUrl,
+        bearerToken,
+        rootFolderId,
+        mnemonic,
+        bucketId,
+        folderCache,
+        fileCache,
+        localFile,
+        remoteParentPath,
+        parentFolderInfo['uuid'] as String,
+        onConflict,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        preserveTimestamps: preserveTimestamps,
+        remoteFileName: p.basename(remotePath),
+      );
+
+      if (result == 'uploaded') {
+        successCount++;
+        task['status'] = 'completed';
+      } else if (result == 'skipped') {
+        skippedCount++;
+        task['status'] = 'skipped_conflict';
+      } else {
+        errorCount++;
+        task['status'] = 'error_upload';
+      }
+      await serializedSave();
+    } catch (e) {
+      print('  -> ❌ Worker exception for ${task['localPath']}: $e');
+      errorCount++;
+      task['status'] = 'error_worker';
+      await serializedSave();
+    }
+  }
+
+  final maxWorkers = workers.clamp(1, tasks.isEmpty ? 1 : tasks.length);
+  if (maxWorkers > 1 && tasks.isNotEmpty) {
+    print('🧵 Uploading ${tasks.length} file(s) with $maxWorkers worker(s)');
+  }
+
+  await runBoundedPool<Map<String, dynamic>>(
+    tasks.cast<Map<String, dynamic>>(),
+    maxWorkers,
+    runOne,
+  );
+
+  // Wait for any tail saves (the chain may still have queued saves).
+  await saveTail;
 
   print('=' * 40);
   print('📊 Batch Upload Summary:');
@@ -751,7 +854,7 @@ Future<Map<String, dynamic>> updateFile(
   final fileSize = await localFile.length();
   // Memory gate: same 2x reservation as uploadFile.
   final memNeed = fileSize * 2;
-  await _MemoryGate.acquire(memNeed);
+  await MemoryGate.acquire(memNeed);
   try {
     // 1. Read + encrypt.
     final fileBytes = await localFile.readAsBytes();
@@ -804,7 +907,7 @@ Future<Map<String, dynamic>> updateFile(
 
     return result;
   } finally {
-    _MemoryGate.release(memNeed);
+    MemoryGate.release(memNeed);
   }
 }
 

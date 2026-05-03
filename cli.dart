@@ -71,6 +71,10 @@ class InternxtCLI {
           defaultsTo: 'skip')
       ..addMultiOption('include', help: 'Include only files matching pattern')
       ..addMultiOption('exclude', help: 'Exclude files matching pattern')
+      ..addOption('workers',
+          abbr: 'w',
+          help: 'Number of parallel upload/move workers (default: 4)',
+          defaultsTo: '4')
       ..addFlag('force',
           abbr: 'f', help: 'Skip confirmation for destructive actions')
       ..addOption('depth',
@@ -1367,6 +1371,8 @@ class InternxtCLI {
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
+      final workers =
+          int.tryParse(argResults['workers'] as String? ?? '4') ?? 4;
 
       // Generate Batch ID for resumability (Go/Python style)
       final batchId = config.generateBatchId('upload', sources, targetPath);
@@ -1406,6 +1412,7 @@ class InternxtCLI {
           await config.saveBatchState(batchId, state);
           if (debugMode) print("💾 TRACE: Progress saved for Batch $batchId");
         },
+        workers: workers,
       );
 
       await config.deleteBatchState(batchId);
@@ -2081,6 +2088,7 @@ class InternxtClient {
     required String batchId,
     Map<String, dynamic>? initialBatchState,
     required Future<void> Function(Map<String, dynamic>) saveStateCallback,
+    int workers = 4,
   }) =>
       inxt_upload.upload(
         networkUrl,
@@ -2103,6 +2111,7 @@ class InternxtClient {
         batchId: batchId,
         initialBatchState: initialBatchState,
         saveStateCallback: saveStateCallback,
+        workers: workers,
       );
 
   Future<Map<String, dynamic>> _resolveOrCreateRemoteFolder(
