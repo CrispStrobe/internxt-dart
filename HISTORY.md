@@ -22,9 +22,10 @@ behaviour change. Tests stay green via thin delegating wrappers on
 | 4.c | `utils.dart` | 45 | `formatSize` + `shouldIncludeFile`. Pure functions, already test-covered. |
 | 4.d | `cache.dart` | 84 | `CacheEntry` + `cacheDuration` + `invalidateCache` + `clearParentCache`. Cache *storage* (the two `Map<String, CacheEntry>` fields) stays on `InternxtClient` — its lifetime is tied to a logged-in session. The `clearParentCache` doc comment pins the Phase 3 folderId-vs-folderUuid lesson so a future edit can't quietly reintroduce it. |
 | 4.e | `api.dart` | 118 | `makeRequest` — central HTTP transport with 5xx exponential-backoff retry and network-exception retry. Bearer token is now a snapshot parameter rather than instance-state read; on retries the same token is reused (matches monolith behavior since refresh isn't driven from inside the function). Refresh orchestration stays in cli.dart pending the auth.dart extraction. Every endpoint call (auth, files, folders, trash, network) routes through this function — 12/12 live tests are the gate. |
+| 4.f | `auth.dart` | 167 | `is2faNeeded` + `login` + `apiRefreshToken` + `computeBridgePass`. Owns the multi-step login dance (salt fetch → PBKDF2 hash → access token → hydration → bridge pass) and the raw refresh call. The orchestrator `refreshToken()` and the state mutator `setAuth()` stay on `InternxtClient` because they tie the protocol to the `_isRefreshingToken` lock, ConfigService persistence, and the 7 session fields. `computeBridgePass` dedupes a SHA-256 inline expression that lived in two places. |
 
-cli.dart down from 4317 → 3921 LOC. Still ahead: `auth.dart`,
-`drive.dart`, `upload.dart`, `download.dart`.
+cli.dart down from 4317 → 3810 LOC. Still ahead: `drive.dart`,
+`upload.dart`, `download.dart`.
 See [`PLAN.md`](PLAN.md) for the full Phase 4 roadmap and a planned
 Phase 6 that publishes the result as a library for cloud-dart to
 consume.

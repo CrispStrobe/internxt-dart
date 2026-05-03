@@ -28,11 +28,13 @@ import 'utils.dart' show formatSize; // unprefixed for in-file callers
 import 'cache.dart' as inxt_cache;
 import 'cache.dart' show CacheEntry; // unprefixed: used in field types
 import 'api.dart' as inxt_api;
+import 'auth.dart' as inxt_auth;
 export 'config.dart' show ConfigService;
 export 'crypto.dart';
 export 'utils.dart';
 export 'cache.dart';
 export 'api.dart';
+export 'auth.dart';
 
 /// Internxt CLI in Dart
 void main(List<String> arguments) async {
@@ -1787,32 +1789,13 @@ class InternxtClient {
     log("📊 TRACE: Session loaded for $userEmail (Bucket: $bucketId)");
   }
   // --- Token Refresh ---
+  // Protocol calls live in auth.dart. The orchestrator below stays
+  // here because it ties three concerns together: the
+  // _isRefreshingToken lock, the ConfigService persistence layer,
+  // and the InternxtClient setAuth state mutator.
 
-  /// Calls the API to get new tokens.
-  Future<Map<String, dynamic>> _apiRefreshToken(String currentNewToken) async {
-    final url = Uri.parse('$driveApiUrl/users/refresh');
-    log('GET $url (refreshing token)'); // Note: Python blueprint uses GET
-
-    try {
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer $currentNewToken',
-          'Content-Type': 'application/json',
-        },
-      );
-
-      if (response.statusCode != 200) {
-        log('Token refresh failed: ${response.body}');
-        throw Exception('Token refresh failed: ${response.statusCode}');
-      }
-
-      return json.decode(response.body);
-    } catch (e) {
-      log('Token refresh network error: $e');
-      throw Exception('Token refresh failed: $e');
-    }
-  }
+  Future<Map<String, dynamic>> _apiRefreshToken(String currentNewToken) =>
+      inxt_auth.apiRefreshToken(driveApiUrl, currentNewToken);
 
   /// Refreshes and saves auth tokens.
   Future<void> refreshToken() async {
@@ -1826,14 +1809,8 @@ class InternxtClient {
         throw Exception("No valid credentials found to refresh.");
       }
 
-      // Call /refresh with the existing newToken
       final resp = await _apiRefreshToken(currentCreds['newToken']);
       final user = resp['user'];
-
-      // Re-compute bridge password in case metadata changed
-      final bridgePass = crypto.sha256
-          .convert(utf8.encode(user['userId'].toString()))
-          .toString();
 
       final updatedCreds = {
         ...currentCreds,
@@ -1841,13 +1818,10 @@ class InternxtClient {
         'newToken': resp['newToken'],
         'bridgeUser': user['bridgeUser'],
         'userIdForAuth': user['userId'],
-        'bridgePass': bridgePass,
+        'bridgePass': inxt_auth.computeBridgePass(user['userId']),
       };
 
-      // Update class state
       setAuth(updatedCreds);
-
-      // Save to disk using the updated dynamic-friendly method
       await config.saveCredentials(updatedCreds);
       log("✅ TRACE: Token rotation successful.");
     } catch (e) {
@@ -1886,109 +1860,24 @@ class InternxtClient {
       );
 
   // --- Auth ---
+  // Protocol implementations live in auth.dart; these wrappers thread
+  // the InternxtClient's static URL/secret constants through.
 
-  /// Check if 2FA is needed for an email
-  Future<bool> is2faNeeded(String email) async {
-    final cleanEmail = email.toLowerCase().trim();
-    final url = Uri.parse('$driveApiUrl/auth/login');
+  Future<bool> is2faNeeded(String email) =>
+      inxt_auth.is2faNeeded(driveApiUrl, email);
 
-    try {
-      final response = await _makeRequest(
-        'POST',
-        url,
-        body: json.encode({'email': cleanEmail}),
-        useAuth: false,
+  Future<Map<String, dynamic>> login(
+    String email,
+    String password, {
+    String? tfaCode,
+  }) =>
+      inxt_auth.login(
+        driveApiUrl,
+        appCryptoSecret,
+        email,
+        password,
+        tfaCode: tfaCode,
       );
-
-      final data = json.decode(response.body);
-      return data['tfa'] == true;
-    } catch (e) {
-      log('⚠️ 2FA check error: $e');
-      return false;
-    }
-  }
-
-  /// Login to Internxt
-  Future<Map<String, dynamic>> login(String email, String password,
-      {String? tfaCode}) async {
-    final cleanEmail = email.toLowerCase().trim();
-    log("🚀 TRACE: Starting Hydrated Login for $cleanEmail");
-
-    // STEP 1: Salt Retrieval (sKey) - EXACT match to your successful curl
-    final secRes = await _makeRequest(
-      'POST',
-      Uri.parse('$driveApiUrl/auth/login'),
-      body: json.encode({'email': cleanEmail}),
-      useAuth: false,
-    );
-    final secDetails = json.decode(secRes.body);
-    final sKey = secDetails['sKey'];
-    if (sKey == null) throw Exception("Login failed: Salt (sKey) missing.");
-    log("💧 Step 1: Salt received.");
-
-    // STEP 2: Crypto (Mirroring Python crypto_service)
-    final salt = decryptTextWithKey(sKey, appCryptoSecret);
-    final masterHash = passToHash(password, salt)['hash']!;
-    final encryptedHash = encryptTextWithKey(masterHash, appCryptoSecret);
-    final keysPayload = generateKeys(password);
-
-    // STEP 3: Initial Access Call
-    log("🔐 Step 3: Requesting session token via /auth/login/access...");
-    final accessRes = await _makeRequest(
-      'POST',
-      Uri.parse('$driveApiUrl/auth/login/access'),
-      body: json.encode({
-        'email': cleanEmail,
-        'password': encryptedHash,
-        'tfa': tfaCode,
-        'keys': {
-          'ecc': {
-            'publicKey': keysPayload['ecc']['publicKey'],
-            'privateKey': keysPayload['ecc']['privateKeyEncrypted'],
-          }
-        },
-        'privateKey': keysPayload['privateKeyEncrypted'],
-        'publicKey': keysPayload['publicKey'],
-      }),
-      useAuth: false,
-    );
-    final tempToken = json.decode(accessRes.body)['newToken'];
-
-    // STEP 4: Mandatory Hydration (Refresh) - Mirroring Python AuthService.login
-    log("💧 Step 4: Hydrating session metadata via /users/refresh...");
-    final hydrationRes = await http.get(
-      Uri.parse('$driveApiUrl/users/refresh'),
-      headers: {
-        'Authorization': 'Bearer $tempToken',
-        'internxt-client': 'cli', // Keep consistency
-        'Content-Type': 'application/json',
-      },
-    );
-
-    if (hydrationRes.statusCode != 200) {
-      throw Exception("Hydration failed: ${hydrationRes.statusCode}");
-    }
-
-    final hydrated = json.decode(hydrationRes.body);
-    final user = hydrated['user'];
-
-    // Step 5: Bridge Credentials (SHA256 of UserID)
-    final bridgePass = crypto.sha256
-        .convert(utf8.encode(user['userId'].toString()))
-        .toString();
-
-    return {
-      'email': user['email'],
-      'token': hydrated['token'],
-      'newToken': hydrated['newToken'],
-      'mnemonic': decryptTextWithKey(user['mnemonic'], password),
-      'userId': user['userId'],
-      'rootFolderId': user['rootFolderId'],
-      'bridgeUser': user['bridgeUser'],
-      'bridgePass': bridgePass,
-      'bucketId': user['bucket'], // This is your storage container ID
-    };
-  }
 
   Future<Map<String, dynamic>> getFileMetadata(String fileUuid) async {
     final url = Uri.parse('$driveApiUrl/files/$fileUuid/meta');

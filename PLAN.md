@@ -12,21 +12,21 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
 ## Phase 4: split the monolith (in progress)
 
-**Status:** ConfigService, crypto, utils, cache, and the HTTP
-transport have been extracted. cli.dart down from 4317 → 3921 LOC.
-Five new modules at the project root: `config.dart` (152),
-`crypto.dart` (211), `utils.dart` (45), `cache.dart` (84),
-`api.dart` (118). Tests stay green via thin delegating wrappers +
-re-exports. Each extraction got its own commit (4.a–4.e).
+**Status:** ConfigService, crypto, utils, cache, the HTTP transport,
+and the auth protocol have been extracted. cli.dart down from 4317
+→ 3810 LOC. Six new modules at the project root: `config.dart`
+(152), `crypto.dart` (211), `utils.dart` (45), `cache.dart` (84),
+`api.dart` (118), `auth.dart` (167). Tests stay green via thin
+delegating wrappers + re-exports. Each extraction got its own
+commit (4.a–4.f).
+
+The state-vs-protocol split is now consistent across the auth and
+cache layers: instance state (the 7 session fields, `_isRefreshingToken`
+lock, two cache maps) lives on `InternxtClient`; the protocol /
+helper functions live in their respective modules and take their
+dependencies as parameters.
 
 **Still ahead (in this phase):**
-- `auth.dart` — login orchestration, refresh, bridge auth, credential
-  rotation. Touches a lot of `InternxtClient` instance state (token,
-  mnemonic, bucketId, rootFolderId) — extraction will need a clear
-  decision on whether auth holds those fields or `InternxtClient` does.
-  The bearer token now flows through `makeRequest` as a snapshot
-  parameter (Phase 4.e), which makes auth.dart's refresh logic easier
-  to extract since it no longer has to live next to the transport.
 - `drive.dart` — path resolution, list, mv, rename, copy, trash,
   recursive folder ops. Largest remaining chunk. Could pull the raw
   endpoint methods (`getFileMetadata`, `getFolderMetadata`, etc.) into
