@@ -10,6 +10,39 @@ import 'package:test/test.dart';
 import '../cli.dart';
 
 void main() {
+  group('InternxtCLI.formatMtime (Phase 7.8)', () {
+    test('formats a full ISO timestamp to YYYY-MM-DD HH:MM', () {
+      expect(InternxtCLI.formatMtime('2026-05-04T12:34:56.789Z'),
+          equals('2026-05-04 12:34'));
+    });
+
+    test('handles ISO without milliseconds', () {
+      expect(InternxtCLI.formatMtime('2026-05-04T12:34:56'),
+          equals('2026-05-04 12:34'));
+    });
+
+    test('null gives a 16-wide blank', () {
+      expect(InternxtCLI.formatMtime(null), equals(' ' * 16));
+    });
+
+    test('short / unparseable input is right-padded to 16 chars', () {
+      expect(InternxtCLI.formatMtime('???').length, equals(16));
+    });
+
+    test('output width is exactly 16 (column alignment guarantee)', () {
+      for (final input in <dynamic>[
+        '2026-05-04T12:34:56.789Z',
+        '2026-05-04T12:34:56',
+        null,
+        '???',
+        '',
+      ]) {
+        expect(InternxtCLI.formatMtime(input).length, equals(16),
+            reason: 'input=$input');
+      }
+    });
+  });
+
   group('InternxtCLI.buildMovePlan (Phase 7.3)', () {
     Map<String, dynamic> _src(String srcPath, String type, String uuid,
         String leaf) {

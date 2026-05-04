@@ -1388,6 +1388,20 @@ class InternxtCLI {
     }
   }
 
+  /// Format a remote mtime/ctime (ISO 8601, possibly null) to a
+  /// fixed-width display string `YYYY-MM-DD HH:MM`. Falls back to a
+  /// 16-space placeholder for missing/unparseable values so the
+  /// column stays aligned. Public for testability.
+  static String formatMtime(dynamic isoString) {
+    if (isoString == null) return '                ';
+    final s = isoString.toString();
+    // Most strings come back as 2026-05-04T12:34:56.789Z. We only
+    // want the date + HH:MM (16 chars total, indexes 0-15 with the
+    // 'T' replaced by a space).
+    if (s.length < 16) return s.padRight(16).substring(0, 16);
+    return '${s.substring(0, 10)} ${s.substring(11, 16)}';
+  }
+
   Future<void> handleList(ArgResults argResults) async {
     try {
       final creds = await config.readCredentials();
@@ -1414,8 +1428,12 @@ class InternxtCLI {
 
       print('📂 Listing folder: $resolvedPathDisplay (UUID: $folderId)\n');
 
-      final folders = await client.listFolders(folderId);
-      final files = await client.listFolderFiles(folderId);
+      // detailed: true so each entry carries modificationTime /
+      // updatedAt for the new Modified column (Phase 7.8). The cache
+      // stores the full record either way, so this isn't a perf cost
+      // beyond the first listing.
+      final folders = await client.listFolders(folderId, detailed: true);
+      final files = await client.listFolderFiles(folderId, detailed: true);
 
       final items = [...folders, ...files];
 
@@ -1424,53 +1442,47 @@ class InternxtCLI {
         return;
       }
 
-      if (showFullUUIDs) {
-        print(
-            '╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
-        print(
-            '║  Type    Name                                    Size            UUID                                 ║');
-        print(
-            '╠════════════════════════════════════════════════════════════════════════════════════════════════════╣');
-      } else {
-        print(
-            '╔═══════════════════════════════════════════════════════════════════════════════╗');
-        print(
-            '║  Type    Name                                    Size            UUID        ║');
-        print(
-            '╠═══════════════════════════════════════════════════════════════════════════════╣');
-      }
+      // Column widths: Type(2) Name(40) Size(12) Modified(16) UUID
+      // (8 short, 36 full). Box width adjusts for showFullUUIDs.
+      final boxLen = showFullUUIDs ? 96 : 86;
+      final headerSep = '═' * boxLen;
+      print('╔$headerSep╗');
+      print('║  Type  Name${' ' * 36}'
+          '  Size${' ' * 8}'
+          '  Modified${' ' * 8}'
+          '  UUID${' ' * (showFullUUIDs ? 32 : 8)}║');
+      print('╠$headerSep╣');
+
       int folderCount = 0;
       int fileCount = 0;
       for (var item in items) {
         final type = item['type'] == 'folder' ? '📁' : '📄';
-        if (item['type'] == 'folder')
+        if (item['type'] == 'folder') {
           folderCount++;
-        else
+        } else {
           fileCount++;
+        }
         final plainName = item['name'] ?? 'Unknown';
         final fileType = item['type'] == 'file' ? (item['fileType'] ?? '') : '';
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
-        final name = displayName.toString().padRight(40);
-        final size =
-            item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
-        final uuid = item['uuid'] ?? 'N/A';
-        if (showFullUUIDs) {
-          print(
-              '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
-        } else {
-          print(
-              '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  ${uuid.substring(0, 8)}... ║');
-        }
+        final name = displayName.toString();
+        final clippedName = name.length > 40
+            ? name.substring(0, 40)
+            : name.padRight(40);
+        final size = (item['type'] == 'folder'
+                ? '<DIR>'
+                : formatSize(item['size'] ?? 0))
+            .padLeft(12);
+        final mtime =
+            formatMtime(item['modificationTime'] ?? item['updatedAt']);
+        final uuid = (item['uuid'] ?? 'N/A') as String;
+        final uuidCell =
+            showFullUUIDs ? uuid.padRight(36) : '${uuid.substring(0, 8).padRight(8)}...';
+        print('║  $type  $clippedName  $size  $mtime  $uuidCell║');
       }
-      if (showFullUUIDs) {
-        print(
-            '╚════════════════════════════════════════════════════════════════════════════════════════════════════╝');
-      } else {
-        print(
-            '╚═══════════════════════════════════════════════════════════════════════════════╝');
-      }
+      print('╚$headerSep╝');
       print(
           '\n📊 Total: ${items.length} items ($folderCount folders, $fileCount files)');
     } catch (e) {
