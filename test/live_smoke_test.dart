@@ -1121,12 +1121,10 @@ void main() {
     );
 
     // List trash. The trashed item *should* appear, but Internxt's
-    // trash index has eventual-consistency lag that's measured in
-    // the few-seconds range after trash. Best-effort retry up to ~6s
-    // and then move on — the restore-then-verify step is the real
-    // assertion that the lifecycle works end-to-end.
-    //
-    // PLAN.md tracks tightening this if Internxt fixes the lag.
+    // trash index has eventual-consistency lag (the dedicated
+    // `trash listing eventual-consistency latency` test below
+    // measures it explicitly). Best-effort retry here; the
+    // restore-then-verify step is the real lifecycle assertion.
     var foundInTrash = false;
     for (var attempt = 0; attempt < 4; attempt++) {
       final trashItems = await client.getTrashContent(limit: 200);
@@ -1608,14 +1606,18 @@ void main() {
   liveTest('users/me known-404 marker (regression pin)', () async {
     // Pinned regression: /drive/users/me does not exist on the live
     // backend (returns 404 "Cannot GET /api/users/me"). If this test
-    // starts passing the call without throwing, the endpoint has come
-    // online and we should wire real callers.
+    // starts passing the call without throwing OR throws with a
+    // different status, the endpoint has come online (or the gateway
+    // changed the error shape) and we should wire real callers.
+    //
+    // Tightened assertion: must be a 404 specifically. The previous
+    // version also accepted "Not Found" / "Cannot GET" but those
+    // are 404 message variants; keeping the status-code check is
+    // unambiguous and means a 5xx (e.g. an outage) won't be mistaken
+    // for "endpoint still missing".
     expect(
       () => getUserInfo(client.driveApiUrl, client.newToken),
-      throwsA(predicate((e) =>
-          e.toString().contains('404') ||
-          e.toString().contains('Not Found') ||
-          e.toString().contains('Cannot GET'))),
+      throwsA(predicate((e) => e.toString().contains('404'))),
     );
   });
 
@@ -1765,6 +1767,105 @@ void main() {
         reason: 'downloaded bytes do not match v2');
     expect(downloaded, isNot(equals(wV1.payload)),
         reason: 'updateFile did not actually replace the content');
+  });
+
+  liveTest('trash listing eventual-consistency latency', () async {
+    // Measures how long it takes for a freshly-trashed file to
+    // surface in /storage/trash/paginated. Internxt's trash index
+    // is async; the lifecycle test above retries best-effort and
+    // continues if the file doesn't appear in time. This test is
+    // dedicated to capturing the lag empirically — useful to know
+    // if Internxt fixes (or worsens) it.
+    //
+    // Test passes if EITHER the file appears within 30s OR if it
+    // never appears (in which case we just print the data point).
+    // The signal the test surfaces is the printed latency line.
+    final stem = _uniqueName('trash-lag-probe');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      w.file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final original = await client.resolvePath('$_sentinelPath/$stem.txt');
+    final fileUuid = original['uuid'] as String;
+
+    final stopwatch = Stopwatch()..start();
+    await client.trashItems(fileUuid, 'file');
+
+    int attempts = 0;
+    Duration? latency;
+    // Poll every 1s up to 30s. Cheap enough — trashing is rare.
+    for (; attempts < 30; attempts++) {
+      final items = await client.getTrashContent(limit: 200);
+      if (items.any((t) => t['uuid'] == fileUuid)) {
+        latency = stopwatch.elapsed;
+        break;
+      }
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    stopwatch.stop();
+
+    if (latency != null) {
+      print('📊 LIVE: trash-listing latency ${latency.inMilliseconds} ms '
+          '(${attempts + 1} attempts)');
+    } else {
+      print('📊 LIVE: trashed file did NOT surface in 30s — backend lag '
+          'has worsened or the trash index is degraded.');
+    }
+
+    // Cleanup: permanently delete to avoid trash-bin debris.
+    try {
+      await client.deletePermanently(fileUuid, 'file');
+    } catch (_) {/* swallow */}
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  liveTest('setFileTimestamp known-broken marker (gateway 409)', () async {
+    // NEW gateway gap surfaced while expanding the Phase 9.6
+    // marker set: PUT /files/{uuid}/meta with the (required by
+    // the documented contract) plainName + type echo triggers a
+    // 409 "A file with this name already exists in this location"
+    // even when echoing the file's own current name. The gateway
+    // appears to run a uniqueness check that doesn't exclude the
+    // file itself.
+    //
+    // Distinct from setFolderTimestamp: PUT /folders/{uuid}/meta
+    // accepts the same payload shape (and silently ignores the
+    // mtime — see the folder marker below), no 409.
+    //
+    // Asserts the *current broken behavior*: setFileTimestamp
+    // throws with 409. Fires if Internxt fixes the uniqueness
+    // check (then we'd start checking whether mtime is honored,
+    // matching the folder marker).
+    final stem = _uniqueName('mtime-file');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      w.file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final initial = await client.resolvePath('$_sentinelPath/$stem.txt');
+    final fileUuid = initial['uuid'] as String;
+
+    final targetMtime = DateTime.utc(2021, 6, 1, 8, 15, 30);
+
+    expect(
+      () => client.setFileTimestamp(fileUuid, targetMtime),
+      throwsA(predicate((e) => e.toString().contains('409'))),
+      reason: 'setFileTimestamp no longer 409s — the gateway uniqueness '
+          'check has changed. Remove this marker and check whether mtime '
+          'is now honored end-to-end.',
+    );
   });
 
   liveTest('setFolderTimestamp known-broken marker (Phase 9.6)', () async {

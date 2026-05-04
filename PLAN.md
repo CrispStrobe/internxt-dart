@@ -33,10 +33,11 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - **Re-enable `strict-inference` / `strict-raw-types`.** Currently off in `analysis_options.yaml`. Phase 9.3 turned on `strict-casts` but the other two were producing noise on dynamic JSON. Now that the public surface is settled (Phase 6.a + 6.c shipped), worth revisiting. ~2h.
 - **Publish to pub.dev.** The package is consumed via path dep by cloud-dart. Publishing v0.1.0 → v0.2.0 (with the B1–B5 changes) would let cloud-dart pin a version. Wait until the API has had a couple of weeks of cloud-dart usage to surface any rough edges first.
 
-**Open — small follow-ons (notes, not session-sized work):**
-- **Trash-listing eventual-consistency.** The `trash lifecycle` live test uses a best-effort 4-attempt retry (~6s) to surface a just-trashed file in `getTrashContent`. Worth understanding precisely (and tightening the test) if Internxt fixes the backend lag.
-- **`/users/me` regression marker.** Already pinned as a live test (`auth.dart`'s `getUserInfo` is expected to throw 404). No action needed unless the endpoint comes online.
-- **`setFolderTimestamp` known-broken marker.** Gateway silently overwrites `modificationTime` on PUT-meta (Phase 9.6 finding). Fires if the gateway behavior changes.
+**Open — small follow-ons (live regression markers, all currently firing as expected):**
+- **Trash-listing latency.** Dedicated probe (`trash listing eventual-consistency latency` live test) measures: as of 2026-05-04, the trash index lag is **>30s** — a freshly-trashed file does NOT appear in `/storage/trash/paginated` within 30s of polling. The lifecycle test's 6s best-effort retry was always doomed. The probe will print the actual latency if/when Internxt fixes it.
+- **`/users/me` 404.** Tightened to require a 404 specifically (was: any of {404, Not Found, Cannot GET}). Fires if the endpoint comes online.
+- **`setFolderTimestamp` gateway-overwrite.** Gateway silently overwrites `modificationTime` with `now()` on PUT-meta. Pinned: `actualMtime - targetMtime > 60s`. Fires if the gateway honors the requested value.
+- **`setFileTimestamp` 409 conflict.** NEW finding (parallel marker added 2026-05-04). PUT /files/{uuid}/meta with the documented plainName+type echo triggers a 409 "name already exists" — gateway uniqueness check doesn't exclude the file itself. Distinct from the folder behavior; this path can't even attempt the timestamp update. See LEARNINGS.md "On gateway gaps in PUT meta operations".
 
 **Open — cloud-dart side:**
 - **Add GitHub Actions to cloud-dart.** No CI workflow currently. Would catch any future drift like the placeholder signature mismatch we fixed during 6.c. Mirror internxt-dart's `.github/workflows/ci.yml`: `flutter analyze` + `flutter test` on push/PR to main. Skip live tests (need creds). ~30 min.

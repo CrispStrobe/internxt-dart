@@ -190,6 +190,37 @@ Same backend behaviour as the Python sibling:
   minute) — endpoints return 5xx with non-JSON bodies.
 - **Eventual consistency** on the path cache after server-side
   mutations — usually <1s, occasionally 2-5s under load.
+- **Trash index lag** is much larger than the path cache — measured
+  at >30s consistently in a dedicated probe (`trash listing
+  eventual-consistency latency` live test). A freshly-trashed file
+  doesn't surface in `/storage/trash/paginated` for at least that
+  long. The lifecycle test's 6s retry was always doomed; the
+  restore-then-find step is what actually verifies the lifecycle.
+
+## On gateway gaps in PUT meta operations (Phase 9.6 + later)
+
+Two distinct shapes of brokenness in the metadata-update path,
+documented as live "known-broken" markers:
+
+- **`setFolderTimestamp`**: PUT /folders/{uuid}/meta accepts
+  `modificationTime` but silently overwrites it with `now()`
+  server-side. Direct GET-PUT-GET inspection confirms the
+  requested value never lands. The Dart code is correctly
+  implemented (echoes plainName + sends mtime per the documented
+  contract); the gateway just ignores it.
+- **`setFileTimestamp`**: PUT /files/{uuid}/meta with the same
+  payload shape (plainName + type + modificationTime) returns
+  **409 Conflict** "A file with this name already exists in this
+  location" — even when echoing the file's own current name. The
+  gateway runs a uniqueness check that doesn't exclude the file
+  itself. This is a different bug than the folder version; the
+  file path can't even *attempt* the timestamp update, where the
+  folder path silently no-ops.
+
+Both have dedicated live regression markers that fire when the
+gateway behavior changes. The implementation in `lib/drive.dart`
+is preserved as-is so the day either path comes online, the code
+is already correct.
 
 The mitigation in Dart: `package:test`'s built-in `retry:` parameter
 (2 retries) wrapped around each live test:
