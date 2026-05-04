@@ -149,12 +149,14 @@ Future<http.Response> makeRequest(
 Future<Map<String, dynamic>> getFileMetadata(
   String driveApiUrl,
   String? bearerToken,
-  String fileUuid,
-) async {
+  String fileUuid, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'GET',
     Uri.parse('$driveApiUrl/files/$fileUuid/meta'),
     bearerToken: bearerToken,
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }

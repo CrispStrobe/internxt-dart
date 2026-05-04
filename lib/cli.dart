@@ -2295,6 +2295,29 @@ class InternxtClient {
         preserveTimestamps: preserveTimestamps,
       );
 
+  /// In-memory download returning just the decrypted bytes. For
+  /// consumers (image preview, Web download) that don't need the
+  /// metadata-rich shape from [downloadFile]. Streams the network
+  /// read so [onProgress] fires per HTTP chunk.
+  Future<Uint8List> downloadFileBytes(
+    String fileUuid,
+    String bridgeUser,
+    String userIdForAuth, {
+    void Function(int bytesDownloaded, int totalBytes)? onProgress,
+    http.Client? httpClient,
+  }) =>
+      inxt_download.downloadFileBytes(
+        driveApiUrl,
+        networkUrl,
+        newToken,
+        mnemonic!,
+        fileUuid,
+        bridgeUser,
+        userIdForAuth,
+        onProgress: onProgress,
+        httpClient: httpClient,
+      );
+
   Future<Map<String, dynamic>> downloadFileStreamed(
     String fileUuid,
     String destinationPath,

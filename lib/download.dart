@@ -47,8 +47,9 @@ Future<Map<String, dynamic>> getDownloadLinks(
   String bucketId,
   String fileId,
   String user,
-  String pass,
-) async {
+  String pass, {
+  http.Client? client,
+}) async {
   final response = await inxt_api.makeRequest(
     'GET',
     Uri.parse('$networkUrl/buckets/$bucketId/files/$fileId/info'),
@@ -57,6 +58,7 @@ Future<Map<String, dynamic>> getDownloadLinks(
     isNetworkAuth: true,
     networkUser: user,
     networkPass: pass,
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -126,6 +128,76 @@ Future<Map<String, dynamic>> downloadFile(
     'modificationTime': modificationTime,
     'preserveTimestamps': preserveTimestamps,
   };
+}
+
+/// In-memory single-file download returning just the decrypted
+/// bytes. Convenience wrapper for consumers (e.g. the cloud-dart
+/// Flutter app's image preview / Web download) that don't want
+/// the metadata-rich `Map` shape from [downloadFile].
+///
+/// Streams the encrypted payload chunk-by-chunk so [onProgress] can
+/// report bytes-downloaded / content-length during the network read.
+/// Decryption is still one-shot at the end (same constraint as
+/// [downloadFileStreamed] — AES-CTR streaming would require a
+/// different decrypt API).
+///
+/// `onProgress` is invoked with `(bytesDownloaded, totalBytes)` per
+/// HTTP chunk; `totalBytes` is `-1` if the response has no
+/// `Content-Length` header.
+Future<Uint8List> downloadFileBytes(
+  String driveApiUrl,
+  String networkUrl,
+  String? bearerToken,
+  String mnemonic,
+  String fileUuid,
+  String bridgeUser,
+  String userIdForAuth, {
+  void Function(int bytesDownloaded, int totalBytes)? onProgress,
+  http.Client? httpClient,
+}) async {
+  final metadata = await inxt_api.getFileMetadata(
+      driveApiUrl, bearerToken, fileUuid,
+      client: httpClient);
+  final fileSize = int.parse(metadata['size'].toString());
+  final bucketId = metadata['bucket'] as String;
+  final networkFileId = metadata['fileId'] as String;
+
+  final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
+  final links = await getDownloadLinks(
+      networkUrl, bucketId, networkFileId, bridgeUser, bridgePass,
+      client: httpClient);
+  final downloadUrl = links['shards'][0]['url'] as String;
+  final fileIndexHex = links['index'] as String;
+
+  final ownsClient = httpClient == null;
+  final client = httpClient ?? http.Client();
+  try {
+    final request = http.Request('GET', Uri.parse(downloadUrl));
+    final response = await client.send(request);
+    if (response.statusCode != 200) {
+      throw Exception(
+          'Failed to download file: ${response.statusCode}');
+    }
+
+    final total = response.contentLength ?? -1;
+    final builder = BytesBuilder(copy: false);
+    var downloaded = 0;
+    await for (final chunk in response.stream) {
+      builder.add(chunk);
+      downloaded += chunk.length;
+      if (onProgress != null) onProgress(downloaded, total);
+    }
+
+    final decryptedData = inxt_crypto.decryptStream(
+      builder.toBytes(),
+      mnemonic,
+      bucketId,
+      fileIndexHex,
+    );
+    return Uint8List.fromList(decryptedData.sublist(0, fileSize));
+  } finally {
+    if (ownsClient) client.close();
+  }
 }
 
 /// Streamed single-file download — same flow as [downloadFile] but
