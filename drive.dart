@@ -206,6 +206,78 @@ Future<void> deletePermanently(
   );
 }
 
+/// Restore an item from trash to a destination folder. Invalidates
+/// the destination folder's listing cache so the next list call
+/// surfaces the restored item.
+///
+/// Implementation note: the Python sibling documents
+/// `POST /trash/restore` for this, but as of the Phase 8 audit
+/// that endpoint returns 404 ("Cannot POST /api/trash/restore")
+/// on the live gateway. The actual mechanism Internxt exposes is
+/// `PATCH /files/{uuid}` (or `/folders/{uuid}`) with a
+/// `destinationFolder` field — which both un-trashes AND moves in
+/// one call. We try the documented endpoint first (in case it
+/// comes online later) and fall back to the patch-with-destination
+/// path on 404.
+///
+/// `destinationFolderUuid` is required for the fallback path
+/// because move-based restore needs an explicit target. Pass the
+/// original parent UUID (if known) or any folder where the user
+/// wants the restored item to land.
+Future<Map<String, dynamic>> restoreFromTrash(
+  String driveApiUrl,
+  String? bearerToken,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String itemUuid,
+  String itemType, {
+  String? destinationFolderUuid,
+}) async {
+  // Try the documented endpoint first.
+  try {
+    final result = await inxt_api.restoreItem(
+      driveApiUrl,
+      bearerToken,
+      itemUuid,
+      itemType,
+      destinationFolderUuid: destinationFolderUuid,
+    );
+    if (destinationFolderUuid != null) {
+      inxt_cache.invalidateCache(
+          folderCache, fileCache, destinationFolderUuid);
+    }
+    return result;
+  } on Exception catch (e) {
+    final isNotFound = e.toString().contains('404');
+    if (!isNotFound) rethrow;
+    // Fall through to the move-based path.
+  }
+
+  if (destinationFolderUuid == null) {
+    throw Exception(
+        '/trash/restore endpoint not available on this gateway, '
+        'and no destinationFolderUuid was provided to fall back to '
+        'a move-based restore. Pass an explicit destination folder.');
+  }
+
+  if (itemType == 'file') {
+    await moveFile(driveApiUrl, bearerToken, folderCache, fileCache,
+        itemUuid, destinationFolderUuid);
+  } else {
+    await moveFolder(driveApiUrl, bearerToken, folderCache, fileCache,
+        itemUuid, destinationFolderUuid);
+  }
+  return {'success': true, 'restoredVia': 'move-fallback'};
+}
+
+/// Permanently empty the trash. **Destructive** — there is no
+/// recovery after this. Caller must confirm before invoking.
+Future<void> clearTrashAll(
+  String driveApiUrl,
+  String? bearerToken,
+) =>
+    inxt_api.clearTrash(driveApiUrl, bearerToken);
+
 /// Paginated trash listing — fetches one page of files AND one page
 /// of folders at the given offset, returns the combined list. Each
 /// `type=files` / `type=folders` call is independently fault-tolerant:

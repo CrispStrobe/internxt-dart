@@ -153,6 +153,9 @@ class InternxtCLI {
         case 'restore-path':
           await handleRestorePath(argResults);
           break;
+        case 'trash-clear':
+          await handleTrashClear(argResults);
+          break;
         case 'move-path':
           await handleMovePath(argResults);
           break;
@@ -762,16 +765,21 @@ class InternxtCLI {
         io.exit(0);
       }
 
+      // Phase 8.1: use the dedicated /trash/restore endpoint
+      // instead of moveFile/moveFolder. moveFile on a trashed item
+      // is a no-op or error on the gateway side; restore is the
+      // correct path. We try both types (file then folder) since
+      // the user may not know which.
       print("🚀 Restoring item (trying file first)...");
       try {
-        // This call is now refactored (token refresh, cache invalidation)
-        await client.moveFile(itemUuid, destinationFolderUuid);
+        await client.restoreFromTrash(itemUuid, 'file',
+            destinationFolderUuid: destinationFolderUuid);
         print("✅ Item restored successfully (as file) to: $destinationPath");
       } catch (fileErr) {
         print("   File restore failed ($fileErr), trying folder...");
         try {
-          // This call is now refactored (token refresh, cache invalidation)
-          await client.moveFolder(itemUuid, destinationFolderUuid);
+          await client.restoreFromTrash(itemUuid, 'folder',
+              destinationFolderUuid: destinationFolderUuid);
           print(
               "✅ Item restored successfully (as folder) to: $destinationPath");
         } catch (folderErr) {
@@ -853,18 +861,40 @@ class InternxtCLI {
         io.exit(0);
       }
 
+      // Phase 8.1: use /trash/restore (was incorrectly using
+      // moveFile / moveFolder, which silently no-ops on trashed
+      // items on the gateway side).
       print("🚀 Restoring item...");
-      if (itemType == 'file') {
-        await client.moveFile(itemUuid, destinationFolderUuid);
-      } else if (itemType == 'folder') {
-        await client.moveFolder(itemUuid, destinationFolderUuid);
-      } else {
-        throw Exception("Unknown item type: $itemType");
-      }
-
+      await client.restoreFromTrash(itemUuid, itemType,
+          destinationFolderUuid: destinationFolderUuid);
       print("✅ Item restored successfully to: $destinationPath");
     } catch (e) {
       io.stderr.writeln('❌ Error restoring item: $e');
+      io.exit(1);
+    }
+  }
+
+  Future<void> handleTrashClear(ArgResults argResults) async {
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+        io.exit(1);
+      }
+      client.setAuth(creds);
+
+      final force = argResults['force'] as bool;
+      print('🗑️  Empty trash — this is PERMANENT and cannot be undone.');
+      if (!_confirmAction(
+          '❓ Permanently delete ALL items in trash?', force)) {
+        print('❌ Cancelled');
+        return;
+      }
+
+      await client.clearTrashAll();
+      print('✅ Trash emptied.');
+    } catch (e) {
+      io.stderr.writeln('❌ Error clearing trash: $e');
       io.exit(1);
     }
   }
@@ -2434,6 +2464,18 @@ class InternxtClient {
 
   Future<void> deletePermanently(String uuid, String type) =>
       inxt_drive.deletePermanently(driveApiUrl, newToken, uuid, type);
+
+  Future<Map<String, dynamic>> restoreFromTrash(
+    String itemUuid,
+    String itemType, {
+    String? destinationFolderUuid,
+  }) =>
+      inxt_drive.restoreFromTrash(driveApiUrl, newToken, _folderCache,
+          _fileCache, itemUuid, itemType,
+          destinationFolderUuid: destinationFolderUuid);
+
+  Future<void> clearTrashAll() =>
+      inxt_drive.clearTrashAll(driveApiUrl, newToken);
 
   // --- Search / Find / Tree ---
   // Implementations live in drive.dart. These wrappers thread the

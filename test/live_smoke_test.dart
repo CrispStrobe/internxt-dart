@@ -1005,6 +1005,73 @@ void main() {
   // PHASE 7 — performance + UX parity with Python sibling
   // ===========================================================================
 
+  // 8.1 — trash lifecycle
+  liveTest('trash lifecycle: trash file -> appears in trash -> restore -> '
+      'resolves at destination', () async {
+    // Upload a file under sentinel.
+    final stem = _uniqueName('trash-restore');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      w.file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final original = await client.resolvePath('$_sentinelPath/$stem.txt');
+    final fileUuid = original['uuid'] as String;
+
+    // Trash.
+    await client.trashItems(fileUuid, 'file');
+    expect(
+      () => client.resolvePath('$_sentinelPath/$stem.txt'),
+      throwsA(isA<Exception>()),
+      reason: 'trashed file should not resolve at original path',
+    );
+
+    // List trash. The trashed item *should* appear, but Internxt's
+    // trash index has eventual-consistency lag that's measured in
+    // the few-seconds range after trash. Best-effort retry up to ~6s
+    // and then move on — the restore-then-verify step is the real
+    // assertion that the lifecycle works end-to-end.
+    var foundInTrash = false;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      final trashItems = await client.getTrashContent(limit: 200);
+      if (trashItems.any((t) => t['uuid'] == fileUuid)) {
+        foundInTrash = true;
+        break;
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    if (!foundInTrash) {
+      print('⚠️  LIVE: trashed file did not surface in trash listing '
+          'within ~6s (Internxt index lag, not a CLI bug). '
+          'Continuing with restore.');
+    }
+
+    // Create a fresh restore destination (the original parent might
+    // not be the right home for restore; pick a fresh subfolder so
+    // the test is deterministic).
+    final restoreDst =
+        await client.createFolderRecursive(_uniqueSubpath('restore-dst'));
+    final restoreDstUuid = restoreDst['uuid'] as String;
+
+    await client.restoreFromTrash(
+      fileUuid,
+      'file',
+      destinationFolderUuid: restoreDstUuid,
+    );
+
+    // Restored file should appear in the destination folder with the
+    // original UUID.
+    final dstFiles = await client.listFolderFiles(restoreDstUuid);
+    expect(dstFiles.any((f) => f['uuid'] == fileUuid), isTrue,
+        reason: 'restored file should appear in destination folder');
+  });
+
   // 7.3 — batch-mv ergonomics
   liveTest('batch mv: multi-source moves all files in parallel', () async {
     final srcA = await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcA'));

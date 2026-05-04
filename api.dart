@@ -264,6 +264,50 @@ Future<Map<String, dynamic>> replaceFile(
   return json.decode(response.body);
 }
 
+/// POST /trash/restore — move an item out of trash.
+///
+/// `destinationFolderUuid` is optional; null means "restore to the
+/// original parent folder". Internxt's gateway accepts the original
+/// parent if it still exists; if not, the call typically fails or
+/// silently no-ops, so prefer to pass an explicit destination when
+/// the original parent might be gone.
+Future<Map<String, dynamic>> restoreItem(
+  String driveApiUrl,
+  String? bearerToken,
+  String itemUuid,
+  String itemType, {
+  String? destinationFolderUuid,
+}) async {
+  final response = await makeRequest(
+    'POST',
+    Uri.parse('$driveApiUrl/trash/restore'),
+    bearerToken: bearerToken,
+    body: json.encode({
+      'uuid': itemUuid,
+      'type': itemType,
+      if (destinationFolderUuid != null)
+        'destinationFolderUuid': destinationFolderUuid,
+    }),
+  );
+  return json.decode(response.body);
+}
+
+/// DELETE /storage/trash/all — permanently empty the trash.
+///
+/// **Destructive.** Items are gone for good (Internxt does NOT
+/// retain a recovery copy past this call). The CLI surface should
+/// always confirm before invoking this.
+Future<void> clearTrash(
+  String driveApiUrl,
+  String? bearerToken,
+) async {
+  await makeRequest(
+    'DELETE',
+    Uri.parse('$driveApiUrl/storage/trash/all'),
+    bearerToken: bearerToken,
+  );
+}
+
 /// GET /users/me — current user info.
 ///
 /// REGRESSION MARKER: as of the Phase 5.a port, the live backend
