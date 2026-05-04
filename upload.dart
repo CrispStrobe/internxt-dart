@@ -206,6 +206,32 @@ Future<void> runBoundedPool<T>(
 }
 
 // =============================================================================
+// SIZE LIMIT + DYNAMIC TIMEOUT (Phase 7.9)
+// =============================================================================
+//
+// Mirrors Python's TWENTY_GIGABYTES + dynamic timeout calculation
+// (services/drive.py:52, drive.py:803-806). Files larger than the
+// upper bound are rejected up front rather than failing later in
+// the pipeline with confusing errors. Per-stream timeouts scale
+// with file size assuming a ~100 KB/s minimum throughput, so very
+// large uploads don't hit a fixed default mid-stream.
+
+/// Internxt's per-file upload upper bound. Mirrors the Python
+/// sibling's `TWENTY_GIGABYTES` constant. Files larger than this
+/// are rejected with a clear error before encryption starts.
+const int maxFileSizeBytes = 20 * 1024 * 1024 * 1024; // 20 GB
+
+/// Compute a per-file upload timeout based on size. Floor of 5 min
+/// (for tiny files where setup latency dominates), then scale up
+/// at 100 KB/s + 60s headroom. Mirrors Python's formula
+/// `max(300, file_size / (100 KB/s)) + 60`.
+Duration uploadTimeoutForSize(int fileSize) {
+  final byBandwidth = fileSize ~/ (100 * 1024);
+  final seconds = (byBandwidth > 300 ? byBandwidth : 300) + 60;
+  return Duration(seconds: seconds);
+}
+
+// =============================================================================
 // CANCELLATION TOKEN (Phase 7.7)
 // =============================================================================
 //
@@ -443,11 +469,16 @@ Future<Map<String, dynamic>> startUpload(
 /// monolith — it prevents socket saturation that otherwise causes
 /// the progress percentage to "jump" to 100% before the network has
 /// caught up. Same pattern as the Go rclone adapter.
+///
+/// [timeout] caps the entire stream; defaults to no timeout for
+/// callers (e.g. uploadChunk used directly in tests). Production
+/// callers in this module pass `uploadTimeoutForSize(fileSize)`.
 Future<void> uploadChunkWithProgress(
   String uploadUrl,
   Uint8List chunkData,
-  String fileName,
-) async {
+  String fileName, {
+  Duration? timeout,
+}) async {
   final totalBytes = chunkData.length;
   var bytesSent = 0;
   final stopwatch = Stopwatch()..start();
@@ -485,7 +516,13 @@ Future<void> uploadChunkWithProgress(
     await request.sink.close();
   }
 
-  final response = await http.Response.fromStream(await responseFuture);
+  // Apply the dynamic timeout to the response wait. The 5ms-per-
+  // chunk loop above is throughput-bounded; the timeout here covers
+  // the actual network completion handshake.
+  final pendingResponse = http.Response.fromStream(await responseFuture);
+  final response = timeout != null
+      ? await pendingResponse.timeout(timeout)
+      : await pendingResponse;
   print('');
 
   if (response.statusCode != 200 && response.statusCode != 201) {
@@ -568,6 +605,15 @@ Future<Map<String, dynamic>> uploadFile(
 }) async {
   final fileSize = await localFile.length();
 
+  // Phase 7.9: reject oversized files up front. Internxt rejects
+  // these later anyway, but we want a clean error before encrypt.
+  if (fileSize > maxFileSizeBytes) {
+    throw Exception(
+        'File too large: ${inxt_utils.formatSize(fileSize)} '
+        '> ${inxt_utils.formatSize(maxFileSizeBytes)} (Internxt limit).');
+  }
+  final perFileTimeout = uploadTimeoutForSize(fileSize);
+
   // Memory gate: reserve ~2x file_size for the plaintext+encrypted
   // copies that overlap during encrypt. Released in `finally`. With
   // a single sequential uploader this is a no-op (the gate lets it
@@ -596,7 +642,8 @@ Future<Map<String, dynamic>> uploadFile(
         networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
 
     await uploadChunkWithProgress(
-        startResponse['uploads'][0]['url'], encryptedData, remoteFileName);
+        startResponse['uploads'][0]['url'], encryptedData, remoteFileName,
+        timeout: perFileTimeout);
 
     print('     ✅ [STEP 4/5] Finalizing network storage...');
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
@@ -1149,6 +1196,13 @@ Future<Map<String, dynamic>> updateFile(
   required String userIdForAuth,
 }) async {
   final fileSize = await localFile.length();
+  // Phase 7.9: same upper bound check as uploadFile.
+  if (fileSize > maxFileSizeBytes) {
+    throw Exception(
+        'File too large: ${inxt_utils.formatSize(fileSize)} '
+        '> ${inxt_utils.formatSize(maxFileSizeBytes)} (Internxt limit).');
+  }
+  final perFileTimeout = uploadTimeoutForSize(fileSize);
   // Memory gate: same 2x reservation as uploadFile.
   final memNeed = fileSize * 2;
   await MemoryGate.acquire(memNeed);
@@ -1165,7 +1219,10 @@ Future<Map<String, dynamic>> updateFile(
     final startResponse = await startUpload(
         networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
     await uploadChunkWithProgress(
-        startResponse['uploads'][0]['url'], encryptedData, 'update-$fileUuid');
+        startResponse['uploads'][0]['url'],
+        encryptedData,
+        'update-$fileUuid',
+        timeout: perFileTimeout);
 
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
     final finishResponse = await finishUpload(

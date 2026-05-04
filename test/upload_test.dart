@@ -130,6 +130,37 @@ void main() {
     });
   });
 
+  group('Size limit + dynamic timeout (Phase 7.9)', () {
+    test('maxFileSizeBytes is exactly 20 GB', () {
+      expect(maxFileSizeBytes, equals(20 * 1024 * 1024 * 1024));
+    });
+
+    test('uploadTimeoutForSize: floor of 5 min for tiny files', () {
+      // 1 KB at 100 KB/s → 0s, plus 60s headroom = 60s. But the
+      // floor is 300s + 60s = 360s.
+      expect(uploadTimeoutForSize(1024).inSeconds, equals(360));
+    });
+
+    test('uploadTimeoutForSize: scales linearly past the floor', () {
+      // 100 MB at 100 KB/s → 1024 sec, plus 60s = 1084s.
+      expect(uploadTimeoutForSize(100 * 1024 * 1024).inSeconds, equals(1084));
+    });
+
+    test('uploadTimeoutForSize: 1 GB → ~3 hours', () {
+      // 1 GB at 100 KB/s → ~10240 sec, plus 60s. The point is the
+      // timeout is generous — slow uploads don't trip it
+      // prematurely.
+      expect(uploadTimeoutForSize(1 * 1024 * 1024 * 1024).inSeconds,
+          greaterThan(10000));
+    });
+
+    test('uploadTimeoutForSize: 20 GB still produces a finite duration',
+        () {
+      expect(uploadTimeoutForSize(maxFileSizeBytes).inSeconds,
+          greaterThan(0));
+    });
+  });
+
   group('CancellationToken (Phase 7.7)', () {
     test('starts uncancelled', () {
       final t = CancellationToken();

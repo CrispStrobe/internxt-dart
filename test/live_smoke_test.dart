@@ -1285,6 +1285,30 @@ void main() {
         reason: 'second run should not duplicate files');
   });
 
+  // 7.9 — upper-bound size check is unit-tested in
+  // test/upload_test.dart. This live test only verifies the
+  // dynamic-timeout path doesn't break a normal upload (i.e. the
+  // small files used by the suite finish well within the 300s+60s
+  // floor — no test should now fail on a "too tight" timeout).
+  liveTest('uploadFile under dynamic timeout completes normally',
+      () async {
+    // Just a regular small upload. If the new timeout machinery is
+    // wrong (e.g. timeout always 0), this would fail.
+    final stem = _uniqueName('timeout-probe');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 4 * 1024);
+    final result = await client.uploadSingleItem(
+      w.file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    expect(result, equals('uploaded'));
+  });
+
   liveTest('upload() cancellation: pre-cancelled token uploads nothing',
       () async {
     final localDir =
