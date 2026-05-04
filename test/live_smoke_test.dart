@@ -950,6 +950,70 @@ void main() {
         reason: 'bytes changed despite skip');
   });
 
+  liveTest('upload with onConflict=safety_pattern keeps old as .bak',
+      () async {
+    final testDir = _uniqueSubpath('conflict-safety');
+    final dirInfo = await client.createFolderRecursive(testDir);
+
+    final stem = _uniqueName('safety-target');
+    final wV1 = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      wV1.file,
+      testDir,
+      dirInfo['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final initial = await client.resolvePath('$testDir/$stem.txt');
+    final initialUuid = initial['uuid'] as String;
+
+    // Re-upload with safety_pattern. Different content size on
+    // purpose so we can tell the new bytes from the old.
+    final wV2 = _writePayload(tmpRoot, '${stem}_v2.txt', sizeBytes: 128);
+    final result = await client.uploadSingleItem(
+      wV2.file,
+      testDir,
+      dirInfo['uuid'] as String,
+      'safety_pattern',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    expect(result, equals('uploaded'));
+
+    // After safety-pattern:
+    //   <stem>.txt     → new file, new uuid, new bytes
+    //   <stem>.txt.bak → original uuid, original bytes
+    final after = await client.resolvePath('$testDir/$stem.txt');
+    expect(after['uuid'], isNot(equals(initialUuid)),
+        reason: 'safety_pattern should produce a NEW uuid at the original path');
+
+    final bak = await client.resolvePath('$testDir/$stem.txt.bak');
+    expect(bak['uuid'], equals(initialUuid),
+        reason: '.bak should retain the ORIGINAL file uuid');
+
+    // Bytes round-trip: original now lives at .bak, new lives at
+    // the original path.
+    final newDl = await client.downloadFile(
+      after['uuid'] as String,
+      _creds!['bridgeUser'] as String,
+      _creds!['userId'].toString(),
+    );
+    final bakDl = await client.downloadFile(
+      bak['uuid'] as String,
+      _creds!['bridgeUser'] as String,
+      _creds!['userId'].toString(),
+    );
+    expect(newDl['data'] as Uint8List, equals(wV2.payload),
+        reason: 'new file should contain v2 bytes');
+    expect(bakDl['data'] as Uint8List, equals(wV1.payload),
+        reason: '.bak should retain v1 bytes');
+  });
+
   liveTest('upload with onConflict=overwrite trashes old + uploads new',
       () async {
     final testDir = _uniqueSubpath('conflict-overwrite');

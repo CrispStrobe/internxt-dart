@@ -23,6 +23,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -746,6 +747,41 @@ Future<String> uploadSingleItem(
           return 'error';
         }
       }
+    } else if (onConflict == 'safety_pattern') {
+      // Phase 8.4: non-destructive overwrite. Upload local file
+      // under a temp name, rename existing target to <name>.bak,
+      // then promote the temp upload to the original name. If any
+      // step fails, the previous version is recoverable from the
+      // .bak rename or the temp upload — never deleted.
+      if (existingItemInfo['type'] == 'folder') {
+        print(
+            '  -> ❌ Cannot safety-pattern over a folder: $fullTargetRemotePath');
+        return 'error';
+      }
+      try {
+        final result = await _safetyPatternUpload(
+          networkUrl: networkUrl,
+          driveApiUrl: driveApiUrl,
+          bearerToken: bearerToken,
+          rootFolderId: rootFolderId,
+          mnemonic: mnemonic,
+          bucketId: bucketId,
+          folderCache: folderCache,
+          fileCache: fileCache,
+          localFile: localFile,
+          targetFolderUuid: targetFolderUuid,
+          targetRemoteParentPath: targetRemoteParentPath,
+          existingFileUuid: existingItemInfo['uuid'] as String,
+          originalFilename: effectiveRemoteFilename,
+          bridgeUser: bridgeUser,
+          userIdForAuth: userIdForAuth,
+          preserveTimestamps: preserveTimestamps,
+        );
+        return result;
+      } catch (e) {
+        print('  -> ❌ Safety-pattern upload failed: $e');
+        return 'error';
+      }
     }
   }
 
@@ -1335,4 +1371,139 @@ Future<Map<String, dynamic>> copyItem(
       // best-effort cleanup; OS will reclaim eventually
     }
   }
+}
+
+// =============================================================================
+// SAFETY-PATTERN UPLOAD (Phase 8.4)
+// =============================================================================
+//
+// Non-destructive overwrite. Mirrors Python's safety_pattern policy.
+// Sequence:
+//   1. Upload local file with a temp filename: `<original>.<token>.tmp`
+//   2. Rename existing target so its display name becomes
+//      `<original>.bak` (plainName=`<originalDisplay>`, type=`bak`).
+//   3. Rename the temp upload back to the original filename.
+//
+// If step 2 fails after step 1: user has the new upload under a
+// `.tmp` name + the original at its original name. Manual cleanup.
+// If step 3 fails after step 2: user has the original under `.bak`
+// + the new upload under `.tmp`. Manual cleanup, but no data lost.
+
+/// Internal helper for the safety-pattern branch in
+/// uploadSingleItem. Returns 'uploaded' on success, throws on
+/// failure (caller wraps as 'error').
+Future<String> _safetyPatternUpload({
+  required String networkUrl,
+  required String driveApiUrl,
+  required String? bearerToken,
+  required String? rootFolderId,
+  required String mnemonic,
+  required String bucketId,
+  required Map<String, inxt_cache.CacheEntry> folderCache,
+  required Map<String, inxt_cache.CacheEntry> fileCache,
+  required io.File localFile,
+  required String targetFolderUuid,
+  required String targetRemoteParentPath,
+  required String existingFileUuid,
+  required String originalFilename,
+  required String bridgeUser,
+  required String userIdForAuth,
+  required bool preserveTimestamps,
+}) async {
+  // Compute the temp upload name. Add a random suffix so concurrent
+  // safety-pattern uploads to the same folder don't collide.
+  final rng = Random.secure();
+  final hex = List<String>.generate(
+          4, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0'))
+      .join();
+  final tempFilename = '$originalFilename.$hex.tmp';
+
+  // Compute plainName/type splits for the renames.
+  final origDot = originalFilename.lastIndexOf('.');
+  final origPlain =
+      origDot > 0 ? originalFilename.substring(0, origDot) : originalFilename;
+  final origType =
+      origDot > 0 ? originalFilename.substring(origDot + 1) : '';
+
+  // Read timestamps if requested.
+  String? creationTime;
+  String? modificationTime;
+  if (preserveTimestamps) {
+    try {
+      final stat = await localFile.stat();
+      modificationTime = stat.modified.toUtc().toIso8601String();
+      creationTime = stat.changed.toUtc().toIso8601String();
+    } catch (_) {/* best-effort */}
+  }
+
+  // Step 1: upload temp.
+  print('  -> 🛡️  Safety-pattern: uploading temp $tempFilename');
+  await uploadFile(
+    networkUrl,
+    driveApiUrl,
+    bearerToken,
+    mnemonic,
+    bucketId,
+    folderCache,
+    fileCache,
+    localFile,
+    targetFolderUuid,
+    tempFilename,
+    bridgeUser: bridgeUser,
+    userIdForAuth: userIdForAuth,
+    creationTime: creationTime,
+    modificationTime: modificationTime,
+  );
+
+  // Find the temp upload's UUID. Internxt's listing has eventual-
+  // consistency lag right after an upload — retry with backoff
+  // until we see it (or give up).
+  String? tempUuid;
+  for (var attempt = 0; attempt < 4 && tempUuid == null; attempt++) {
+    if (attempt > 0) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    inxt_cache.invalidateCache(folderCache, fileCache, targetFolderUuid);
+    final files = await inxt_drive.listFolderFiles(
+        driveApiUrl, bearerToken, fileCache, targetFolderUuid,
+        detailed: true);
+    for (final f in files) {
+      final name = (f['name'] ?? '') as String;
+      final ext = (f['fileType'] ?? '') as String;
+      final disp = ext.isNotEmpty ? '$name.$ext' : name;
+      if (disp == tempFilename) {
+        tempUuid = f['uuid'] as String;
+        break;
+      }
+    }
+  }
+  if (tempUuid == null) {
+    throw Exception(
+        'safety-pattern: temp upload landed but cannot be found in '
+        'parent listing after 4 attempts (~2s of eventual-consistency '
+        'lag exceeded)');
+  }
+
+  // Step 2: rename existing → <originalDisplay>.bak.
+  // The display name of the .bak version is `<originalFilename>.bak`,
+  // which maps to plainName=`<originalFilename>`, type=`bak`.
+  print('  -> 🛡️  Safety-pattern: renaming existing → $originalFilename.bak');
+  await inxt_drive.renameFile(driveApiUrl, bearerToken, folderCache, fileCache,
+      existingFileUuid, originalFilename, 'bak');
+  // Brief pause + cache flush before the next rename so Internxt's
+  // index sees the new name before the promotion lookup.
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  inxt_cache.invalidateCache(folderCache, fileCache, targetFolderUuid);
+
+  // Step 3: rename temp → original.
+  print('  -> 🛡️  Safety-pattern: promoting temp → $originalFilename');
+  await inxt_drive.renameFile(driveApiUrl, bearerToken, folderCache, fileCache,
+      tempUuid, origPlain, origType.isEmpty ? null : origType);
+  // Final flush so the test's resolvePath sees the new layout.
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+  inxt_cache.invalidateCache(folderCache, fileCache, targetFolderUuid);
+
+  print('  -> ✅ Safety-pattern complete: $originalFilename '
+      '($originalFilename.bak retains the previous version)');
+  return 'uploaded';
 }

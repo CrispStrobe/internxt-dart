@@ -66,8 +66,10 @@ class InternxtCLI {
       ..addOption('target',
           abbr: 't', help: 'Destination path on Internxt Drive')
       ..addOption('on-conflict',
-          help: 'Action if target exists (overwrite/skip)',
-          allowed: ['overwrite', 'skip'],
+          help: 'Action if target exists '
+              '(skip = leave; overwrite = trash old + upload new; '
+              'safety_pattern = rename old to .bak then upload)',
+          allowed: ['overwrite', 'skip', 'safety_pattern'],
           defaultsTo: 'skip')
       ..addMultiOption('include', help: 'Include only files matching pattern')
       ..addMultiOption('exclude', help: 'Exclude files matching pattern')
