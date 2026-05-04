@@ -129,6 +129,9 @@ class InternxtCLI {
         case 'config':
           await handleConfig();
           break;
+        case 'quota':
+          await handleQuota();
+          break;
         case 'test':
           await handleTest();
           break;
@@ -1848,6 +1851,43 @@ class InternxtCLI {
     print('');
     print('🔒 Crypto:');
     print('   APP_CRYPTO_SECRET: ${InternxtClient.appCryptoSecret}');
+  }
+
+  Future<void> handleQuota() async {
+    final creds = await config.readCredentials();
+    if (creds == null) {
+      io.stderr.writeln('❌ Not logged in. Use "dart cli.dart login" first.');
+      io.exit(1);
+    }
+    client.setAuth(creds);
+
+    final usage = await inxt_api.getStorageUsage(
+        InternxtClient.driveApiUrl, client.newToken);
+
+    // Internxt has historically returned a few different shapes
+    // (`{usage, limit}` is the current one; older versions used
+    // `{used, available}`). Probe a couple of common keys and
+    // dump the raw JSON if we can't recognize any.
+    final used = usage['usage'] ?? usage['used'];
+    final limit = usage['limit'] ?? usage['available'];
+
+    print('╔════════════════════════════════════════╗');
+    print('║         Storage Usage                  ║');
+    print('╚════════════════════════════════════════╝');
+    if (used != null && used is num) {
+      print('📊 Used:  ${formatSize(used.toInt())}');
+    }
+    if (limit != null && limit is num) {
+      print('📊 Limit: ${formatSize(limit.toInt())}');
+    }
+    if (used is num && limit is num && limit > 0) {
+      final pct = (used / limit * 100).toStringAsFixed(1);
+      print('📈 Used:  $pct%');
+    }
+    if (used == null && limit == null) {
+      print('⚠️  Unrecognized usage shape; raw response:');
+      print(usage);
+    }
   }
 
   Future<void> handleTest() async {
