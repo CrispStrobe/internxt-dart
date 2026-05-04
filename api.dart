@@ -137,7 +137,7 @@ Future<Map<String, dynamic>> getFileMetadata(
     Uri.parse('$driveApiUrl/files/$fileUuid/meta'),
     bearerToken: bearerToken,
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// GET /folders/{uuid}/meta — folder metadata (name, parentUuid,
@@ -152,7 +152,7 @@ Future<Map<String, dynamic>> getFolderMetadata(
     Uri.parse('$driveApiUrl/folders/$folderUuid/meta'),
     bearerToken: bearerToken,
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// PUT /files/{uuid}/meta — update mutable file metadata fields.
@@ -170,7 +170,7 @@ Future<Map<String, dynamic>> updateFileMetadata(
     bearerToken: bearerToken,
     body: json.encode(payload),
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// PUT /folders/{uuid}/meta — update mutable folder metadata fields
@@ -187,7 +187,7 @@ Future<Map<String, dynamic>> updateFolderMetadata(
     bearerToken: bearerToken,
     body: json.encode(payload),
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// GET /fuzzy/{query} — server-side fuzzy search across the user's
@@ -239,7 +239,7 @@ Future<Map<String, dynamic>> getStorageUsage(
     Uri.parse('$driveApiUrl/users/usage'),
     bearerToken: bearerToken,
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// PUT /files/{uuid} — replace a file's content while keeping its UUID.
@@ -261,7 +261,7 @@ Future<Map<String, dynamic>> replaceFile(
     bearerToken: bearerToken,
     body: json.encode(payload),
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// POST /trash/restore — move an item out of trash.
@@ -289,7 +289,7 @@ Future<Map<String, dynamic>> restoreItem(
         'destinationFolderUuid': destinationFolderUuid,
     }),
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// DELETE /storage/trash/all — permanently empty the trash.
@@ -328,5 +328,5 @@ Future<Map<String, dynamic>> getUserInfo(
     Uri.parse('$driveApiUrl/users/me'),
     bearerToken: bearerToken,
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }

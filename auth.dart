@@ -79,7 +79,7 @@ Future<Map<String, dynamic>> login(
     body: json.encode({'email': cleanEmail}),
     useAuth: false,
   );
-  final sKey = json.decode(secRes.body)['sKey'];
+  final sKey = json.decode(secRes.body)['sKey'] as String?;
   if (sKey == null) throw Exception('Login failed: Salt (sKey) missing.');
 
   final salt = inxt_crypto.decryptTextWithKey(sKey, appCryptoSecret);
@@ -126,7 +126,8 @@ Future<Map<String, dynamic>> login(
     'email': user['email'],
     'token': hydrated['token'],
     'newToken': hydrated['newToken'],
-    'mnemonic': inxt_crypto.decryptTextWithKey(user['mnemonic'], password),
+    'mnemonic':
+        inxt_crypto.decryptTextWithKey(user['mnemonic'] as String, password),
     'userId': user['userId'],
     'rootFolderId': user['rootFolderId'],
     'bridgeUser': user['bridgeUser'],
@@ -160,7 +161,7 @@ Future<Map<String, dynamic>> apiRefreshToken(
     if (response.statusCode != 200) {
       throw Exception('Token refresh failed: ${response.statusCode}');
     }
-    return json.decode(response.body);
+    return json.decode(response.body) as Map<String, dynamic>;
   } catch (e) {
     throw Exception('Token refresh failed: $e');
   }

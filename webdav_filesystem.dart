@@ -189,7 +189,7 @@ class InternxtFileSink implements io.IOSink {
         final result = await client.uploadSingleItem(
           localFileToUpload!,
           remoteParentPath,
-          parentResolved['uuid'],
+          parentResolved['uuid'] as String,
           'overwrite',
           bridgeUser: bridgeUser,
           userIdForAuth: userIdForAuth,
@@ -311,9 +311,9 @@ class InternxtFileSystem implements FileSystem {
       final metadata = resolved['metadata'] as Map<String, dynamic>;
       final isFolder = resolved['type'] == 'folder';
 
-      final modTimeStr = metadata['modificationTime'] ??
+      final modTimeStr = (metadata['modificationTime'] ??
           metadata['updatedAt'] ??
-          metadata['createdAt'];
+          metadata['createdAt']) as String?;
       final mTime = modTimeStr != null
           ? DateTime.parse(modTimeStr)
           : DateTime.fromMillisecondsSinceEpoch(0);
@@ -322,7 +322,7 @@ class InternxtFileSystem implements FileSystem {
         type: isFolder
             ? FileSystemEntityType.directory
             : FileSystemEntityType.file,
-        size: isFolder ? -1 : (metadata['size'] ?? 0),
+        size: isFolder ? -1 : ((metadata['size'] ?? 0) as int),
         modified: mTime,
       );
     } catch (e) {
@@ -423,17 +423,17 @@ class InternxtDirectory implements Directory {
         final resolved = await client.resolvePath(path);
         if (resolved['type'] != 'folder') return <FileSystemEntity>[];
 
-        final folders = await client.listFolders(resolved['uuid']);
-        final files = await client.listFolderFiles(resolved['uuid']);
+        final folders = await client.listFolders(resolved['uuid'] as String);
+        final files = await client.listFolderFiles(resolved['uuid'] as String);
 
         final List<FileSystemEntity> entities = [];
         for (var f in folders) {
-          final name = f['name'] ?? 'unknown_folder';
+          final name = (f['name'] ?? 'unknown_folder') as String;
           entities.add(fs.directory(p.join(path, name)));
         }
         for (var f in files) {
-          final name = f['name'] ?? 'unknown_file';
-          final type = f['fileType'] ?? '';
+          final name = (f['name'] ?? 'unknown_file') as String;
+          final type = (f['fileType'] ?? '') as String;
           final fullName = type.isNotEmpty ? '$name.$type' : name;
           entities.add(fs.file(p.join(path, fullName)));
         }
@@ -457,7 +457,7 @@ class InternxtDirectory implements Directory {
   Future<FileSystemEntity> delete({bool recursive = false}) async {
     client.log('WebDAV: DELETE (Folder) $path'); // <-- FIX
     final resolved = await client.resolvePath(path);
-    await client.trashItems(resolved['uuid'], 'folder');
+    await client.trashItems(resolved['uuid'] as String, 'folder');
     return this;
   }
 
@@ -471,13 +471,14 @@ class InternxtDirectory implements Directory {
     final resolved = await client.resolvePath(path);
 
     if (newParentPath == oldParentPath) {
-      await client.renameFolder(resolved['uuid'], newName);
+      await client.renameFolder(resolved['uuid'] as String, newName);
     } else {
       final destResolved = await client.resolvePath(newParentPath);
-      await client.moveFolder(resolved['uuid'], destResolved['uuid']);
+      await client.moveFolder(
+          resolved['uuid'] as String, destResolved['uuid'] as String);
 
       if (p.basename(path) != newName) {
-        await client.renameFolder(resolved['uuid'], newName);
+        await client.renameFolder(resolved['uuid'] as String, newName);
       }
     }
     return fs.directory(newPath);
@@ -503,7 +504,8 @@ class InternxtDirectory implements Directory {
     client.log('WebDAV: PROPPATCH (Folder) $path'); // <-- FIX
     try {
       final resolved = await client.resolvePath(path);
-      await client.setFolderTimestamp(resolved['uuid'], stat.modified);
+      await client.setFolderTimestamp(
+          resolved['uuid'] as String, stat.modified);
     } catch (e) {
       client.log('WebDAV: Error setting folder stat: $e'); // <-- FIX
       throw io.FileSystemException('Failed to set folder stat', path);
@@ -598,11 +600,11 @@ class InternxtFile implements File {
             path);
       }
       final result = await client.downloadFile(
-        resolved['uuid'],
+        resolved['uuid'] as String,
         bridgeUser,
         userIdForAuth,
       );
-      return result['data'];
+      return result['data'] as Uint8List;
     } catch (e) {
       client.log('WebDAV: Error reading $path: $e');
       throw io.FileSystemException('Error reading file', path);
@@ -637,7 +639,7 @@ class InternxtFile implements File {
   Future<FileSystemEntity> delete({bool recursive = false}) async {
     client.log('WebDAV: DELETE (File) $path'); // <-- FIX
     final resolved = await client.resolvePath(path);
-    await client.trashItems(resolved['uuid'], 'file');
+    await client.trashItems(resolved['uuid'] as String, 'file');
     return this;
   }
 
@@ -660,10 +662,12 @@ class InternxtFile implements File {
         newPlainName = newName;
         newFileType = null;
       }
-      await client.renameFile(resolved['uuid'], newPlainName, newFileType);
+      await client.renameFile(
+          resolved['uuid'] as String, newPlainName, newFileType);
     } else {
       final destResolved = await client.resolvePath(newParentPath);
-      await client.moveFile(resolved['uuid'], destResolved['uuid']);
+      await client.moveFile(
+          resolved['uuid'] as String, destResolved['uuid'] as String);
 
       if (p.basename(path) != newName) {
         final String newPlainName;
@@ -675,7 +679,8 @@ class InternxtFile implements File {
           newPlainName = newName;
           newFileType = null;
         }
-        await client.renameFile(resolved['uuid'], newPlainName, newFileType);
+        await client.renameFile(
+            resolved['uuid'] as String, newPlainName, newFileType);
       }
     }
     return fs.file(newPath);
@@ -713,7 +718,7 @@ class InternxtFile implements File {
     client.log('WebDAV: PROPPATCH (File) $path'); // <-- FIX
     try {
       final resolved = await client.resolvePath(path);
-      await client.setFileTimestamp(resolved['uuid'], stat.modified);
+      await client.setFileTimestamp(resolved['uuid'] as String, stat.modified);
     } catch (e) {
       client.log('WebDAV: Error setting file stat: $e'); // <-- FIX
       throw io.FileSystemException('Failed to set file stat', path);

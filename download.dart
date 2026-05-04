@@ -58,7 +58,7 @@ Future<Map<String, dynamic>> getDownloadLinks(
     networkUser: user,
     networkPass: pass,
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// In-memory single-file download.
@@ -80,19 +80,19 @@ Future<Map<String, dynamic>> downloadFile(
   print('   📋 Fetching file metadata...');
   final metadata =
       await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
-  final bucketId = metadata['bucket'];
-  final networkFileId = metadata['fileId'];
+  final bucketId = metadata['bucket'] as String;
+  final networkFileId = metadata['fileId'] as String;
 
   final fileSize = metadata['size'] is int
       ? metadata['size'] as int
       : int.tryParse(metadata['size'].toString()) ?? 0;
 
-  final fileName = metadata['plainName'] ?? 'file';
-  final fileType = metadata['type'] ?? '';
+  final fileName = (metadata['plainName'] ?? 'file') as String;
+  final fileType = (metadata['type'] ?? '') as String;
   final filename = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
 
   final modificationTime =
-      metadata['modificationTime'] ?? metadata['updatedAt'];
+      (metadata['modificationTime'] ?? metadata['updatedAt']) as String?;
 
   print('   📄 File: $filename');
   print('   📊 Size: ${inxt_utils.formatSize(fileSize)}');
@@ -102,8 +102,8 @@ Future<Map<String, dynamic>> downloadFile(
   print('   🔗 Fetching download links...');
   final linksResponse = await getDownloadLinks(
       networkUrl, bucketId, networkFileId, bridgeUser, bridgePass);
-  final downloadUrl = linksResponse['shards'][0]['url'];
-  final fileIndexHex = linksResponse['index'];
+  final downloadUrl = linksResponse['shards'][0]['url'] as String;
+  final fileIndexHex = linksResponse['index'] as String;
 
   print('   ☁️  Downloading encrypted data...');
   final downloadResponse = await http.get(Uri.parse(downloadUrl));
@@ -150,15 +150,15 @@ Future<Map<String, dynamic>> downloadFileStreamed(
   final metadata =
       await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
   final fileSize = int.parse(metadata['size'].toString());
-  final fileName = metadata['plainName'] ?? 'file';
-  final fileType = metadata['type'] ?? '';
+  final fileName = (metadata['plainName'] ?? 'file') as String;
+  final fileType = (metadata['type'] ?? '') as String;
   final fullFileName = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
 
   final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
-  final links = await getDownloadLinks(networkUrl, metadata['bucket'],
-      metadata['fileId'], bridgeUser, bridgePass);
-  final downloadUrl = links['shards'][0]['url'];
-  final fileIndexHex = links['index'];
+  final links = await getDownloadLinks(networkUrl, metadata['bucket'] as String,
+      metadata['fileId'] as String, bridgeUser, bridgePass);
+  final downloadUrl = links['shards'][0]['url'] as String;
+  final fileIndexHex = links['index'] as String;
 
   final client = http.Client();
   final request = http.Request('GET', Uri.parse(downloadUrl));
@@ -182,7 +182,7 @@ Future<Map<String, dynamic>> downloadFileStreamed(
   final decryptedData = inxt_crypto.decryptStream(
       Uint8List.fromList(encryptedBuffer),
       mnemonic,
-      metadata['bucket'],
+      metadata['bucket'] as String,
       fileIndexHex);
 
   final file = io.File(destinationPath);
@@ -240,8 +240,8 @@ Future<void> downloadPath(
 
   if (itemInfo['type'] == 'file') {
     final metadata = itemInfo['metadata'] as Map<String, dynamic>;
-    final plainName = metadata['name'] ?? 'file';
-    final fileType = metadata['fileType'] ?? '';
+    final plainName = (metadata['name'] ?? 'file') as String;
+    final fileType = (metadata['fileType'] ?? '') as String;
     final remoteFilename =
         fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
 
@@ -275,18 +275,19 @@ Future<void> downloadPath(
       networkUrl,
       bearerToken,
       mnemonic,
-      itemInfo['uuid'],
+      itemInfo['uuid'] as String,
       bridgeUser,
       userIdForAuth,
       preserveTimestamps: preserveTimestamps,
     );
 
     await localFile.parent.create(recursive: true);
-    await localFile.writeAsBytes(downloadResult['data']);
+    await localFile.writeAsBytes(downloadResult['data'] as Uint8List);
 
     if (preserveTimestamps && downloadResult['modificationTime'] != null) {
       try {
-        final mTime = DateTime.parse(downloadResult['modificationTime']);
+        final mTime =
+            DateTime.parse(downloadResult['modificationTime'] as String);
         await localFile.setLastModified(mTime);
         print('   🕐 Set modification time: $mTime');
       } catch (e) {
@@ -335,8 +336,8 @@ Future<void> downloadPath(
             detailed: true);
 
         for (var fileInfo in files) {
-          final plainName = fileInfo['name'] ?? 'file';
-          final fileType = fileInfo['fileType'] ?? '';
+          final plainName = (fileInfo['name'] ?? 'file') as String;
+          final fileType = (fileInfo['fileType'] ?? '') as String;
           final remoteFilename =
               fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
           final localFilePath =
@@ -354,18 +355,19 @@ Future<void> downloadPath(
         }
 
         for (var folderInfo in folders) {
-          final folderName = folderInfo['name'] ?? 'subfolder';
+          final folderName = (folderInfo['name'] ?? 'subfolder') as String;
           final nextLocalRelPath = p.join(currentLocalRelPath, folderName);
           final localSubDir =
               io.Directory(p.join(baseDestPath, nextLocalRelPath));
           await localSubDir.create(recursive: true);
           // Note: Dart's Directory class does not expose setLastModified
           // — folder timestamps cannot be preserved on download.
-          await buildDownloadTasks(folderInfo['uuid'], nextLocalRelPath);
+          await buildDownloadTasks(
+              folderInfo['uuid'] as String, nextLocalRelPath);
         }
       }
 
-      await buildDownloadTasks(itemInfo['uuid'], '');
+      await buildDownloadTasks(itemInfo['uuid'] as String, '');
       batchState = {
         'operationType': 'download',
         'remotePath': remotePath,
@@ -421,9 +423,10 @@ Future<void> downloadPath(
         );
 
         await localFile.parent.create(recursive: true);
-        await localFile.writeAsBytes(downloadResult['data']);
+        await localFile.writeAsBytes(downloadResult['data'] as Uint8List);
 
-        final modTimeStr = downloadResult['modificationTime'] ?? remoteModTime;
+        final modTimeStr =
+            (downloadResult['modificationTime'] ?? remoteModTime) as String?;
         if (preserveTimestamps && modTimeStr != null) {
           try {
             final mTime = DateTime.parse(modTimeStr);

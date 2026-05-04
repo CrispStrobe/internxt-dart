@@ -7,12 +7,17 @@
 include: package:lints/recommended.yaml
 
 analyzer:
-  # NOTE: strict-casts / strict-inference / strict-raw-types would each
-  # surface 100-150 errors in this JSON-heavy codebase because the API
-  # responses are untyped Map/List. Until the monolith is split into
-  # modules with proper response types (see PLAN.md), we stick to the
-  # default casting behaviour and rely on tests + runtime errors to
-  # catch type mismatches. Re-enable strict-casts once Phase 4 is done.
+  # Phase 4 contained the JSON parsing layer in api.dart. Phase 9.3
+  # re-enabled `strict-casts` to surface real type imprecisions
+  # across the rest of the codebase.
+  #
+  # `strict-inference` and `strict-raw-types` stay off for now —
+  # they were producing too much signal-from-noise on the dynamic
+  # JSON returns coming through `inxt_api`. Worth revisiting after
+  # the 0.1.0 library publish (Phase 6) when we can decide what
+  # parts of the public surface are typed vs. dynamic.
+  language:
+    strict-casts: true
 
   errors:
     # Treat these as errors so CI fails on them

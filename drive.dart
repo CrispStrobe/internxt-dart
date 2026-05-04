@@ -301,7 +301,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
       bearerToken: bearerToken,
     );
     final data = json.decode(response.body);
-    final files = data['result'] ?? data['items'] ?? [];
+    final files = (data['result'] ?? data['items'] ?? []) as List<dynamic>;
     for (var item in files) {
       allItems.add({
         'type': 'file',
@@ -326,7 +326,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
       bearerToken: bearerToken,
     );
     final data = json.decode(response.body);
-    final folders = data['result'] ?? data['items'] ?? [];
+    final folders = (data['result'] ?? data['items'] ?? []) as List<dynamic>;
     for (var item in folders) {
       allItems.add({
         'type': 'folder',
@@ -372,7 +372,7 @@ Future<List<Map<String, dynamic>>> listFolders(
   final cached = folderCache[folderId];
   if (cached != null &&
       DateTime.now().difference(cached.timestamp) < inxt_cache.cacheDuration) {
-    return List<Map<String, dynamic>>.from(cached.items);
+    return List<Map<String, dynamic>>.from(cached.items as Iterable<dynamic>);
   }
 
   final allItems = <Map<String, dynamic>>[];
@@ -449,7 +449,7 @@ Future<List<Map<String, dynamic>>> listFolderFiles(
   final cached = fileCache[folderId];
   if (cached != null &&
       DateTime.now().difference(cached.timestamp) < inxt_cache.cacheDuration) {
-    return List<Map<String, dynamic>>.from(cached.items);
+    return List<Map<String, dynamic>>.from(cached.items as Iterable<dynamic>);
   }
 
   final allItems = <Map<String, dynamic>>[];
@@ -598,8 +598,8 @@ Future<Map<String, dynamic>> resolvePath(
         detailed: true,
       );
       for (var file in files) {
-        final plainName = file['name'] ?? '';
-        final fileType = file['fileType'] ?? '';
+        final plainName = (file['name'] ?? '') as String;
+        final fileType = (file['fileType'] ?? '') as String;
         final fullName =
             fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
         if (plainName == part || fullName == part) {
@@ -610,7 +610,7 @@ Future<Map<String, dynamic>> resolvePath(
     }
 
     if (foundFolder != null && (!isLastPart || foundFile == null)) {
-      currentFolderUuid = foundFolder['uuid'];
+      currentFolderUuid = foundFolder['uuid'] as String;
       currentMetadata = foundFolder;
       resolvedPathStr = '$resolvedPathStr$part/'.replaceAll('//', '/');
       if (isLastPart) {
@@ -622,8 +622,8 @@ Future<Map<String, dynamic>> resolvePath(
         };
       }
     } else if (foundFile != null && isLastPart) {
-      final plainName = foundFile['name'] ?? '';
-      final fileType = foundFile['fileType'] ?? '';
+      final plainName = (foundFile['name'] ?? '') as String;
+      final fileType = (foundFile['fileType'] ?? '') as String;
       final fullName = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
       resolvedPathStr = '$resolvedPathStr$fullName'.replaceAll('//', '/');
       return {
@@ -676,7 +676,7 @@ Future<Map<String, dynamic>> createFolder(
   );
 
   inxt_cache.invalidateCache(folderCache, fileCache, parentFolderUuid);
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// Walks [path] from the root, creating any folder segments that
@@ -736,7 +736,7 @@ Future<Map<String, dynamic>> createFolderRecursive(
       }
 
       if (foundFolder != null) {
-        currentParentUuid = foundFolder['uuid'];
+        currentParentUuid = foundFolder['uuid'] as String;
         foundFolder['path'] = partPath;
         currentFolderInfo = foundFolder;
         currentPathSoFar = partPath;
@@ -754,7 +754,7 @@ Future<Map<String, dynamic>> createFolderRecursive(
           creationTime: isLastPart ? creationTime : null,
           modificationTime: isLastPart ? modificationTime : null,
         );
-        currentParentUuid = newFolder['uuid'];
+        currentParentUuid = newFolder['uuid'] as String;
         newFolder['path'] = partPath;
         currentFolderInfo = newFolder;
         currentPathSoFar = partPath;
@@ -785,7 +785,7 @@ Future<Map<String, dynamic>> createFolderRecursive(
           throw Exception(
               "Folder '$part' conflict (409) but could not re-fetch it.");
         }
-        currentParentUuid = conflictingFolder['uuid'];
+        currentParentUuid = conflictingFolder['uuid'] as String;
         conflictingFolder['path'] = partPath;
         currentFolderInfo = conflictingFolder;
         currentPathSoFar = partPath;
@@ -911,12 +911,12 @@ Future<Map<String, List<Map<String, dynamic>>>> search(
         String? parentUuid;
         if (isFolder) {
           metadata = await inxt_api.getFolderMetadata(
-              driveApiUrl, bearerToken, itemMap['uuid']);
-          parentUuid = metadata['parentUuid'];
+              driveApiUrl, bearerToken, itemMap['uuid'] as String);
+          parentUuid = metadata['parentUuid'] as String?;
         } else {
           metadata = await inxt_api.getFileMetadata(
-              driveApiUrl, bearerToken, itemMap['uuid']);
-          parentUuid = metadata['folderUuid'];
+              driveApiUrl, bearerToken, itemMap['uuid'] as String);
+          parentUuid = metadata['folderUuid'] as String?;
         }
         itemMap['fullPath'] = await buildFullPath(
             driveApiUrl, bearerToken, rootFolderId, itemMap, parentUuid);

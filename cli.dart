@@ -92,7 +92,7 @@ class InternxtCLI {
           help: 'Port for WebDAV server (default: 8080)', defaultsTo: '8080');
 
     final argResults = parser.parse(arguments);
-    debugMode = argResults['debug'];
+    debugMode = argResults['debug'] as bool;
     client.debugMode = debugMode;
 
     final commandArgs = argResults.rest;
@@ -294,8 +294,9 @@ class InternxtCLI {
   }
 
   Future<void> handleWebdavStart(ArgResults argResults) async {
-    final bool background = argResults['background'];
-    final int port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final bool background = argResults['background'] as bool;
+    final int port =
+        int.tryParse(argResults['port'] as String? ?? '8080') ?? 8080;
 
     final existingPid = await config.readWebdavPid();
     if (existingPid != null) {
@@ -422,7 +423,7 @@ class InternxtCLI {
 
   Future<void> handleWebdavStatus(ArgResults argResults) async {
     final pid = await config.readWebdavPid();
-    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final port = int.tryParse(argResults['port'] as String? ?? '8080') ?? 8080;
 
     if (pid == null) {
       print('❌ WebDAV server is not running (no PID file).');
@@ -440,7 +441,7 @@ class InternxtCLI {
   }
 
   Future<void> handleWebdavMount(ArgResults argResults) async {
-    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final port = int.tryParse(argResults['port'] as String? ?? '8080') ?? 8080;
     final url = 'http://localhost:$port/';
 
     print('🗂️  Mount Instructions for Internxt Drive');
@@ -470,7 +471,7 @@ class InternxtCLI {
   }
 
   Future<void> handleWebdavTest(ArgResults argResults) async {
-    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final port = int.tryParse(argResults['port'] as String? ?? '8080') ?? 8080;
     final url = Uri.parse('http://localhost:$port/');
 
     print('🧪 Testing WebDAV server connection at $url ...');
@@ -523,7 +524,7 @@ class InternxtCLI {
   }
 
   Future<void> handleWebdavConfig(ArgResults argResults) async {
-    final port = int.tryParse(argResults['port'] ?? '8080') ?? 8080;
+    final port = int.tryParse(argResults['port'] as String? ?? '8080') ?? 8080;
 
     print('⚙️  WebDAV Server Configuration');
     print('=' * 40);
@@ -677,7 +678,7 @@ class InternxtCLI {
         return;
       }
 
-      final bool showFullUUIDs = argResults['uuids'];
+      final bool showFullUUIDs = argResults['uuids'] as bool;
       if (showFullUUIDs) {
         print(
             '╔════════════════════════════════════════════════════════════════════════════════════════════════════╗');
@@ -697,19 +698,20 @@ class InternxtCLI {
       int fileCount = 0;
       for (var item in trashItems) {
         final type = item['type'] == 'folder' ? '📁' : '📄';
-        if (item['type'] == 'folder')
+        if (item['type'] == 'folder') {
           folderCount++;
-        else
+        } else {
           fileCount++;
-        final plainName = item['name'] ?? 'Unknown';
-        final fileType = item['fileType'] ?? '';
+        }
+        final plainName = (item['name'] ?? 'Unknown') as String;
+        final fileType = (item['fileType'] ?? '') as String;
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
-        final name = displayName.toString().padRight(40);
+        final name = displayName.padRight(40);
         final size =
             item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
-        final uuid = item['uuid'] ?? 'N/A';
+        final uuid = (item['uuid'] ?? 'N/A') as String;
         if (showFullUUIDs) {
           print(
               '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
@@ -829,8 +831,8 @@ class InternxtCLI {
       final trashItems = await client.getTrashContent(limit: 1000);
 
       final matchingItems = trashItems.where((item) {
-        final plainName = item['name'] ?? 'Unknown';
-        final fileType = item['fileType'] ?? '';
+        final plainName = (item['name'] ?? 'Unknown') as String;
+        final fileType = (item['fileType'] ?? '') as String;
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
@@ -1373,7 +1375,8 @@ class InternxtCLI {
         io.exit(0);
       }
 
-      await client.trashItems(resolved['uuid'], resolved['type']);
+      await client.trashItems(
+          resolved['uuid'] as String, resolved['type'] as String);
 
       print("✅ Item moved to trash: $path");
     } catch (e) {
@@ -1411,7 +1414,8 @@ class InternxtCLI {
         io.exit(0);
       }
 
-      await client.deletePermanently(resolved['uuid'], resolved['type']);
+      await client.deletePermanently(
+          resolved['uuid'] as String, resolved['type'] as String);
 
       print("✅ Item permanently deleted: $path");
     } catch (e) {
@@ -1445,7 +1449,7 @@ class InternxtCLI {
 
       final commandRestArgs = argResults.rest.sublist(1);
       final pathToList = commandRestArgs.isNotEmpty ? commandRestArgs[0] : '/';
-      final bool showFullUUIDs = argResults['uuids'];
+      final bool showFullUUIDs = argResults['uuids'] as bool;
 
       print("🔍 Resolving path: $pathToList");
       final resolvedInfo = await client.resolvePath(pathToList);
@@ -1494,8 +1498,9 @@ class InternxtCLI {
         } else {
           fileCount++;
         }
-        final plainName = item['name'] ?? 'Unknown';
-        final fileType = item['type'] == 'file' ? (item['fileType'] ?? '') : '';
+        final plainName = (item['name'] ?? 'Unknown') as String;
+        final fileType =
+            (item['type'] == 'file' ? (item['fileType'] ?? '') : '') as String;
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
@@ -1542,8 +1547,8 @@ class InternxtCLI {
 
       final folderId = commandRestArgs.isNotEmpty
           ? commandRestArgs[0]
-          : creds['rootFolderId']!;
-      final bool showFullUUIDs = argResults['uuids'];
+          : creds['rootFolderId']! as String;
+      final bool showFullUUIDs = argResults['uuids'] as bool;
 
       print('📂 Listing folder: $folderId\n');
 
@@ -1575,15 +1580,16 @@ class InternxtCLI {
       }
       for (var item in items) {
         final type = item['type'] == 'folder' ? '📁' : '📄';
-        final plainName = item['name'] ?? 'Unknown';
-        final fileType = item['type'] == 'file' ? (item['fileType'] ?? '') : '';
+        final plainName = (item['name'] ?? 'Unknown') as String;
+        final fileType =
+            (item['type'] == 'file' ? (item['fileType'] ?? '') : '') as String;
         final displayName = (fileType.isNotEmpty && item['type'] == 'file')
             ? '$plainName.$fileType'
             : plainName;
-        final name = displayName.toString().padRight(40);
+        final name = displayName.padRight(40);
         final size =
             item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0);
-        final uuid = item['uuid'] ?? 'N/A';
+        final uuid = (item['uuid'] ?? 'N/A') as String;
         if (showFullUUIDs) {
           print(
               '║  $type  ${name.substring(0, min(name.length, 40))}  ${size.padLeft(12)}  $uuid ║');
@@ -1960,7 +1966,7 @@ class InternxtCLI {
       io.exit(1);
     }
     final query = args[0];
-    final detailed = argResults['uuids']; // We'll re-use --uuids as --detailed
+    final detailed = argResults['uuids'] as bool; // re-using --uuids flag
 
     try {
       final creds = await config.readCredentials();
@@ -1996,8 +2002,8 @@ class InternxtCLI {
       if (files.isNotEmpty) {
         print("\n📄 Files (${files.length}):");
         for (var file in files) {
-          final displayName = file['fullPath'] ?? file['name'];
-          final type = file['type'] ?? '';
+          final displayName = (file['fullPath'] ?? file['name']) as String;
+          final type = (file['type'] ?? '') as String;
           final fullName = (type.isNotEmpty && !displayName.endsWith(type))
               ? '$displayName.$type'
               : displayName;
@@ -2021,7 +2027,8 @@ class InternxtCLI {
     }
     final path = args[0];
     final pattern = args[1];
-    final maxDepth = int.tryParse(argResults['maxdepth'] ?? '-1') ?? -1;
+    final maxDepth =
+        int.tryParse(argResults['maxdepth'] as String? ?? '-1') ?? -1;
 
     try {
       final creds = await config.readCredentials();
@@ -2064,7 +2071,7 @@ class InternxtCLI {
   Future<void> handleTree(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     final path = args.isNotEmpty ? args[0] : '/';
-    final maxDepth = int.tryParse(argResults['depth'] ?? '3') ?? 3;
+    final maxDepth = int.tryParse(argResults['depth'] as String? ?? '3') ?? 3;
 
     try {
       final creds = await config.readCredentials();
@@ -2161,7 +2168,7 @@ class InternxtClient {
         throw Exception("No valid credentials found to refresh.");
       }
 
-      final resp = await _apiRefreshToken(currentCreds['newToken']);
+      final resp = await _apiRefreshToken(currentCreds['newToken'] as String);
       final user = resp['user'];
 
       final updatedCreds = {

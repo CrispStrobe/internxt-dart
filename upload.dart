@@ -458,7 +458,7 @@ Future<Map<String, dynamic>> startUpload(
       ]
     }),
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// PUT [chunkData] to [uploadUrl] in 128 KB sub-chunks, rendering a
@@ -547,7 +547,7 @@ Future<Map<String, dynamic>> finishUpload(
     networkPass: pass,
     body: json.encode(payload),
   );
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 /// POST /files — register the uploaded shard as a drive file entry.
@@ -572,7 +572,7 @@ Future<Map<String, dynamic>> createFileEntry(
     inxt_cache.invalidateCache(folderCache, fileCache, folderUuid);
   }
 
-  return json.decode(response.body);
+  return json.decode(response.body) as Map<String, dynamic>;
 }
 
 // --- Per-file orchestration ---
@@ -627,8 +627,8 @@ Future<Map<String, dynamic>> uploadFile(
 
     final encryptedResult =
         inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
-    final encryptedData = encryptedResult['data']!;
-    final fileIndexHex = encryptedResult['index']!;
+    final encryptedData = encryptedResult['data']! as Uint8List;
+    final fileIndexHex = encryptedResult['index']! as String;
 
     encryptClock.stop();
     final encryptSeconds = encryptClock.elapsed.inSeconds;
@@ -639,8 +639,8 @@ Future<Map<String, dynamic>> uploadFile(
     final startResponse = await startUpload(
         networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
 
-    await uploadChunkWithProgress(
-        startResponse['uploads'][0]['url'], encryptedData, remoteFileName,
+    await uploadChunkWithProgress(startResponse['uploads'][0]['url'] as String,
+        encryptedData, remoteFileName,
         timeout: perFileTimeout);
 
     print('     ✅ [STEP 4/5] Finalizing network storage...');
@@ -736,8 +736,8 @@ Future<String> uploadSingleItem(
       } else {
         print('  -> 🔄 Overwriting existing file...');
         try {
-          await inxt_drive.deletePermanently(
-              driveApiUrl, bearerToken, existingItemInfo['uuid'], 'file');
+          await inxt_drive.deletePermanently(driveApiUrl, bearerToken,
+              existingItemInfo['uuid'] as String, 'file');
           print('  -> 🗑️  Deleted existing file for overwrite');
         } catch (delErr) {
           print('  -> ❌ Error deleting existing file for overwrite: $delErr');
@@ -1254,15 +1254,15 @@ Future<Map<String, dynamic>> updateFile(
     final fileBytes = await localFile.readAsBytes();
     final encryptedResult =
         inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
-    final encryptedData = encryptedResult['data']!;
-    final fileIndexHex = encryptedResult['index']!;
+    final encryptedData = encryptedResult['data']! as Uint8List;
+    final fileIndexHex = encryptedResult['index']! as String;
 
     // 2. Network upload of the new shard.
     final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
     final startResponse = await startUpload(
         networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
-    await uploadChunkWithProgress(
-        startResponse['uploads'][0]['url'], encryptedData, 'update-$fileUuid',
+    await uploadChunkWithProgress(startResponse['uploads'][0]['url'] as String,
+        encryptedData, 'update-$fileUuid',
         timeout: perFileTimeout);
 
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
