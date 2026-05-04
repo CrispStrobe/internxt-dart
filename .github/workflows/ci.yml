@@ -1,0 +1,63 @@
+name: CI
+
+# Mirrors the Python sibling's CI gates: analyze + format + unit
+# tests on every push to main and every PR. Live tests are opt-in
+# (via IXT_ACCOUNT / IXT_PWD) and intentionally skipped here —
+# don't put real account creds in GitHub Secrets for a personal-use
+# project.
+#
+# The DART_TEST_SKIP_LIVE env var is what test/live_smoke_test.dart
+# and test/webdav_live_test.dart check for to suppress themselves
+# (they auto-skip without creds anyway, but setting the flag is
+# explicit and produces a clean "skipped" line in the report).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Analyze + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          # Pin the SDK channel; bumping happens deliberately when we
+          # want to validate against a newer Dart.
+          sdk: stable
+
+      - name: Show Dart version
+        run: dart --version
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: dart analyze (errors + warnings only)
+        run: dart analyze
+
+      - name: dart format (no changes expected)
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Unit tests
+        env:
+          DART_TEST_SKIP_LIVE: "1"
+        run: |
+          dart test \
+            test/crypto_test.dart \
+            test/config_test.dart \
+            test/utils_test.dart \
+            test/cache_test.dart \
+            test/upload_test.dart \
+            test/cli_test.dart
+
+      - name: Compile binary smoke check
+        run: |
+          dart compile exe cli.dart -o /tmp/inxt
+          /tmp/inxt help | head -5

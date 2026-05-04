@@ -243,8 +243,7 @@ Future<Map<String, dynamic>> restoreFromTrash(
       destinationFolderUuid: destinationFolderUuid,
     );
     if (destinationFolderUuid != null) {
-      inxt_cache.invalidateCache(
-          folderCache, fileCache, destinationFolderUuid);
+      inxt_cache.invalidateCache(folderCache, fileCache, destinationFolderUuid);
     }
     return result;
   } on Exception catch (e) {
@@ -254,18 +253,17 @@ Future<Map<String, dynamic>> restoreFromTrash(
   }
 
   if (destinationFolderUuid == null) {
-    throw Exception(
-        '/trash/restore endpoint not available on this gateway, '
+    throw Exception('/trash/restore endpoint not available on this gateway, '
         'and no destinationFolderUuid was provided to fall back to '
         'a move-based restore. Pass an explicit destination folder.');
   }
 
   if (itemType == 'file') {
-    await moveFile(driveApiUrl, bearerToken, folderCache, fileCache,
-        itemUuid, destinationFolderUuid);
+    await moveFile(driveApiUrl, bearerToken, folderCache, fileCache, itemUuid,
+        destinationFolderUuid);
   } else {
-    await moveFolder(driveApiUrl, bearerToken, folderCache, fileCache,
-        itemUuid, destinationFolderUuid);
+    await moveFolder(driveApiUrl, bearerToken, folderCache, fileCache, itemUuid,
+        destinationFolderUuid);
   }
   return {'success': true, 'restoredVia': 'move-fallback'};
 }
@@ -626,8 +624,7 @@ Future<Map<String, dynamic>> resolvePath(
     } else if (foundFile != null && isLastPart) {
       final plainName = foundFile['name'] ?? '';
       final fileType = foundFile['fileType'] ?? '';
-      final fullName =
-          fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+      final fullName = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
       resolvedPathStr = '$resolvedPathStr$fullName'.replaceAll('//', '/');
       return {
         'type': 'file',
@@ -800,7 +797,8 @@ Future<Map<String, dynamic>> createFolderRecursive(
   }
 
   if (currentFolderInfo == null) {
-    throw Exception('Failed to resolve or create the final folder in the path.');
+    throw Exception(
+        'Failed to resolve or create the final folder in the path.');
   }
   currentFolderInfo['path'] ??= currentPathSoFar;
   return currentFolderInfo;
@@ -1036,8 +1034,8 @@ Future<void> printTree(
 
   Map<String, dynamic> resolved;
   try {
-    resolved = await resolvePath(driveApiUrl, bearerToken, rootFolderId,
-        folderCache, fileCache, path);
+    resolved = await resolvePath(
+        driveApiUrl, bearerToken, rootFolderId, folderCache, fileCache, path);
     if (resolved['type'] != 'folder') {
       printLine('$prefix└── 📄 ${p.basename(path)}');
       return;
@@ -1051,8 +1049,8 @@ Future<void> printTree(
     final folderUuid = resolved['uuid'] as String;
     final folders =
         await listFolders(driveApiUrl, bearerToken, folderCache, folderUuid);
-    final files = await listFolderFiles(
-        driveApiUrl, bearerToken, fileCache, folderUuid);
+    final files =
+        await listFolderFiles(driveApiUrl, bearerToken, fileCache, folderUuid);
     final allItems = [...folders, ...files];
 
     if (allItems.isEmpty) return;
@@ -1114,16 +1112,17 @@ Future<Map<String, dynamic>> listFolderWithPaths(
   Map<String, inxt_cache.CacheEntry> fileCache,
   String folderPath,
 ) async {
-  final resolved = await resolvePath(
-      driveApiUrl, bearerToken, rootFolderId, folderCache, fileCache, folderPath);
+  final resolved = await resolvePath(driveApiUrl, bearerToken, rootFolderId,
+      folderCache, fileCache, folderPath);
   if (resolved['type'] != 'folder') {
     throw Exception("Path '$folderPath' is a file, not a folder");
   }
 
   final folderUuid = resolved['uuid'] as String;
   final basePath = (resolved['path'] as String?) ?? folderPath;
-  final basePathTrimmed =
-      basePath.endsWith('/') && basePath.length > 1 ? basePath.substring(0, basePath.length - 1) : basePath;
+  final basePathTrimmed = basePath.endsWith('/') && basePath.length > 1
+      ? basePath.substring(0, basePath.length - 1)
+      : basePath;
 
   final rawFolders = await listFolders(
       driveApiUrl, bearerToken, folderCache, folderUuid,
@@ -1166,4 +1165,3 @@ Future<Map<String, dynamic>> listFolderWithPaths(
     'currentPath': basePathTrimmed,
   };
 }
-

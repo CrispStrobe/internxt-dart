@@ -44,8 +44,8 @@ void main() {
   });
 
   group('InternxtCLI.buildMovePlan (Phase 7.3)', () {
-    Map<String, dynamic> _src(String srcPath, String type, String uuid,
-        String leaf) {
+    Map<String, dynamic> _src(
+        String srcPath, String type, String uuid, String leaf) {
       return {'srcPath': srcPath, 'type': type, 'uuid': uuid, 'leaf': leaf};
     }
 
@@ -99,7 +99,8 @@ void main() {
       expect(r.skips.first['reason'], contains('a.txt'));
     });
 
-    test('onConflict=overwrite: file collision -> overwrite plan with '
+    test(
+        'onConflict=overwrite: file collision -> overwrite plan with '
         'existingUuid', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
@@ -134,7 +135,8 @@ void main() {
           contains('refusing to overwrite folder at target'));
     });
 
-    test('mixed: some plain, some skip-already, some skip-conflict, some '
+    test(
+        'mixed: some plain, some skip-already, some skip-conflict, some '
         'overwrite', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [

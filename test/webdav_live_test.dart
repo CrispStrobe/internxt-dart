@@ -70,8 +70,7 @@ String? _env(String key) => _envOverrides[key] ?? Platform.environment[key];
 String _uniqueName(String stem) {
   final rng = Random.secure();
   final hex = List.generate(
-          6, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0'))
-      .join();
+      6, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
   return '$stem-$hex';
 }
 
@@ -173,7 +172,8 @@ void main() {
 
   test('OPTIONS / returns DAV class headers + auth required', () async {
     // Without auth: 401 expected.
-    final unauthed = await _sendOnce(http.Request('OPTIONS', Uri.parse(baseUrl)));
+    final unauthed =
+        await _sendOnce(http.Request('OPTIONS', Uri.parse(baseUrl)));
     expect(unauthed.statusCode, equals(401),
         reason:
             'OPTIONS without auth should be rejected (401), got ${unauthed.statusCode}');
@@ -194,8 +194,8 @@ void main() {
     final remotePath = '$sentinelPath/$filename';
     final url = Uri.parse('$baseUrl$remotePath');
 
-    final payload = Uint8List.fromList(
-        utf8.encode('webdav round-trip ${_uniqueName('payload').substring(0, 10)}'));
+    final payload = Uint8List.fromList(utf8.encode(
+        'webdav round-trip ${_uniqueName('payload').substring(0, 10)}'));
 
     // PUT
     final putResp = await _sendOnce(http.Request('PUT', url)
@@ -204,33 +204,31 @@ void main() {
     if (putResp.statusCode >= 400) {
       print('DEBUG: PUT body: ${putResp.body}');
     }
-    expect(putResp.statusCode,
-        anyOf(equals(200), equals(201), equals(204)),
-        reason: 'PUT should succeed (got ${putResp.statusCode}): ${putResp.body}');
+    expect(putResp.statusCode, anyOf(equals(200), equals(201), equals(204)),
+        reason:
+            'PUT should succeed (got ${putResp.statusCode}): ${putResp.body}');
 
     // GET — bytes should match.
-    final getResp = await _sendOnce(http.Request('GET', url)
-      ..headers['Authorization'] = _basicAuth());
+    final getResp = await _sendOnce(
+        http.Request('GET', url)..headers['Authorization'] = _basicAuth());
     expect(getResp.statusCode, equals(200));
     expect(getResp.bodyBytes, equals(payload),
         reason: 'GET bytes should match PUT bytes');
 
     // DELETE
-    final delResp = await _sendOnce(http.Request('DELETE', url)
-      ..headers['Authorization'] = _basicAuth());
-    expect(delResp.statusCode,
-        anyOf(equals(200), equals(204)),
+    final delResp = await _sendOnce(
+        http.Request('DELETE', url)..headers['Authorization'] = _basicAuth());
+    expect(delResp.statusCode, anyOf(equals(200), equals(204)),
         reason: 'DELETE should succeed (got ${delResp.statusCode})');
 
     // After DELETE, GET should 404.
-    final gone = await _sendOnce(http.Request('GET', url)
-      ..headers['Authorization'] = _basicAuth());
+    final gone = await _sendOnce(
+        http.Request('GET', url)..headers['Authorization'] = _basicAuth());
     expect(gone.statusCode, equals(404),
         reason: 'GET after DELETE should be 404');
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  test('PUT-on-existing preserves UUID (Phase 8.5: updateFile path)',
-      () async {
+  test('PUT-on-existing preserves UUID (Phase 8.5: updateFile path)', () async {
     final filename = '${_uniqueName('webdav-update')}.txt';
     final remotePath = '$sentinelPath/$filename';
     final url = Uri.parse('$baseUrl$remotePath');
@@ -263,12 +261,11 @@ void main() {
     final v2Resolved = await client.resolvePath(remotePath);
     final v2Uuid = v2Resolved['uuid'] as String;
     expect(v2Uuid, equals(v1Uuid),
-        reason:
-            'PUT-on-existing should preserve UUID via updateFile path');
+        reason: 'PUT-on-existing should preserve UUID via updateFile path');
 
     // Bytes should be the new content.
-    final getResp = await _sendOnce(http.Request('GET', url)
-      ..headers['Authorization'] = _basicAuth());
+    final getResp = await _sendOnce(
+        http.Request('GET', url)..headers['Authorization'] = _basicAuth());
     expect(getResp.statusCode, equals(200));
     expect(getResp.bodyBytes, equals(v2),
         reason: 'GET after replace-PUT should return v2 bytes');
@@ -295,8 +292,7 @@ void main() {
         reason: 'PROPFIND should return 207 Multi-Status');
     // Body is XML; just sanity-check both probe filenames appear.
     for (final n in names) {
-      expect(resp.body, contains(n),
-          reason: 'PROPFIND body should contain $n');
+      expect(resp.body, contains(n), reason: 'PROPFIND body should contain $n');
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 }

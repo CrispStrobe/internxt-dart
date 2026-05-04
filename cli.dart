@@ -78,8 +78,7 @@ class InternxtCLI {
           help: 'Number of parallel upload/move workers (default: 4)',
           defaultsTo: '4')
       ..addFlag('dry-run',
-          abbr: 'n',
-          help: 'Show what would be done without making changes')
+          abbr: 'n', help: 'Show what would be done without making changes')
       ..addFlag('force',
           abbr: 'f', help: 'Skip confirmation for destructive actions')
       ..addOption('depth',
@@ -890,8 +889,7 @@ class InternxtCLI {
 
       final force = argResults['force'] as bool;
       print('🗑️  Empty trash — this is PERMANENT and cannot be undone.');
-      if (!_confirmAction(
-          '❓ Permanently delete ALL items in trash?', force)) {
+      if (!_confirmAction('❓ Permanently delete ALL items in trash?', force)) {
         print('❌ Cancelled');
         return;
       }
@@ -1006,8 +1004,7 @@ class InternxtCLI {
       throw Exception("Target '$targetPath' is a file, not a folder.");
     }
     final targetUuid = targetInfo['uuid'] as String;
-    final targetResolvedPath =
-        (targetInfo['path'] as String?) ?? targetPath;
+    final targetResolvedPath = (targetInfo['path'] as String?) ?? targetPath;
 
     // 2. Pre-scan target listing once for conflict detection.
     final targetExisting = <String, Map<String, dynamic>>{};
@@ -1503,18 +1500,17 @@ class InternxtCLI {
             ? '$plainName.$fileType'
             : plainName;
         final name = displayName.toString();
-        final clippedName = name.length > 40
-            ? name.substring(0, 40)
-            : name.padRight(40);
-        final size = (item['type'] == 'folder'
-                ? '<DIR>'
-                : formatSize(item['size'] ?? 0))
-            .padLeft(12);
+        final clippedName =
+            name.length > 40 ? name.substring(0, 40) : name.padRight(40);
+        final size =
+            (item['type'] == 'folder' ? '<DIR>' : formatSize(item['size'] ?? 0))
+                .padLeft(12);
         final mtime =
             formatMtime(item['modificationTime'] ?? item['updatedAt']);
         final uuid = (item['uuid'] ?? 'N/A') as String;
-        final uuidCell =
-            showFullUUIDs ? uuid.padRight(36) : '${uuid.substring(0, 8).padRight(8)}...';
+        final uuidCell = showFullUUIDs
+            ? uuid.padRight(36)
+            : '${uuid.substring(0, 8).padRight(8)}...';
         print('║  $type  $clippedName  $size  $mtime  $uuidCell║');
       }
       print('╚$headerSep╝');
@@ -2249,8 +2245,8 @@ class InternxtClient {
           detailed: detailed);
 
   Future<Map<String, dynamic>> resolvePath(String path) =>
-      inxt_drive.resolvePath(driveApiUrl, newToken, rootFolderId,
-          _folderCache, _fileCache, path);
+      inxt_drive.resolvePath(
+          driveApiUrl, newToken, rootFolderId, _folderCache, _fileCache, path);
 
   // --- Download Operations ---
 
@@ -2342,10 +2338,9 @@ class InternxtClient {
 
   Future<Map<String, dynamic>> createFolderRecursive(String path,
           {String? creationTime, String? modificationTime}) =>
-      inxt_drive.createFolderRecursive(driveApiUrl, newToken, rootFolderId,
-          _folderCache, _fileCache, path,
-          creationTime: creationTime,
-          modificationTime: modificationTime);
+      inxt_drive.createFolderRecursive(
+          driveApiUrl, newToken, rootFolderId, _folderCache, _fileCache, path,
+          creationTime: creationTime, modificationTime: modificationTime);
 
   // --- Upload pipeline ---
   // Implementations live in upload.dart. These wrappers thread
@@ -2491,8 +2486,8 @@ class InternxtClient {
           fileUuid, newPlainName, newType);
 
   Future<void> renameFolder(String folderUuid, String newName) =>
-      inxt_drive.renameFolder(driveApiUrl, newToken, _folderCache, _fileCache,
-          folderUuid, newName);
+      inxt_drive.renameFolder(
+          driveApiUrl, newToken, _folderCache, _fileCache, folderUuid, newName);
 
   Future<void> setFileTimestamp(String fileUuid, DateTime mTime) =>
       inxt_drive.setFileTimestamp(driveApiUrl, newToken, fileUuid, mTime);
@@ -2500,9 +2495,8 @@ class InternxtClient {
   Future<void> setFolderTimestamp(String folderUuid, DateTime mTime) =>
       inxt_drive.setFolderTimestamp(driveApiUrl, newToken, folderUuid, mTime);
 
-  Future<void> trashItems(String uuid, String type) =>
-      inxt_drive.trashItems(
-          driveApiUrl, newToken, _folderCache, _fileCache, uuid, type);
+  Future<void> trashItems(String uuid, String type) => inxt_drive.trashItems(
+      driveApiUrl, newToken, _folderCache, _fileCache, uuid, type);
 
   Future<void> deletePermanently(String uuid, String type) =>
       inxt_drive.deletePermanently(driveApiUrl, newToken, uuid, type);
@@ -2512,8 +2506,8 @@ class InternxtClient {
     String itemType, {
     String? destinationFolderUuid,
   }) =>
-      inxt_drive.restoreFromTrash(driveApiUrl, newToken, _folderCache,
-          _fileCache, itemUuid, itemType,
+      inxt_drive.restoreFromTrash(
+          driveApiUrl, newToken, _folderCache, _fileCache, itemUuid, itemType,
           destinationFolderUuid: destinationFolderUuid);
 
   Future<void> clearTrashAll() =>

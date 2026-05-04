@@ -57,8 +57,7 @@ void main() {
         'newToken': 'jkl.mno.pqr',
         'userId': 'user-uuid',
         'rootFolderId': 'root-uuid',
-        'mnemonic':
-            'abandon abandon abandon abandon abandon abandon '
+        'mnemonic': 'abandon abandon abandon abandon abandon abandon '
             'abandon abandon abandon abandon abandon about',
         'bridgeUser': 'test@example.com',
         'bridgePass': 'sha256-of-userid',
@@ -143,20 +142,16 @@ void main() {
   group('Batch ID generation', () {
     test('deterministic for same inputs', () {
       final cfg = _newConfig(tmp);
-      final id1 =
-          cfg.generateBatchId('upload', ['/src/a', '/src/b'], '/dst');
-      final id2 =
-          cfg.generateBatchId('upload', ['/src/a', '/src/b'], '/dst');
+      final id1 = cfg.generateBatchId('upload', ['/src/a', '/src/b'], '/dst');
+      final id2 = cfg.generateBatchId('upload', ['/src/a', '/src/b'], '/dst');
       expect(id1, equals(id2));
       expect(id1.length, equals(16)); // SHA1[:16]
     });
 
     test('different sources -> different id', () {
       final cfg = _newConfig(tmp);
-      final id1 =
-          cfg.generateBatchId('upload', ['/src/a'], '/dst');
-      final id2 =
-          cfg.generateBatchId('upload', ['/src/b'], '/dst');
+      final id1 = cfg.generateBatchId('upload', ['/src/a'], '/dst');
+      final id2 = cfg.generateBatchId('upload', ['/src/b'], '/dst');
       expect(id1, isNot(equals(id2)));
     });
 

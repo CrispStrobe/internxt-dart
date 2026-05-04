@@ -83,17 +83,14 @@ int _availableMemory() {
           .stdout
           .toString()
           .trim());
-      final vm =
-          io.Process.runSync('vm_stat', []).stdout.toString();
+      final vm = io.Process.runSync('vm_stat', []).stdout.toString();
       var free = 0;
       var spec = 0;
       for (final line in vm.split('\n')) {
         if (line.contains('Pages free')) {
-          free = int.parse(
-              line.split(':')[1].trim().replaceAll('.', ''));
+          free = int.parse(line.split(':')[1].trim().replaceAll('.', ''));
         } else if (line.contains('Pages speculative')) {
-          spec = int.parse(
-              line.split(':')[1].trim().replaceAll('.', ''));
+          spec = int.parse(line.split(':')[1].trim().replaceAll('.', ''));
         }
       }
       return (free + spec) * ps;
@@ -368,10 +365,11 @@ bool shouldSkipForSizeMatch({
 ///
 /// `progress` is invoked at most ~5/sec with `(folderCount,
 /// fileCount)` so the caller can render a throttled progress line.
-Future<({
-  Map<String, Map<String, int>> filesByPath,
-  Set<String> folderPaths,
-})?> preScanRemote(
+Future<
+    ({
+      Map<String, Map<String, int>> filesByPath,
+      Set<String> folderPaths,
+    })?> preScanRemote(
   String driveApiUrl,
   String? bearerToken,
   String? rootFolderId,
@@ -609,8 +607,7 @@ Future<Map<String, dynamic>> uploadFile(
   // Phase 7.9: reject oversized files up front. Internxt rejects
   // these later anyway, but we want a clean error before encrypt.
   if (fileSize > maxFileSizeBytes) {
-    throw Exception(
-        'File too large: ${inxt_utils.formatSize(fileSize)} '
+    throw Exception('File too large: ${inxt_utils.formatSize(fileSize)} '
         '> ${inxt_utils.formatSize(maxFileSizeBytes)} (Internxt limit).');
   }
   final perFileTimeout = uploadTimeoutForSize(fileSize);
@@ -881,7 +878,12 @@ Future<void> upload(
     print('🔍 Generating new batch task list...');
     tasks = [];
     final targetFolderInfo = await inxt_drive.resolveOrCreateRemoteFolder(
-        driveApiUrl, bearerToken, rootFolderId, folderCache, fileCache, targetPath);
+        driveApiUrl,
+        bearerToken,
+        rootFolderId,
+        folderCache,
+        fileCache,
+        targetPath);
     final targetFolderPathStr =
         targetFolderInfo['path'] as String? ?? targetPath;
 
@@ -895,19 +897,23 @@ Future<void> upload(
     Map<String, Map<String, int>>? remoteFilesByPath;
     try {
       final scanProgress = ProgressLine();
-      final scan = await preScanRemote(driveApiUrl, bearerToken,
-          rootFolderId, folderCache, fileCache, targetFolderPathStr,
-          progress: (folders, files) {
+      final scan = await preScanRemote(
+          driveApiUrl,
+          bearerToken,
+          rootFolderId,
+          folderCache,
+          fileCache,
+          targetFolderPathStr, progress: (folders, files) {
         scanProgress.update('  -> 📋 Scanning remote: $folders folders, '
             '$files files');
       });
       if (scan != null) {
         remoteFilesByPath = scan.filesByPath;
-        final totalFiles = remoteFilesByPath.values
-            .fold<int>(0, (sum, m) => sum + m.length);
-        scanProgress.finish(
-            '  -> 📋 Pre-scanned ${remoteFilesByPath.length} folders, '
-            '$totalFiles files in target subtree');
+        final totalFiles =
+            remoteFilesByPath.values.fold<int>(0, (sum, m) => sum + m.length);
+        scanProgress
+            .finish('  -> 📋 Pre-scanned ${remoteFilesByPath.length} folders, '
+                '$totalFiles files in target subtree');
       }
     } catch (e) {
       print('⚠️  Pre-scan failed (continuing without size-based skip): $e');
@@ -952,8 +958,7 @@ Future<void> upload(
             modificationTime: dirModTime,
           );
 
-          final filesInDir =
-              localDir.list(recursive: true, followLinks: false);
+          final filesInDir = localDir.list(recursive: true, followLinks: false);
           await for (final fileEntity in filesInDir) {
             if (fileEntity is io.File) {
               final relativePath =
@@ -987,17 +992,15 @@ Future<void> upload(
         } else if (await io.FileSystemEntity.isFile(entity.path)) {
           final localFile = io.File(entity.path);
           final filename = p.basename(localFile.path);
-          final remoteFilePath = p
-              .join(targetFolderPathStr, filename)
-              .replaceAll('\\', '/');
+          final remoteFilePath =
+              p.join(targetFolderPathStr, filename).replaceAll('\\', '/');
 
           if (!inxt_utils.shouldIncludeFile(filename, include, exclude)) {
             continue;
           }
 
           // Phase 7.4: size-based skip.
-          final remoteParent =
-              p.dirname(remoteFilePath).replaceAll('\\', '/');
+          final remoteParent = p.dirname(remoteFilePath).replaceAll('\\', '/');
           final localSize = await localFile.length();
           final preSkip = shouldSkipForSizeMatch(
             remoteFilesInParent: remoteFilesByPath?[remoteParent],
@@ -1037,7 +1040,12 @@ Future<void> upload(
   for (final parent in uniqueParents) {
     try {
       parentInfoCache[parent] = await inxt_drive.createFolderRecursive(
-          driveApiUrl, bearerToken, rootFolderId, folderCache, fileCache, parent);
+          driveApiUrl,
+          bearerToken,
+          rootFolderId,
+          folderCache,
+          fileCache,
+          parent);
     } catch (e) {
       print('     ❌ Error ensuring parent folder $parent: $e');
       // Tasks under this parent will fail; we record the failure
@@ -1234,8 +1242,7 @@ Future<Map<String, dynamic>> updateFile(
   final fileSize = await localFile.length();
   // Phase 7.9: same upper bound check as uploadFile.
   if (fileSize > maxFileSizeBytes) {
-    throw Exception(
-        'File too large: ${inxt_utils.formatSize(fileSize)} '
+    throw Exception('File too large: ${inxt_utils.formatSize(fileSize)} '
         '> ${inxt_utils.formatSize(maxFileSizeBytes)} (Internxt limit).');
   }
   final perFileTimeout = uploadTimeoutForSize(fileSize);
@@ -1255,9 +1262,7 @@ Future<Map<String, dynamic>> updateFile(
     final startResponse = await startUpload(
         networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
     await uploadChunkWithProgress(
-        startResponse['uploads'][0]['url'],
-        encryptedData,
-        'update-$fileUuid',
+        startResponse['uploads'][0]['url'], encryptedData, 'update-$fileUuid',
         timeout: perFileTimeout);
 
     final encryptedHash = crypto.sha256.convert(encryptedData).toString();
@@ -1330,8 +1335,10 @@ Future<Map<String, dynamic>> copyItem(
       await inxt_api.getFileMetadata(driveApiUrl, bearerToken, itemUuid);
   final plainName = (metadata['plainName'] ?? '') as String;
   final fileType = (metadata['type'] ?? '') as String;
-  final creationTime = (metadata['creationTime'] ?? metadata['createdAt']) as String?;
-  final modificationTime = (metadata['modificationTime'] ?? metadata['updatedAt']) as String?;
+  final creationTime =
+      (metadata['creationTime'] ?? metadata['createdAt']) as String?;
+  final modificationTime =
+      (metadata['modificationTime'] ?? metadata['updatedAt']) as String?;
 
   final tempDir = await io.Directory.systemTemp.createTemp('inxt-copy-');
   final tempPath = '${tempDir.path}/${plainName.isEmpty ? 'copy' : plainName}';
@@ -1347,7 +1354,8 @@ Future<Map<String, dynamic>> copyItem(
       userIdForAuth,
     );
 
-    final remoteFileName = fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
+    final remoteFileName =
+        fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
     return await uploadFile(
       networkUrl,
       driveApiUrl,
@@ -1414,16 +1422,14 @@ Future<String> _safetyPatternUpload({
   // safety-pattern uploads to the same folder don't collide.
   final rng = Random.secure();
   final hex = List<String>.generate(
-          4, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0'))
-      .join();
+      4, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
   final tempFilename = '$originalFilename.$hex.tmp';
 
   // Compute plainName/type splits for the renames.
   final origDot = originalFilename.lastIndexOf('.');
   final origPlain =
       origDot > 0 ? originalFilename.substring(0, origDot) : originalFilename;
-  final origType =
-      origDot > 0 ? originalFilename.substring(origDot + 1) : '';
+  final origType = origDot > 0 ? originalFilename.substring(origDot + 1) : '';
 
   // Read timestamps if requested.
   String? creationTime;
@@ -1478,8 +1484,7 @@ Future<String> _safetyPatternUpload({
     }
   }
   if (tempUuid == null) {
-    throw Exception(
-        'safety-pattern: temp upload landed but cannot be found in '
+    throw Exception('safety-pattern: temp upload landed but cannot be found in '
         'parent listing after 4 attempts (~2s of eventual-consistency '
         'lag exceeded)');
   }

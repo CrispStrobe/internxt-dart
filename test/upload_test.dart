@@ -73,8 +73,7 @@ void main() {
 
       // Kick off the second acquire; it should park.
       var secondCompleted = false;
-      final secondFuture =
-          MemoryGate.acquire(2 * 1024 * 1024 * 1024).then((_) {
+      final secondFuture = MemoryGate.acquire(2 * 1024 * 1024 * 1024).then((_) {
         secondCompleted = true;
       });
 
@@ -154,10 +153,8 @@ void main() {
           greaterThan(10000));
     });
 
-    test('uploadTimeoutForSize: 20 GB still produces a finite duration',
-        () {
-      expect(uploadTimeoutForSize(maxFileSizeBytes).inSeconds,
-          greaterThan(0));
+    test('uploadTimeoutForSize: 20 GB still produces a finite duration', () {
+      expect(uploadTimeoutForSize(maxFileSizeBytes).inSeconds, greaterThan(0));
     });
   });
 
@@ -296,8 +293,7 @@ void main() {
       expect(r, isFalse);
     });
 
-    test('returns false: onConflict != skip (overwrite forces re-upload)',
-        () {
+    test('returns false: onConflict != skip (overwrite forces re-upload)', () {
       final r = shouldSkipForSizeMatch(
         remoteFilesInParent: {'a.txt': 1024},
         filename: 'a.txt',
@@ -393,8 +389,7 @@ void main() {
       expect(ran, isFalse);
     });
 
-    test('a task throwing does not stop other in-flight tasks',
-        () async {
+    test('a task throwing does not stop other in-flight tasks', () async {
       // The pool surfaces the error, but the in-flight tasks at the
       // moment of the throw still complete (Dart Futures aren't
       // cancellable). Tasks scheduled AFTER the throw don't run.

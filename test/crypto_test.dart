@@ -25,8 +25,7 @@ import 'package:test/test.dart';
 
 import '../cli.dart';
 
-const _validMnemonic =
-    'abandon abandon abandon abandon abandon abandon '
+const _validMnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
 const _bucketId = '000000000000000000000000'; // 24 hex chars
 
@@ -103,7 +102,7 @@ void main() {
       try {
         final wrong = client.decryptTextWithKey(enc, 'wrong-key');
         expect(wrong, isNot(equals('secret-data')));
-      // ignore: avoid_catching_errors
+        // ignore: avoid_catching_errors
       } catch (_) {
         // Expected — bad padding throws ArgumentError
       }
@@ -153,7 +152,8 @@ void main() {
         final plaintext = Uint8List.fromList(
           List.generate(size, (_) => rng.nextInt(256)),
         );
-        final encResult = client.encryptStream(plaintext, _validMnemonic, _bucketId);
+        final encResult =
+            client.encryptStream(plaintext, _validMnemonic, _bucketId);
         final encrypted = encResult['data'] as Uint8List;
         final indexHex = encResult['index'] as String;
 
@@ -217,8 +217,7 @@ void main() {
       final client = _newClient();
       final plaintext = Uint8List.fromList(utf8.encode('original'));
       final enc = client.encryptStream(plaintext, _validMnemonic, _bucketId);
-      const otherMnemonic =
-          'abandon abandon abandon abandon abandon abandon '
+      const otherMnemonic = 'abandon abandon abandon abandon abandon abandon '
           'abandon abandon abandon abandon abandon ability';
       final dec = client.decryptStream(
         enc['data'] as Uint8List,

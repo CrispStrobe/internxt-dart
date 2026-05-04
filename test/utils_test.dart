@@ -105,10 +105,8 @@ void main() {
 
     test('multiple exclude patterns: any-of semantics', () {
       final c = _newClient();
-      expect(
-          c.shouldIncludeFile('x.tmp', [], ['*.tmp', '*.bak']), isFalse);
-      expect(
-          c.shouldIncludeFile('x.bak', [], ['*.tmp', '*.bak']), isFalse);
+      expect(c.shouldIncludeFile('x.tmp', [], ['*.tmp', '*.bak']), isFalse);
+      expect(c.shouldIncludeFile('x.bak', [], ['*.tmp', '*.bak']), isFalse);
       expect(c.shouldIncludeFile('x.txt', [], ['*.tmp', '*.bak']), isTrue);
     });
 

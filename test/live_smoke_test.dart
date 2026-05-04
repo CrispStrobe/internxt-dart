@@ -50,12 +50,18 @@ void _loadDotEnvIfPresent() {
     if (f.existsSync()) {
       for (final line in f.readAsLinesSync()) {
         final trimmed = line.trim();
-        if (trimmed.isEmpty || trimmed.startsWith('#') || !trimmed.contains('=')) {
+        if (trimmed.isEmpty ||
+            trimmed.startsWith('#') ||
+            !trimmed.contains('=')) {
           continue;
         }
         final eq = trimmed.indexOf('=');
         final k = trimmed.substring(0, eq).trim();
-        final v = trimmed.substring(eq + 1).trim().replaceAll('"', '').replaceAll("'", '');
+        final v = trimmed
+            .substring(eq + 1)
+            .trim()
+            .replaceAll('"', '')
+            .replaceAll("'", '');
         // Dart Platform.environment is read-only; use a side-channel map
         _envOverrides[k] = v;
       }
@@ -81,13 +87,15 @@ String get _sentinelPath => '/$_sentinelPrefix/$_runId';
 
 String _uniqueName(String stem) {
   final rng = Random.secure();
-  final hex = List.generate(6, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  final hex = List.generate(
+      6, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
   return '$stem-$hex';
 }
 
 String _uniqueSubpath(String name) => '$_sentinelPath/${_uniqueName(name)}';
 
-({File file, Uint8List payload}) _writePayload(Directory tmp, String filename, {int sizeBytes = 256}) {
+({File file, Uint8List payload}) _writePayload(Directory tmp, String filename,
+    {int sizeBytes = 256}) {
   final rng = Random.secure();
   final tag = utf8.encode('inxt-dart-smoke-${_uniqueName('').substring(1)}-');
   final fill = List.generate(sizeBytes - tag.length, (_) => rng.nextInt(256));
@@ -149,13 +157,15 @@ void main() {
     client = InternxtClient(config: config);
 
     final loginResult = await client.login(email!, password!);
-    expect(loginResult['email']?.toString().toLowerCase(), equals(email.toLowerCase()));
+    expect(loginResult['email']?.toString().toLowerCase(),
+        equals(email.toLowerCase()));
     expect(loginResult['token'], isA<String>());
     expect(loginResult['mnemonic'], isA<String>());
     _creds = loginResult;
     await config.saveCredentials(loginResult);
     client.setAuth(loginResult);
-    print('✅ LIVE: Authenticated (uuid=${(loginResult['userId'] as String).substring(0, 8)}...)');
+    print(
+        '✅ LIVE: Authenticated (uuid=${(loginResult['userId'] as String).substring(0, 8)}...)');
 
     // Create sentinel folder
     print('📁 LIVE: Creating sentinel folder $_sentinelPath');
@@ -174,7 +184,8 @@ void main() {
         await client.trashItems(_sentinelUuid!, 'folder');
         print('✅ LIVE: Cleanup successful');
       } catch (e) {
-        print('⚠️  LIVE: Cleanup failed (please manually trash $_sentinelPath): $e');
+        print(
+            '⚠️  LIVE: Cleanup failed (please manually trash $_sentinelPath): $e');
       }
     }
     if (tmpRoot.existsSync()) {
@@ -193,7 +204,8 @@ void main() {
       expect(c['userId'], isA<String>());
       expect(c['rootFolderId'], isA<String>());
       expect(c['mnemonic'], isA<String>());
-      expect((c['mnemonic'] as String).split(' ').length, greaterThanOrEqualTo(12));
+      expect((c['mnemonic'] as String).split(' ').length,
+          greaterThanOrEqualTo(12));
     });
 
     liveTest('list root folder', () async {
@@ -256,7 +268,8 @@ void main() {
 
   liveTest('resolve missing path throws', () async {
     expect(
-      () => client.resolvePath('$_sentinelPath/definitely-no-such-thing-${_uniqueName('x')}'),
+      () => client.resolvePath(
+          '$_sentinelPath/definitely-no-such-thing-${_uniqueName('x')}'),
       throwsA(isA<Exception>()),
     );
   });
@@ -265,8 +278,10 @@ void main() {
   // RECURSIVE FOLDER CREATION
   // ===========================================================================
 
-  liveTest('recursive folder creation 3 levels deep then resolve each', () async {
-    final nested = '$_sentinelPath/lvl1/lvl2/lvl3-${_uniqueName('').substring(1)}';
+  liveTest('recursive folder creation 3 levels deep then resolve each',
+      () async {
+    final nested =
+        '$_sentinelPath/lvl1/lvl2/lvl3-${_uniqueName('').substring(1)}';
     final created = await client.createFolderRecursive(nested);
     expect(created['uuid'], isNotNull);
 
@@ -275,7 +290,8 @@ void main() {
     final lvl2 = '$_sentinelPath/lvl1/lvl2';
     for (final path in [lvl1, lvl2, nested]) {
       final r = await client.resolvePath(path);
-      expect(r['type'], equals('folder'), reason: '$path didn\'t resolve as folder');
+      expect(r['type'], equals('folder'),
+          reason: '$path didn\'t resolve as folder');
       expect(r['uuid'], isNotNull);
     }
   });
@@ -343,7 +359,8 @@ void main() {
       (f) => (f['name'] as String?) == name,
       orElse: () => <String, dynamic>{},
     );
-    expect(theFile, isNotEmpty, reason: 'uploaded file not found in src listing');
+    expect(theFile, isNotEmpty,
+        reason: 'uploaded file not found in src listing');
     final fileUuid = theFile['uuid'] as String;
 
     await client.moveFile(fileUuid, dstSub['uuid'] as String);
@@ -353,7 +370,8 @@ void main() {
     final inDst = dstFiles.any((f) => f['uuid'] == fileUuid);
     expect(inDst, isTrue, reason: 'file not in destination after move');
 
-    final srcFilesAfter = await client.listFolderFiles(srcSub['uuid'] as String);
+    final srcFilesAfter =
+        await client.listFolderFiles(srcSub['uuid'] as String);
     final inSrc = srcFilesAfter.any((f) => f['uuid'] == fileUuid);
     expect(inSrc, isFalse, reason: 'file still in source after move');
   });
@@ -377,15 +395,18 @@ void main() {
   });
 
   liveTest('move folder to another parent', () async {
-    final srcParent = await client.createFolderRecursive(_uniqueSubpath('src-p'));
-    final dstParent = await client.createFolderRecursive(_uniqueSubpath('dst-p'));
+    final srcParent =
+        await client.createFolderRecursive(_uniqueSubpath('src-p'));
+    final dstParent =
+        await client.createFolderRecursive(_uniqueSubpath('dst-p'));
 
     // Create a child under srcParent. createFolderRecursive returns the
     // raw API response which uses 'plainName'; listFolders/listFolders
     // below normalise to 'name'.
-    final srcParentName = (srcParent['plainName'] ?? srcParent['name']) as String;
-    final childInfo = await client.createFolderRecursive(
-        '$_sentinelPath/$srcParentName/movable-child');
+    final srcParentName =
+        (srcParent['plainName'] ?? srcParent['name']) as String;
+    final childInfo = await client
+        .createFolderRecursive('$_sentinelPath/$srcParentName/movable-child');
     // Actually fetch via listing to get the right uuid
     final srcKids = await client.listFolders(srcParent['uuid'] as String);
     final child = srcKids.firstWhere(
@@ -508,7 +529,8 @@ void main() {
         reason: 'unicode plainName not preserved on remote: $names');
 
     // Resolve via the unicode path; download bytes must match.
-    final resolved = await client.resolvePath('$_sentinelPath/$unicodeStem.txt');
+    final resolved =
+        await client.resolvePath('$_sentinelPath/$unicodeStem.txt');
     expect(resolved['type'], equals('file'));
     final fileUuid = resolved['uuid'] as String;
     final downloadResult = await client.downloadFile(
@@ -547,7 +569,8 @@ void main() {
     expect(downloadResult['data'] as Uint8List, equals(w.payload));
   });
 
-  liveTest('upload 2 MB file (exercises chunked multipart path)', timeout: const Timeout(Duration(minutes: 3)), () async {
+  liveTest('upload 2 MB file (exercises chunked multipart path)',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
     // 2 MB to keep quota impact small while forcing the
     // uploadChunkWithProgress 128 KB sub-chunk loop and the 5 ms
     // inter-chunk delay to actually iterate. Timeout bumped above
@@ -610,7 +633,8 @@ void main() {
       remoteFileName: '$uniqueToken.txt',
     );
 
-    final resolved = await client.resolvePath('$_sentinelPath/$uniqueToken.txt');
+    final resolved =
+        await client.resolvePath('$_sentinelPath/$uniqueToken.txt');
     final fileUuid = resolved['uuid'] as String;
 
     // Server-side index has eventual consistency; retry up to ~10s.
@@ -639,8 +663,7 @@ void main() {
   liveTest('search with bogus query returns a list (Map shape)', () async {
     final rng = Random.secure();
     final hex = List.generate(
-            16, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0'))
-        .join();
+        16, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
     final bogus = 'definitelyNoSuchThing$hex';
     try {
       final results = await client.search(bogus);
@@ -738,12 +761,12 @@ void main() {
       final size = entry[1] as int;
       final fullLocal = '${srcRoot.path}/$relPath';
       final parts = relPath.split('/');
-      final dirPart = parts.length > 1 ? parts.sublist(0, parts.length - 1).join('/') : '';
+      final dirPart =
+          parts.length > 1 ? parts.sublist(0, parts.length - 1).join('/') : '';
       if (dirPart.isNotEmpty) {
         Directory('${srcRoot.path}/$dirPart').createSync(recursive: true);
       }
-      final w = _writePayload(
-          Directory('${srcRoot.path}/$dirPart'), parts.last,
+      final w = _writePayload(Directory('${srcRoot.path}/$dirPart'), parts.last,
           sizeBytes: size);
       treePayloads[relPath] = w.payload;
       // ignore: unused_local_variable
@@ -756,8 +779,7 @@ void main() {
       final relPath = entry.key;
       final parts = relPath.split('/');
       final relDir = parts.sublist(0, parts.length - 1).join('/');
-      final remoteDir =
-          relDir.isEmpty ? rootRemote : '$rootRemote/$relDir';
+      final remoteDir = relDir.isEmpty ? rootRemote : '$rootRemote/$relDir';
       final folderInfo = await client.createFolderRecursive(remoteDir);
       final localFile = File('${srcRoot.path}/$relPath');
       // Use unique name suffix so retries don't collide.
@@ -777,8 +799,7 @@ void main() {
         preserveTimestamps: false,
         remoteFileName: remoteFileName,
       );
-      final resolved =
-          await client.resolvePath('$remoteDir/$remoteFileName');
+      final resolved = await client.resolvePath('$remoteDir/$remoteFileName');
       remoteUuids[relPath] = resolved['uuid'] as String;
     }
 
@@ -836,7 +857,8 @@ void main() {
     // Move A under a fresh dst-parent.
     final dstParent =
         await client.createFolderRecursive(_uniqueSubpath('move-dst'));
-    await client.moveFolder(aInfo['uuid'] as String, dstParent['uuid'] as String);
+    await client.moveFolder(
+        aInfo['uuid'] as String, dstParent['uuid'] as String);
 
     // A is no longer in srcRoot.
     final srcRootInfo = await client.resolvePath(srcRoot);
@@ -854,7 +876,8 @@ void main() {
     final aInDstUuid = aInDst['uuid'] as String;
     final filesUnderA = await client.listFolderFiles(aInDstUuid);
     final subsUnderA = await client.listFolders(aInDstUuid);
-    final subUuid = subsUnderA.firstWhere((f) => f['name'] == 'sub')['uuid'] as String;
+    final subUuid =
+        subsUnderA.firstWhere((f) => f['name'] == 'sub')['uuid'] as String;
     final filesUnderSub = await client.listFolderFiles(subUuid);
 
     final foundUuids = <String>[
@@ -950,8 +973,7 @@ void main() {
         reason: 'bytes changed despite skip');
   });
 
-  liveTest('upload with onConflict=safety_pattern keeps old as .bak',
-      () async {
+  liveTest('upload with onConflict=safety_pattern keeps old as .bak', () async {
     final testDir = _uniqueSubpath('conflict-safety');
     final dirInfo = await client.createFolderRecursive(testDir);
 
@@ -990,7 +1012,8 @@ void main() {
     //   <stem>.txt.bak → original uuid, original bytes
     final after = await client.resolvePath('$testDir/$stem.txt');
     expect(after['uuid'], isNot(equals(initialUuid)),
-        reason: 'safety_pattern should produce a NEW uuid at the original path');
+        reason:
+            'safety_pattern should produce a NEW uuid at the original path');
 
     final bak = await client.resolvePath('$testDir/$stem.txt.bak');
     expect(bak['uuid'], equals(initialUuid),
@@ -1070,7 +1093,8 @@ void main() {
   // ===========================================================================
 
   // 8.1 — trash lifecycle
-  liveTest('trash lifecycle: trash file -> appears in trash -> restore -> '
+  liveTest(
+      'trash lifecycle: trash file -> appears in trash -> restore -> '
       'resolves at destination', () async {
     // Upload a file under sentinel.
     final stem = _uniqueName('trash-restore');
@@ -1138,8 +1162,10 @@ void main() {
 
   // 7.3 — batch-mv ergonomics
   liveTest('batch mv: multi-source moves all files in parallel', () async {
-    final srcA = await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcA'));
-    final srcB = await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcB'));
+    final srcA =
+        await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcA'));
+    final srcB =
+        await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcB'));
     final dst =
         await client.createFolderRecursive(_uniqueSubpath('mv-multi-dst'));
 
@@ -1164,8 +1190,8 @@ void main() {
         preserveTimestamps: false,
         remoteFileName: '$stem.txt',
       );
-      final resolved = await client
-          .resolvePath('${folderInfo['path']}/$stem.txt');
+      final resolved =
+          await client.resolvePath('${folderInfo['path']}/$stem.txt');
       uuids.add(resolved['uuid'] as String);
     }
 
@@ -1188,15 +1214,16 @@ void main() {
     expect(result.skipped, equals(0));
 
     // Both files now in dst with original UUIDs.
-    final dstFiles =
-        await client.listFolderFiles(dst['uuid'] as String);
+    final dstFiles = await client.listFolderFiles(dst['uuid'] as String);
     final dstUuids = dstFiles.map((f) => f['uuid'] as String).toSet();
     expect(dstUuids, containsAll(uuids));
   });
 
   liveTest('batch mv: --dry-run plans without moving', () async {
-    final src = await client.createFolderRecursive(_uniqueSubpath('mv-dry-src'));
-    final dst = await client.createFolderRecursive(_uniqueSubpath('mv-dry-dst'));
+    final src =
+        await client.createFolderRecursive(_uniqueSubpath('mv-dry-src'));
+    final dst =
+        await client.createFolderRecursive(_uniqueSubpath('mv-dry-dst'));
 
     final stem = _uniqueName('dry');
     final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
@@ -1235,8 +1262,10 @@ void main() {
   });
 
   liveTest('batch mv: onConflict=skip preserves the dst file', () async {
-    final src = await client.createFolderRecursive(_uniqueSubpath('mv-skip-src'));
-    final dst = await client.createFolderRecursive(_uniqueSubpath('mv-skip-dst'));
+    final src =
+        await client.createFolderRecursive(_uniqueSubpath('mv-skip-src'));
+    final dst =
+        await client.createFolderRecursive(_uniqueSubpath('mv-skip-dst'));
 
     final stem = _uniqueName('collide');
     // Pre-populate dst with a file of the same leaf name as the src.
@@ -1251,8 +1280,7 @@ void main() {
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
-    final dstResolved =
-        await client.resolvePath('${dst['path']}/$stem.txt');
+    final dstResolved = await client.resolvePath('${dst['path']}/$stem.txt');
     final dstOriginalUuid = dstResolved['uuid'] as String;
 
     // Source file with the same leaf name.
@@ -1288,8 +1316,10 @@ void main() {
   });
 
   liveTest('batch mv: onConflict=overwrite trashes dst, moves src', () async {
-    final src = await client.createFolderRecursive(_uniqueSubpath('mv-ovw-src'));
-    final dst = await client.createFolderRecursive(_uniqueSubpath('mv-ovw-dst'));
+    final src =
+        await client.createFolderRecursive(_uniqueSubpath('mv-ovw-src'));
+    final dst =
+        await client.createFolderRecursive(_uniqueSubpath('mv-ovw-dst'));
 
     final stem = _uniqueName('replace');
     // Pre-populate dst.
@@ -1304,8 +1334,7 @@ void main() {
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
-    final dstOriginal =
-        await client.resolvePath('${dst['path']}/$stem.txt');
+    final dstOriginal = await client.resolvePath('${dst['path']}/$stem.txt');
     final dstOriginalUuid = dstOriginal['uuid'] as String;
 
     // src file with same leaf.
@@ -1320,8 +1349,7 @@ void main() {
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
-    final srcOriginal =
-        await client.resolvePath('${src['path']}/$stem.txt');
+    final srcOriginal = await client.resolvePath('${src['path']}/$stem.txt');
     final srcOriginalUuid = srcOriginal['uuid'] as String;
 
     final result = await InternxtCLI.executeMoveBatch(
@@ -1342,20 +1370,20 @@ void main() {
     // dst file got trashed and the src moved into its place).
     final dstAfter = await client.resolvePath('${dst['path']}/$stem.txt');
     expect(dstAfter['uuid'], equals(srcOriginalUuid),
-        reason:
-            'overwrite policy should leave the moved-source UUID at dst');
+        reason: 'overwrite policy should leave the moved-source UUID at dst');
     expect(dstAfter['uuid'], isNot(equals(dstOriginalUuid)),
         reason: 'overwrite should have trashed the original dst file');
   });
 
-  liveTest('upload() pre-scan + size-match skip: re-running an unchanged tree '
-      'uploads nothing', timeout: const Timeout(Duration(minutes: 3)), () async {
+  liveTest(
+      'upload() pre-scan + size-match skip: re-running an unchanged tree '
+      'uploads nothing',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
     // Build a tiny local tree, upload it once, then re-run with the
     // same inputs. The second run's pre-scan should see the same
     // sizes already on the remote and mark every task as
     // 'skipped_size_match'.
-    final localDir =
-        Directory('${tmpRoot.path}/${_uniqueName('rescan-tree')}');
+    final localDir = Directory('${tmpRoot.path}/${_uniqueName('rescan-tree')}');
     localDir.createSync();
     for (var i = 0; i < 4; i++) {
       _writePayload(localDir, '${_uniqueName('f$i')}.txt', sizeBytes: 64);
@@ -1364,8 +1392,8 @@ void main() {
     final remoteRoot = _uniqueSubpath('rescan-target');
 
     Future<void> runUploadOnce(String marker) async {
-      final batchId = config.generateBatchId(
-          marker, [localDir.path], remoteRoot);
+      final batchId =
+          config.generateBatchId(marker, [localDir.path], remoteRoot);
       await client.upload(
         [localDir.path],
         remoteRoot,
@@ -1395,22 +1423,20 @@ void main() {
     // subdir and verify their UUIDs are unchanged.
     final dirBase = localDir.path.split(Platform.pathSeparator).last;
     final remoteSubdir = '$remoteRoot/$dirBase';
-    final firstRunFiles =
-        await client.listFolderFiles((await client.resolvePath(remoteSubdir))['uuid'] as String);
-    final firstRunUuids =
-        firstRunFiles.map((f) => f['uuid'] as String).toSet();
+    final firstRunFiles = await client.listFolderFiles(
+        (await client.resolvePath(remoteSubdir))['uuid'] as String);
+    final firstRunUuids = firstRunFiles.map((f) => f['uuid'] as String).toSet();
 
     await runUploadOnce('rescan-2');
 
-    final secondRunFiles =
-        await client.listFolderFiles((await client.resolvePath(remoteSubdir))['uuid'] as String);
+    final secondRunFiles = await client.listFolderFiles(
+        (await client.resolvePath(remoteSubdir))['uuid'] as String);
     final secondRunUuids =
         secondRunFiles.map((f) => f['uuid'] as String).toSet();
 
     // No new uploads = no new UUIDs.
     expect(secondRunUuids, equals(firstRunUuids),
-        reason:
-            'second run should have skipped via size-match; new UUIDs '
+        reason: 'second run should have skipped via size-match; new UUIDs '
             'imply re-upload.');
     expect(secondRunFiles.length, equals(firstRunFiles.length),
         reason: 'second run should not duplicate files');
@@ -1421,8 +1447,7 @@ void main() {
   // dynamic-timeout path doesn't break a normal upload (i.e. the
   // small files used by the suite finish well within the 300s+60s
   // floor — no test should now fail on a "too tight" timeout).
-  liveTest('uploadFile under dynamic timeout completes normally',
-      () async {
+  liveTest('uploadFile under dynamic timeout completes normally', () async {
     // Just a regular small upload. If the new timeout machinery is
     // wrong (e.g. timeout always 0), this would fail.
     final stem = _uniqueName('timeout-probe');
@@ -1442,16 +1467,15 @@ void main() {
 
   liveTest('upload() cancellation: pre-cancelled token uploads nothing',
       () async {
-    final localDir =
-        Directory('${tmpRoot.path}/${_uniqueName('cancel-tree')}');
+    final localDir = Directory('${tmpRoot.path}/${_uniqueName('cancel-tree')}');
     localDir.createSync();
     for (var i = 0; i < 4; i++) {
       _writePayload(localDir, '${_uniqueName('c$i')}.txt', sizeBytes: 64);
     }
 
     final remoteRoot = _uniqueSubpath('cancel-target');
-    final batchId = config.generateBatchId(
-        'cancel', [localDir.path], remoteRoot);
+    final batchId =
+        config.generateBatchId('cancel', [localDir.path], remoteRoot);
 
     // Pre-cancel the token: every task should hit the early-return
     // branch in runOne and never actually upload.
@@ -1496,7 +1520,8 @@ void main() {
     }
   });
 
-  liveTest('client.upload() parallelism uploads all files', timeout: const Timeout(Duration(minutes: 3)), () async {
+  liveTest('client.upload() parallelism uploads all files',
+      timeout: const Timeout(Duration(minutes: 3)), () async {
     // Drives the high-level batch driver (`client.upload(...)`) end
     // to end so the Phase 7.2 parallel pool + Phase 7.1 memory gate +
     // serialized state-saves all get exercised. Sequential live
@@ -1541,7 +1566,8 @@ void main() {
     expect(resolved['type'], equals('folder'));
 
     // All 6 files landed remote with the right bytes.
-    final remoteFiles = await client.listFolderFiles(resolved['uuid'] as String);
+    final remoteFiles =
+        await client.listFolderFiles(resolved['uuid'] as String);
     final remoteByName = {
       for (final f in remoteFiles)
         '${f['name']}.${f['fileType']}': f['uuid'] as String,
@@ -1633,8 +1659,10 @@ void main() {
 
   liveTest('copy file to another folder preserves content', () async {
     // Source + destination folders.
-    final srcInfo = await client.createFolderRecursive(_uniqueSubpath('copy-src'));
-    final dstInfo = await client.createFolderRecursive(_uniqueSubpath('copy-dst'));
+    final srcInfo =
+        await client.createFolderRecursive(_uniqueSubpath('copy-src'));
+    final dstInfo =
+        await client.createFolderRecursive(_uniqueSubpath('copy-dst'));
 
     // Upload an original file under src.
     final stem = _uniqueName('original');
@@ -1652,8 +1680,8 @@ void main() {
 
     // Find original uuid by listing src.
     final srcFiles = await client.listFolderFiles(srcInfo['uuid'] as String);
-    final originalUuid = srcFiles
-        .firstWhere((f) => f['name'] == stem)['uuid'] as String;
+    final originalUuid =
+        srcFiles.firstWhere((f) => f['name'] == stem)['uuid'] as String;
 
     // Copy it.
     await client.copyItem(

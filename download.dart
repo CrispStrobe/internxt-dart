@@ -246,7 +246,8 @@ Future<void> downloadPath(
         fileType.isNotEmpty ? '$plainName.$fileType' : plainName;
 
     if (!inxt_utils.shouldIncludeFile(remoteFilename, include, exclude)) {
-      print('🚫 File filtered out by include/exclude patterns: $remoteFilename');
+      print(
+          '🚫 File filtered out by include/exclude patterns: $remoteFilename');
       return;
     }
 
@@ -422,8 +423,7 @@ Future<void> downloadPath(
         await localFile.parent.create(recursive: true);
         await localFile.writeAsBytes(downloadResult['data']);
 
-        final modTimeStr =
-            downloadResult['modificationTime'] ?? remoteModTime;
+        final modTimeStr = downloadResult['modificationTime'] ?? remoteModTime;
         if (preserveTimestamps && modTimeStr != null) {
           try {
             final mTime = DateTime.parse(modTimeStr);

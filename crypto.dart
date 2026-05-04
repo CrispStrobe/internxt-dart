@@ -59,8 +59,7 @@ Map<String, dynamic> generateKeys(String password) {
 
 String encryptTextWithKey(String textToEncrypt, String secret) {
   final random = Random.secure();
-  final salt =
-      Uint8List.fromList(List.generate(8, (_) => random.nextInt(256)));
+  final salt = Uint8List.fromList(List.generate(8, (_) => random.nextInt(256)));
 
   final keyIv = getKeyAndIvFrom(secret, salt);
   final key = keyIv['key']!;
@@ -163,8 +162,7 @@ Uint8List generateFileBucketKey(String mnemonic, String bucketId) {
   return getFileDeterministicKey(seed, bucketIdBytes);
 }
 
-Uint8List generateFileKey(
-    String mnemonic, String bucketId, Uint8List index) {
+Uint8List generateFileKey(String mnemonic, String bucketId, Uint8List index) {
   final bucketKey = generateFileBucketKey(mnemonic, bucketId);
   return getFileDeterministicKey(
     bucketKey.sublist(0, 32),

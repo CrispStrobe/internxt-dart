@@ -738,6 +738,7 @@ class InternxtFile implements File {
     // PUT through the WebDAV layer.)
     return this;
   }
+
   @override
   void createSync({bool recursive = false, bool exclusive = false}) =>
       throw UnimplementedError('Sync ops not supported');
