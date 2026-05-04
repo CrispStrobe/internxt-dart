@@ -1005,6 +1005,218 @@ void main() {
   // PHASE 7 — performance + UX parity with Python sibling
   // ===========================================================================
 
+  // 7.3 — batch-mv ergonomics
+  liveTest('batch mv: multi-source moves all files in parallel', () async {
+    final srcA = await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcA'));
+    final srcB = await client.createFolderRecursive(_uniqueSubpath('mv-multi-srcB'));
+    final dst =
+        await client.createFolderRecursive(_uniqueSubpath('mv-multi-dst'));
+
+    // Upload one file to each src folder.
+    final uuids = <String>[];
+    final names = <String>[];
+    for (final entry in [
+      [srcA, 'fA'],
+      [srcB, 'fB'],
+    ]) {
+      final folderInfo = entry[0] as Map<String, dynamic>;
+      final stem = _uniqueName(entry[1] as String);
+      names.add('$stem.txt');
+      final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+      await client.uploadSingleItem(
+        w.file,
+        folderInfo['path'] as String,
+        folderInfo['uuid'] as String,
+        'overwrite',
+        bridgeUser: _creds!['bridgeUser'] as String,
+        userIdForAuth: _creds!['userId'].toString(),
+        preserveTimestamps: false,
+        remoteFileName: '$stem.txt',
+      );
+      final resolved = await client
+          .resolvePath('${folderInfo['path']}/$stem.txt');
+      uuids.add(resolved['uuid'] as String);
+    }
+
+    // Multi-source batch move via the library entry-point.
+    final result = await InternxtCLI.executeMoveBatch(
+      client: client,
+      sources: [
+        '${srcA['path']}/${names[0]}',
+        '${srcB['path']}/${names[1]}',
+      ],
+      targetPath: dst['path'] as String,
+      onConflict: 'skip',
+      dryRun: false,
+      workers: 4,
+      silent: true,
+    );
+
+    expect(result.success, equals(2));
+    expect(result.errors, equals(0));
+    expect(result.skipped, equals(0));
+
+    // Both files now in dst with original UUIDs.
+    final dstFiles =
+        await client.listFolderFiles(dst['uuid'] as String);
+    final dstUuids = dstFiles.map((f) => f['uuid'] as String).toSet();
+    expect(dstUuids, containsAll(uuids));
+  });
+
+  liveTest('batch mv: --dry-run plans without moving', () async {
+    final src = await client.createFolderRecursive(_uniqueSubpath('mv-dry-src'));
+    final dst = await client.createFolderRecursive(_uniqueSubpath('mv-dry-dst'));
+
+    final stem = _uniqueName('dry');
+    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      w.file,
+      src['path'] as String,
+      src['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+
+    final result = await InternxtCLI.executeMoveBatch(
+      client: client,
+      sources: ['${src['path']}/$stem.txt'],
+      targetPath: dst['path'] as String,
+      onConflict: 'skip',
+      dryRun: true,
+      workers: 4,
+      silent: true,
+    );
+
+    expect(result.planSize, equals(1));
+    expect(result.success, equals(0)); // dry-run never executes
+    expect(result.errors, equals(0));
+
+    // File is still in src, NOT in dst.
+    final srcFiles = await client.listFolderFiles(src['uuid'] as String);
+    final dstFiles = await client.listFolderFiles(dst['uuid'] as String);
+    expect(srcFiles.any((f) => f['name'] == stem), isTrue,
+        reason: 'dry-run unexpectedly moved file out of src');
+    expect(dstFiles.any((f) => f['name'] == stem), isFalse,
+        reason: 'dry-run unexpectedly created file in dst');
+  });
+
+  liveTest('batch mv: onConflict=skip preserves the dst file', () async {
+    final src = await client.createFolderRecursive(_uniqueSubpath('mv-skip-src'));
+    final dst = await client.createFolderRecursive(_uniqueSubpath('mv-skip-dst'));
+
+    final stem = _uniqueName('collide');
+    // Pre-populate dst with a file of the same leaf name as the src.
+    final wDst = _writePayload(tmpRoot, '${stem}_dst.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      wDst.file,
+      dst['path'] as String,
+      dst['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final dstResolved =
+        await client.resolvePath('${dst['path']}/$stem.txt');
+    final dstOriginalUuid = dstResolved['uuid'] as String;
+
+    // Source file with the same leaf name.
+    final wSrc = _writePayload(tmpRoot, '${stem}_src.txt', sizeBytes: 80);
+    await client.uploadSingleItem(
+      wSrc.file,
+      src['path'] as String,
+      src['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+
+    final result = await InternxtCLI.executeMoveBatch(
+      client: client,
+      sources: ['${src['path']}/$stem.txt'],
+      targetPath: dst['path'] as String,
+      onConflict: 'skip',
+      dryRun: false,
+      workers: 4,
+      silent: true,
+    );
+
+    expect(result.success, equals(0));
+    expect(result.skipped, equals(1));
+
+    // dst still has the original file with the original UUID.
+    final dstAfter = await client.resolvePath('${dst['path']}/$stem.txt');
+    expect(dstAfter['uuid'], equals(dstOriginalUuid),
+        reason: 'skip policy should leave dst original intact');
+  });
+
+  liveTest('batch mv: onConflict=overwrite trashes dst, moves src', () async {
+    final src = await client.createFolderRecursive(_uniqueSubpath('mv-ovw-src'));
+    final dst = await client.createFolderRecursive(_uniqueSubpath('mv-ovw-dst'));
+
+    final stem = _uniqueName('replace');
+    // Pre-populate dst.
+    final wDst = _writePayload(tmpRoot, '${stem}_dst.txt', sizeBytes: 64);
+    await client.uploadSingleItem(
+      wDst.file,
+      dst['path'] as String,
+      dst['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final dstOriginal =
+        await client.resolvePath('${dst['path']}/$stem.txt');
+    final dstOriginalUuid = dstOriginal['uuid'] as String;
+
+    // src file with same leaf.
+    final wSrc = _writePayload(tmpRoot, '${stem}_src.txt', sizeBytes: 100);
+    await client.uploadSingleItem(
+      wSrc.file,
+      src['path'] as String,
+      src['uuid'] as String,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$stem.txt',
+    );
+    final srcOriginal =
+        await client.resolvePath('${src['path']}/$stem.txt');
+    final srcOriginalUuid = srcOriginal['uuid'] as String;
+
+    final result = await InternxtCLI.executeMoveBatch(
+      client: client,
+      sources: ['${src['path']}/$stem.txt'],
+      targetPath: dst['path'] as String,
+      onConflict: 'overwrite',
+      dryRun: false,
+      workers: 4,
+      silent: true,
+    );
+
+    expect(result.success, equals(1));
+    expect(result.skipped, equals(0));
+    expect(result.errors, equals(0));
+
+    // dst now resolves to the SOURCE's UUID (because the original
+    // dst file got trashed and the src moved into its place).
+    final dstAfter = await client.resolvePath('${dst['path']}/$stem.txt');
+    expect(dstAfter['uuid'], equals(srcOriginalUuid),
+        reason:
+            'overwrite policy should leave the moved-source UUID at dst');
+    expect(dstAfter['uuid'], isNot(equals(dstOriginalUuid)),
+        reason: 'overwrite should have trashed the original dst file');
+  });
+
   liveTest('client.upload() parallelism uploads all files', timeout: const Timeout(Duration(minutes: 3)), () async {
     // Drives the high-level batch driver (`client.upload(...)`) end
     // to end so the Phase 7.2 parallel pool + Phase 7.1 memory gate +

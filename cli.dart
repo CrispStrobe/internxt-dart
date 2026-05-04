@@ -75,6 +75,9 @@ class InternxtCLI {
           abbr: 'w',
           help: 'Number of parallel upload/move workers (default: 4)',
           defaultsTo: '4')
+      ..addFlag('dry-run',
+          abbr: 'n',
+          help: 'Show what would be done without making changes')
       ..addFlag('force',
           abbr: 'f', help: 'Skip confirmation for destructive actions')
       ..addOption('depth',
@@ -866,118 +869,346 @@ class InternxtCLI {
     }
   }
 
+  /// Build a per-item move plan from already-resolved sources + a
+  /// snapshot of the target's existing contents. Pure function so
+  /// it's unit-testable without touching the network.
+  ///
+  /// Each `expanded` entry is `{srcPath, type, uuid, leaf}`. Each
+  /// `targetExisting` entry is `{type, uuid}` keyed by leaf name.
+  /// Each plan entry is `{srcPath, type, uuid, leaf, action,
+  /// existingUuid?}` where action is one of `move`, `overwrite`, or
+  /// `skip`. Skipped entries are NOT included in the plan; the
+  /// `skipReason` for each skip is collected separately.
+  static ({
+    List<Map<String, dynamic>> plan,
+    List<Map<String, String>> skips,
+  }) buildMovePlan({
+    required List<Map<String, dynamic>> expanded,
+    required Map<String, Map<String, dynamic>> targetExisting,
+    required String onConflict, // 'skip' | 'overwrite'
+    required String targetResolvedPath,
+  }) {
+    final plan = <Map<String, dynamic>>[];
+    final skips = <Map<String, String>>[];
+    for (final item in expanded) {
+      final srcPath = item['srcPath'] as String;
+      final type = item['type'] as String;
+      final uuid = item['uuid'] as String;
+      final leaf = item['leaf'] as String;
+
+      // Refuse to move an item into its current parent (no-op).
+      final lastSlash = srcPath.lastIndexOf('/');
+      final srcParent = lastSlash <= 0 ? '/' : srcPath.substring(0, lastSlash);
+      if (srcParent == targetResolvedPath) {
+        skips.add({'srcPath': srcPath, 'reason': 'already in target'});
+        continue;
+      }
+
+      final existing = targetExisting[leaf];
+      if (existing == null) {
+        plan.add({
+          'srcPath': srcPath,
+          'type': type,
+          'uuid': uuid,
+          'leaf': leaf,
+          'action': 'move',
+        });
+        continue;
+      }
+      if (onConflict == 'skip') {
+        skips.add({'srcPath': srcPath, 'reason': 'target has $leaf'});
+        continue;
+      }
+      // overwrite
+      if ((existing['type'] as String?) == 'folder') {
+        skips.add({
+          'srcPath': srcPath,
+          'reason': 'refusing to overwrite folder at target: $leaf',
+        });
+        continue;
+      }
+      plan.add({
+        'srcPath': srcPath,
+        'type': type,
+        'uuid': uuid,
+        'leaf': leaf,
+        'action': 'overwrite',
+        'existingUuid': existing['uuid'],
+      });
+    }
+    return (plan: plan, skips: skips);
+  }
+
+  /// Library-callable batch-move: takes already-validated inputs,
+  /// runs the resolve → plan → execute pipeline, returns counts.
+  /// CLI-output side effects are gated by [silent] so tests can call
+  /// this without flooding test output.
+  ///
+  /// Static so callers can pass an explicit [client] (e.g. tests
+  /// that already have an authenticated InternxtClient and don't
+  /// want to spin up a second one).
+  ///
+  /// Returns `(success, skipped, errors, planSize)` — tests assert
+  /// on these.
+  static Future<({int success, int skipped, int errors, int planSize})>
+      executeMoveBatch({
+    required InternxtClient client,
+    required List<String> sources,
+    required String targetPath,
+    required String onConflict, // 'skip' | 'overwrite'
+    required bool dryRun,
+    required int workers,
+    bool silent = false,
+  }) async {
+    void say(String m) {
+      if (!silent) print(m);
+    }
+
+    // 1. Resolve target folder once.
+    say('🔍 Resolving target: $targetPath');
+    final targetInfo = await client.resolvePath(targetPath);
+    if (targetInfo['type'] != 'folder') {
+      throw Exception("Target '$targetPath' is a file, not a folder.");
+    }
+    final targetUuid = targetInfo['uuid'] as String;
+    final targetResolvedPath =
+        (targetInfo['path'] as String?) ?? targetPath;
+
+    // 2. Pre-scan target listing once for conflict detection.
+    final targetExisting = <String, Map<String, dynamic>>{};
+    try {
+      final tFolders = await client.listFolders(targetUuid);
+      final tFiles = await client.listFolderFiles(targetUuid);
+      for (final f in tFiles) {
+        final plain = (f['name'] ?? '') as String;
+        final ext = (f['fileType'] ?? '') as String;
+        final leaf = ext.isNotEmpty ? '$plain.$ext' : plain;
+        targetExisting[leaf] = {'type': 'file', 'uuid': f['uuid']};
+      }
+      for (final d in tFolders) {
+        final leaf = (d['name'] ?? '') as String;
+        if (leaf.isNotEmpty) {
+          targetExisting[leaf] = {'type': 'folder', 'uuid': d['uuid']};
+        }
+      }
+    } catch (e) {
+      say('⚠️  Could not pre-scan target folder: $e');
+    }
+
+    // 3. Expand each source — wildcards or literal.
+    final expanded = <Map<String, dynamic>>[];
+    final notFound = <String>[];
+    for (final src in sources) {
+      if (src.contains('*') || src.contains('?') || src.contains('[')) {
+        var parentPath = p.dirname(src);
+        if (parentPath == '.') parentPath = '/';
+        final leafPattern = p.basename(src);
+        final glob = Glob(leafPattern);
+
+        try {
+          final parentInfo = await client.resolvePath(parentPath);
+          final parentUuid = parentInfo['uuid'] as String;
+          final folders = await client.listFolders(parentUuid);
+          final files = await client.listFolderFiles(parentUuid);
+          var matched = false;
+          for (final f in files) {
+            final name = (f['name'] ?? '') as String;
+            final ext = (f['fileType'] ?? '') as String;
+            final leaf = ext.isNotEmpty ? '$name.$ext' : name;
+            if (glob.matches(leaf)) {
+              expanded.add({
+                'srcPath': '$parentPath/$leaf'.replaceAll('//', '/'),
+                'type': 'file',
+                'uuid': f['uuid'],
+                'leaf': leaf,
+              });
+              matched = true;
+            }
+          }
+          for (final d in folders) {
+            final leaf = (d['name'] ?? '') as String;
+            if (glob.matches(leaf)) {
+              expanded.add({
+                'srcPath': '$parentPath/$leaf'.replaceAll('//', '/'),
+                'type': 'folder',
+                'uuid': d['uuid'],
+                'leaf': leaf,
+              });
+              matched = true;
+            }
+          }
+          if (!matched) notFound.add(src);
+        } catch (e) {
+          if (!silent) {
+            io.stderr.writeln("❌ Could not list parent of '$src': $e");
+          }
+        }
+      } else {
+        try {
+          final info = await client.resolvePath(src);
+          final resolvedPath = (info['path'] as String?) ?? src;
+          final lastSlash = resolvedPath.lastIndexOf('/');
+          final leaf = lastSlash < 0
+              ? resolvedPath
+              : resolvedPath.substring(lastSlash + 1);
+          expanded.add({
+            'srcPath': resolvedPath,
+            'type': info['type'],
+            'uuid': info['uuid'],
+            'leaf': leaf,
+          });
+        } on Exception catch (e) {
+          if (e.toString().contains('Path not found')) {
+            notFound.add(src);
+          } else {
+            if (!silent) io.stderr.writeln("❌ Error resolving '$src': $e");
+            notFound.add(src);
+          }
+        }
+      }
+    }
+
+    if (!silent) {
+      for (final m in notFound) {
+        io.stderr.writeln('⚠️  Not found: $m');
+      }
+    }
+    if (expanded.isEmpty) {
+      throw Exception('Nothing to move.');
+    }
+
+    // 4. Build the per-item plan (pure function; unit-tested).
+    final planResult = InternxtCLI.buildMovePlan(
+      expanded: expanded,
+      targetExisting: targetExisting,
+      onConflict: onConflict,
+      targetResolvedPath: targetResolvedPath,
+    );
+    final plan = planResult.plan;
+    final skips = planResult.skips;
+
+    say('🚚 Moving ${plan.length} item(s) → $targetResolvedPath');
+    if (dryRun) say('🔬 DRY RUN — no changes will be made');
+    for (final s in skips) {
+      say("  ⏭️  Skip (${s['reason']}): ${s['srcPath']}");
+    }
+    for (final entry in plan) {
+      final marker = entry['action'] == 'overwrite' ? '🔁' : '➡️';
+      say("  $marker ${entry['type']}: ${entry['srcPath']}");
+    }
+
+    if (dryRun) {
+      say('📊 Would move: ${plan.length}, skipped: ${skips.length}');
+      return (
+        success: 0,
+        skipped: skips.length,
+        errors: 0,
+        planSize: plan.length,
+      );
+    }
+
+    if (plan.isEmpty) {
+      say('✅ All sources are already in target / fully skipped.');
+      return (success: 0, skipped: skips.length, errors: 0, planSize: 0);
+    }
+
+    // 5. Run the plan with bounded parallelism.
+    final maxWorkers = workers.clamp(1, plan.length);
+    var success = 0;
+    var errors = 0;
+    await inxt_upload.runBoundedPool<Map<String, dynamic>>(
+      plan,
+      maxWorkers,
+      (entry) async {
+        try {
+          if (entry['action'] == 'overwrite') {
+            final existingUuid = entry['existingUuid'] as String?;
+            if (existingUuid != null) {
+              try {
+                // trashItems → POST /storage/trash/add. Recoverable
+                // from Internxt's 30-day trash if the user changes
+                // their mind. deletePermanently here would no-op
+                // because the file isn't in trash yet.
+                await client.trashItems(existingUuid, 'file');
+                // Force a fresh listing of the target folder so the
+                // trash propagation is observable before the move
+                // PATCH fires. Without this, Internxt's move
+                // endpoint can see a stale "duplicate name in dst"
+                // condition and silently no-op the move. Also pause
+                // briefly to let backend indexes catch up.
+                await Future<void>.delayed(const Duration(milliseconds: 500));
+                await client.listFolderFiles(targetUuid);
+              } catch (delErr) {
+                if (!silent) {
+                  io.stderr.writeln(
+                      "  ❌ ${entry['srcPath']}: could not remove existing target ($delErr)");
+                }
+                errors++;
+                return;
+              }
+            }
+          }
+          if (entry['type'] == 'file') {
+            await client.moveFile(entry['uuid'] as String, targetUuid);
+          } else {
+            await client.moveFolder(entry['uuid'] as String, targetUuid);
+          }
+          success++;
+        } catch (e) {
+          if (!silent) {
+            io.stderr.writeln("  ❌ ${entry['srcPath']}: $e");
+          }
+          errors++;
+        }
+      },
+    );
+
+    say('=' * 40);
+    say('📊 Move Summary:');
+    say('  ✅ Moved:    $success');
+    say('  ⏭️  Skipped:  ${skips.length}');
+    say('  ❌ Errors:   $errors');
+    say('=' * 40);
+
+    return (
+      success: success,
+      skipped: skips.length,
+      errors: errors,
+      planSize: plan.length,
+    );
+  }
+
   Future<void> handleMovePath(ArgResults argResults) async {
     final args = argResults.rest.sublist(1);
     if (args.length < 2) {
       io.stderr.writeln(
-          '❌ Usage: dart cli.dart move-path "<source-pattern>" <destination-path>');
+          '❌ Usage: dart cli.dart move-path <source...> <target-folder>');
       io.exit(1);
     }
 
     try {
       final creds = await config.readCredentials();
-      if (creds == null) throw Exception("Not logged in.");
+      if (creds == null) throw Exception('Not logged in.');
       client.setAuth(creds);
 
-      final String sourcePattern = args[0];
-      final String destinationPath = args[1];
-      final bool force = argResults['force'] as bool;
+      final sources = args.sublist(0, args.length - 1);
+      final targetPath = args.last;
+      final onConflict = argResults['on-conflict'] as String;
+      final dryRun = argResults['dry-run'] as bool;
+      final workers =
+          int.tryParse(argResults['workers'] as String? ?? '4') ?? 4;
 
-      // 1. Resolve Destination (Matches Python target resolution)
-      print("🔍 Resolving destination path: $destinationPath");
-      final destFolderInfo = await client.resolvePath(destinationPath);
-      if (destFolderInfo['type'] != 'folder') {
-        throw Exception("Destination path '$destinationPath' is not a folder.");
-      }
-      final destinationFolderUuid = destFolderInfo['uuid'] as String;
-
-      // 2. Handle Wildcards/Globs
-      List<Map<String, dynamic>> itemsToMove = [];
-
-      if (sourcePattern.contains('*')) {
-        print("🌐 Pattern detected, performing server-side expansion...");
-
-        // Fix: Ensure parentPath is at least '/' for root-level patterns like '/*.pdf'
-        var parentPath = p.dirname(sourcePattern);
-        if (parentPath == '.') parentPath = '/';
-
-        final pattern = p.basename(sourcePattern);
-        final glob = Glob(pattern);
-
-        // Resolve parent folder to get its UUID
-        final parentInfo = await client.resolvePath(parentPath);
-        final parentUuid = parentInfo['uuid'] as String;
-
-        // Fetch children (Matches Python get_folder_content logic)
-        final folders = await client.listFolders(parentUuid);
-        final files = await client.listFolderFiles(parentUuid);
-
-        for (var item in [...folders, ...files]) {
-          // Robust Name Reconstruction: Match display name (e.g. "file.pdf")
-          final String displayName;
-          if (item['type'] == 'file') {
-            final name = item['name'] ?? '';
-            final ext = item['fileType'] ?? '';
-            displayName = (ext.isNotEmpty) ? '$name.$ext' : name;
-          } else {
-            displayName = item['name'] ?? '';
-          }
-
-          if (glob.matches(displayName)) {
-            itemsToMove.add({
-              ...item,
-              'displayName': displayName,
-            });
-          }
-        }
-      } else {
-        final sourceInfo = await client.resolvePath(sourcePattern);
-        itemsToMove.add({
-          'uuid': sourceInfo['uuid'],
-          'type': sourceInfo['type'],
-          'displayName':
-              (sourceInfo['metadata'] as Map)['name'] ?? sourcePattern,
-        });
-      }
-
-      if (itemsToMove.isEmpty) {
-        print("⚠️ No items matched the pattern '$sourcePattern'");
-        return;
-      }
-
-      // 3. Confirm Batch (Safety precaution for mass moves)
-      if (itemsToMove.length > 1 && !force) {
-        io.stdout.write(
-            '❓ Move ${itemsToMove.length} items to "$destinationPath"? [y/N]: ');
-        final res = io.stdin.readLineSync()?.toLowerCase();
-        if (res != 'y' && res != 'yes') {
-          print("❌ Cancelled");
-          return;
-        }
-      }
-
-      // 4. Execution Loop (Matches Python move_by_path sequence)
-      for (var item in itemsToMove) {
-        final uuid = item['uuid'] as String;
-        final type = item['type'] as String;
-        final name = item['displayName'] as String;
-
-        print("🚀 Moving $type: $name...");
-        try {
-          // PATCH /files/{uuid} or PATCH /folders/{uuid}
-          if (type == 'file') {
-            await client.moveFile(uuid, destinationFolderUuid);
-          } else {
-            await client.moveFolder(uuid, destinationFolderUuid);
-          }
-        } catch (e) {
-          print("  ❌ Failed to move $name: $e");
-        }
-      }
-
-      print("✅ Operation complete.");
+      final result = await InternxtCLI.executeMoveBatch(
+        client: client,
+        sources: sources,
+        targetPath: targetPath,
+        onConflict: onConflict,
+        dryRun: dryRun,
+        workers: workers,
+      );
+      if (result.errors > 0) io.exit(1);
     } catch (e) {
-      io.stderr.writeln('❌ Error: $e');
+      io.stderr.writeln('❌ Move operation failed: $e');
       io.exit(1);
     }
   }
