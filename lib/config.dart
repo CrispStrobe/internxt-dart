@@ -49,6 +49,12 @@ class ConfigService {
 
   String get configDir => internxtCliDataDir;
 
+  /// Symmetric with the constructor's `configPath:` named param —
+  /// returns the path the data dir was rooted at (or the resolved
+  /// default if no override was passed). Cloud-dart's adapter
+  /// compares this against other providers' equivalent fields.
+  String get configPath => internxtCliDataDir;
+
   // --- WebDAV PID Management ---
   Future<void> saveWebdavPid(int pid) async {
     try {
