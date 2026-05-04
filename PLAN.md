@@ -22,9 +22,15 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - Phase 9.7.1 — http-injectable refactor: `makeRequest` and auth.dart's three http-bound functions now accept an optional `http.Client`, defaulting to the top-level `http.get/post/...` helpers in production. Tests use `MockClient` from `package:http/testing.dart`. New `test/api_test.dart` (13 tests) + expanded `test/auth_test.dart` (11 tests). `api.dart` and `auth.dart` added to coverage gate at 30% each (testable-without-live-creds slice; remaining surface is 5xx-retry-with-backoff and login's crypto path)
 
 **Open — load-bearing (next session candidates):**
-1. **Phase 6.a continuation — full lib/ restructure.** Move modules to `lib/internxt_client/` + barrel + update test imports. ~1 hour. Gated on cloud-dart being ready to consume — disruption only pays off when there's a concrete consumer.
-2. **Phase 6.b — audit cloud-dart's divergence.** Walk `~/code/cloud-dart/lib/services/internxt_client.dart` (~2700 lines), classify every block as backport / Flutter-only / drift. Read-and-classify, no code changes. ~2 hours.
-3. **Phase 6.c — rewire cloud-dart.** Remove embedded copy, add `internxt_client` dependency, update imports. ~3 hours. Closes the multi-repo divergence permanently.
+1. **Phase 6.a continuation — lib/ restructure + 5 cloud-dart-enabling extensions.** Move modules to `lib/internxt_client/` + barrel + update test imports (~1h), AND bundle the five extensions Phase 6.b validation identified as load-bearing for the rewire (~2h):
+   - **B1**: add `downloadFileBytes(String, {Function(int,int)? onProgress})` method to `InternxtClient` (~15 min). Thin wrapper over the streamed download with `BytesBuilder` accumulation.
+   - **B2**: port the 7 path-facade methods from cloud-dart's `internxt_client_extensions.dart` upstream as a `paths.dart` module or extension methods (`listPath`, `uploadFile`-by-path, `downloadFileByPath`, `createFolderPath`, `deletePath`, `movePath`, `renamePath`) (~30 min).
+   - **B3**: rename `ConfigService({String? dataDir})` → `ConfigService({String? configPath})` (~5 min). Affects `config.dart` constructor + 2 callsites in `cli.dart` + tests. cloud-dart's `main.dart` and `internxt_client_adapter.dart` use `configPath:`.
+   - **B4**: make `networkUrl` / `driveApiUrl` non-static instance fields with constructor defaults (~20 min). cloud-dart's Web build needs to pass Vercel proxy paths.
+   - **B5**: extract a `ConfigStorage` interface (`read` / `write` / `delete` / `list`) that `ConfigService` composes; default impl is current file-IO (~45 min). cloud-dart's Web build needs a `SharedPreferences` impl.
+   See `AUDIT_6B.md` for the per-blocker rationale and cloud-dart consumer callsites that pin each one.
+2. **Phase 6.b — audit cloud-dart's divergence. DONE.** See `AUDIT_6B.md`. Headline: cloud-dart is a pre-Phase-4 fork lacking all Phase 5/7/8/9 work; rewire is mechanical drop-in once Phase 6.a B1–B5 land. Validation pass confirmed every consumer call has a target with a matching signature.
+3. **Phase 6.c — rewire cloud-dart.** Mechanical drop-in: delete the embedded protocol class + dead CLI + dead file-system classes (~4400 LOC removed), swap imports, wire B4/B5 impls, smoke-test. ~2h. Closes the multi-repo divergence permanently. Gated on 6.a B1–B5.
 
 **Open — independently shippable:**
 - **Drive unit coverage.** With `auth.dart` and `api.dart` done in Phase 9.7.1, the next logical expansion is `drive.dart`. Each function takes `(driveApiUrl, bearerToken, ...)` plus the cache maps; refactoring `makeRequest`-style optional `http.Client` plumbing through every drive function would make most of them unit-testable. ~2 hours; would expand the gate from 6 modules to 7. Note: this overlaps with the Phase 6.a lib/ restructure — the right move may be to wait until cloud-dart consumes the package, then refactor drive.dart's surface once cleanly.
@@ -176,35 +182,40 @@ in one focused commit and tag v0.2.0.
 
 Estimated remaining work: ~1 hour for the move itself.
 
-### Step 6b: audit cloud-dart's divergence
+### Step 6b: audit cloud-dart's divergence — DONE
 
-Three buckets to classify every divergent block in
-`~/code/cloud-dart/lib/services/internxt_client.dart`:
+See `AUDIT_6B.md` for the full pass. Headline findings:
 
-- **(a) Bug fixes / improvements** that should backport into
-  internxt-dart. The `cloud-dart` copy may have features or fixes
-  the CLI version is missing. Each one becomes its own PR.
-- **(b) Genuinely Flutter-specific code** that stays in cloud-dart:
-  `FilenFileSystem` integration, isolate spawning, UI-thread error
-  channels, anything that needs `package:flutter`. Extract these
-  into focused modules in `cloud-dart/lib/services/internxt_flutter/`.
-- **(c) Accidental drift** — places where one copy was edited and
-  the other wasn't. Delete the older version in favour of whichever
-  is currently correct.
-
-This is read-and-classify work, no code changes. Estimated ~2 hours.
+- **cloud-dart contributes essentially nothing back-ports-able as protocol.**
+  It's a pre-Phase-4 fork lacking all Phase 5/7/8/9 work. ~6 months of
+  internxt-dart progress hasn't propagated.
+- **Two small upstream candidates:** the path-based facade
+  (`internxt_client_extensions.dart`, 148 lines) and an in-memory
+  `downloadFileBytes` wrapper. Both are useful for any consumer.
+- **Five blockers (B1–B5)** identified by the validation pass that must be
+  fixed in internxt-dart before 6.c can be a clean drop-in. All small;
+  ~2h aggregate. Listed under Phase 6.a above.
+- **Flutter-specific surface is small:** the `FilenFileSystem` subclasses
+  (L4637–L4681) are dead code in the Flutter deployment (only the dead
+  `InternxtCLI` instantiates them) — no extraction needed. Real Flutter
+  bits are 13 `kIsWeb` branches that the B4/B5 extension points cover, plus
+  the `InternxtClientAdapter` (130 lines) which stays in cloud-dart by design.
 
 ### Step 6c: rewire cloud-dart to consume the library
 
-- Remove the embedded `internxt_client.dart`
-- Add the dependency in cloud-dart's pubspec.yaml
-- Update imports throughout cloud-dart (`import
-  'package:internxt_client/internxt_client.dart'`)
-- Keep only the (b)-bucket modules locally
-- Run cloud-dart's existing test suite (or smoke-test the Flutter app)
-  to confirm nothing regressed
+Per AUDIT_6B.md "Phase 6.c — concrete steps (revised post-validation)":
 
-Estimated work: ~3 hours.
+- Add `internxt_client` dep to cloud-dart's pubspec.yaml
+- Delete `~4400 LOC` of embedded protocol + dead CLI + dead file-system code
+- Swap imports throughout (`internxt_client.dart` → package import)
+- Wire B4 (URL override) and B5 (`SharedPreferencesStorage` for Web) at the
+  adapter construction site
+- Fix `internxt_client_placeholder.dart` signatures to track published library
+- Delete `internxt_client_extensions.dart` (path facade now upstream via B2)
+- Smoke-test: login, list, upload, download, move, rename, trash
+
+Estimated work: ~2 hours (was ~3 — facade port and config-storage abstraction
+move into 6.a, leaving only mechanical drop-in here).
 
 ### Risks
 
