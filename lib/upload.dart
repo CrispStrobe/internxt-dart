@@ -509,7 +509,7 @@ Future<void> uploadChunkWithProgress(
           '\r        Progress: $percent% (${inxt_utils.formatSize(bytesSent)}/${inxt_utils.formatSize(totalBytes)}) [${inxt_utils.formatSize(speed)}/s]   ');
 
       // Mandatory delay — see doc comment.
-      await Future.delayed(const Duration(milliseconds: 5));
+      await Future<void>.delayed(const Duration(milliseconds: 5));
     }
   } finally {
     await request.sink.close();

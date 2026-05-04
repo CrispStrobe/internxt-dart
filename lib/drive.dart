@@ -143,26 +143,36 @@ Future<void> renameFolder(
 
 /// Set the modification time on a file.
 ///
-/// **KNOWN GATEWAY LIMITATION (Phase 9.6):** the live Internxt
-/// gateway silently ignores the `modificationTime` field on
-/// `PUT /files/{uuid}/meta` and overwrites the field with `now()`
-/// on every PUT regardless. Confirmed via direct GET-PUT-GET
-/// inspection: requesting `2021-06-01` reflects back a "now-ish"
-/// timestamp on the next read. The Python sibling has the same
-/// issue (its `set_folder_timestamps` is only mock-tested, never
-/// run live). So this function is currently a no-op end-to-end
-/// against the live API; the regression marker live tests assert
-/// that the gateway *did not* honor the value, and will fire if
-/// Internxt fixes the endpoint.
+/// **KNOWN GATEWAY LIMITATIONS — TWO COMPOUNDING BUGS** (verified
+/// empirically by `tool/probe_setmeta.dart`):
 ///
-/// We still implement it correctly (with [_clearParent] cache
-/// invalidation + the gateway-required `plainName`/`type` echo)
-/// because:
-///   1. The day Internxt fixes the gateway, this code path is
-///      already correct — no second migration needed.
-///   2. WebDAV's PROPPATCH calls this. Even if the value is
-///      ignored server-side, the Dart side shouldn't crash with
-///      400 "Missing update file metadata" on a partial body.
+///   1. **Same-name 409.** PUT /files/{uuid}/meta with the
+///      documented `{plainName, type, modificationTime}` body
+///      returns **409 "A file with this name already exists in
+///      this location"** even when echoing the file's own current
+///      name. The gateway runs a uniqueness check that doesn't
+///      exclude the file itself. The same 409 fires for a bare
+///      same-name rename `{plainName, type}` (no mtime), so this
+///      is independent of the timestamp issue.
+///   2. **Silent overwrite.** Even if you sidestep the 409 by
+///      renaming to a temporary name (which DOES return 200), the
+///      gateway *still* silently overwrites `modificationTime`
+///      with `now()` server-side. Direct GET-PUT-GET inspection
+///      confirms the requested value never lands.
+///
+/// Net result: this function throws 409 end-to-end against the
+/// live API. The Python sibling avoids the issue by **not having
+/// a `set_file_timestamps` function at all** — its WebDAV
+/// PROPPATCH only sets folder timestamps. Our WebDAV file
+/// PROPPATCH (webdav_filesystem.dart::InternxtFile.setStat)
+/// catches and swallows the 409 since PROPPATCH is officially
+/// advisory.
+///
+/// Why we keep this implementation as-is despite both bugs:
+///   - The day Internxt fixes either bug, the regression marker
+///     fires and we re-evaluate.
+///   - Non-WebDAV callers see the real error rather than a silent
+///     no-op (honest signal).
 ///
 /// Cache rationale: cached entries from [listFolderFiles] carry
 /// `modificationTime` (drive.dart:489) and the `ls --long`
@@ -364,7 +374,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
       client: client,
     );
     final data = json.decode(response.body);
-    final files = (data['result'] ?? data['items'] ?? []) as List<dynamic>;
+    final files = (data['result'] ?? data['items'] ?? <dynamic>[]) as List<dynamic>;
     for (var item in files) {
       allItems.add({
         'type': 'file',
@@ -390,7 +400,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
       client: client,
     );
     final data = json.decode(response.body);
-    final folders = (data['result'] ?? data['items'] ?? []) as List<dynamic>;
+    final folders = (data['result'] ?? data['items'] ?? <dynamic>[]) as List<dynamic>;
     for (var item in folders) {
       allItems.add({
         'type': 'folder',
@@ -459,7 +469,7 @@ Future<List<Map<String, dynamic>>> listFolders(
     );
 
     final data = json.decode(response.body);
-    final folders = (data['result'] ?? data['folders'] ?? []) as List<dynamic>;
+    final folders = (data['result'] ?? data['folders'] ?? <dynamic>[]) as List<dynamic>;
 
     for (var folder in folders) {
       allItems.add({
@@ -538,7 +548,7 @@ Future<List<Map<String, dynamic>>> listFolderFiles(
     );
 
     final data = json.decode(response.body);
-    final files = (data['result'] ?? data['files'] ?? []) as List<dynamic>;
+    final files = (data['result'] ?? data['files'] ?? <dynamic>[]) as List<dynamic>;
 
     for (var file in files) {
       allItems.add({
@@ -837,7 +847,7 @@ Future<Map<String, dynamic>> createFolderRecursive(
         // Concurrent create: invalidate the parent listing, wait a
         // beat for backend consistency, refetch, and look for the
         // colliding folder.
-        await Future.delayed(const Duration(seconds: 1));
+        await Future<void>.delayed(const Duration(seconds: 1));
         final parentUuidToList = currentFolderInfo!['uuid'] as String;
         inxt_cache.invalidateCache(folderCache, fileCache, parentUuidToList);
         final foldersAfterConflict = await listFolders(

@@ -7,17 +7,20 @@
 include: package:lints/recommended.yaml
 
 analyzer:
-  # Phase 4 contained the JSON parsing layer in api.dart. Phase 9.3
-  # re-enabled `strict-casts` to surface real type imprecisions
-  # across the rest of the codebase.
+  # All three strict-mode flags on:
+  # - strict-casts (Phase 9.3): no implicit downcasts from `dynamic`.
+  # - strict-inference: every variable / return type must have a
+  #   concrete inferable type; a fall-back to `dynamic` is an error.
+  # - strict-raw-types: generic types without parameters
+  #   (e.g. bare `List` instead of `List<dynamic>`) are an error.
   #
-  # `strict-inference` and `strict-raw-types` stay off for now —
-  # they were producing too much signal-from-noise on the dynamic
-  # JSON returns coming through `inxt_api`. Worth revisiting after
-  # the 0.1.0 library publish (Phase 6) when we can decide what
-  # parts of the public surface are typed vs. dynamic.
+  # The dynamic JSON parsing surface in api.dart is the typical
+  # blocker — addressed by explicit `as Map<String, dynamic>` /
+  # `as List<dynamic>` casts at the JSON-decode boundary.
   language:
     strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
 
   errors:
     # Treat these as errors so CI fails on them

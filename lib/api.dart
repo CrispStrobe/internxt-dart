@@ -101,7 +101,7 @@ Future<http.Response> makeRequest(
 
     if (response.statusCode >= 500 && retryCount < maxRetries) {
       final delay = Duration(seconds: pow(2, retryCount).toInt());
-      await Future.delayed(delay);
+      await Future<void>.delayed(delay);
       return makeRequest(
         method,
         url,

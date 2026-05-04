@@ -212,8 +212,8 @@ void main() {
       final rootUuid = _creds!['rootFolderId'] as String;
       final folders = await client.listFolders(rootUuid);
       final files = await client.listFolderFiles(rootUuid);
-      expect(folders, isA<List>());
-      expect(files, isA<List>());
+      expect(folders, isA<List<Map<String, dynamic>>>());
+      expect(files, isA<List<Map<String, dynamic>>>());
     });
   });
 
@@ -672,8 +672,8 @@ void main() {
       expect(results, isA<Map<String, List<Map<String, dynamic>>>>());
       expect(results.containsKey('folders'), isTrue);
       expect(results.containsKey('files'), isTrue);
-      expect(results['folders'], isA<List>());
-      expect(results['files'], isA<List>());
+      expect(results['folders'], isA<List<Map<String, dynamic>>>());
+      expect(results['files'], isA<List<Map<String, dynamic>>>());
     } catch (e) {
       // 4xx on no-results is also an acceptable backend behavior.
       print('ℹ️  LIVE: bogus search raised cleanly: $e');

@@ -417,7 +417,7 @@ void main() {
         }
         // After descending into /Foo:
         if (req.url.path == '/folders/content/foo-uuid/folders') {
-          return http.Response(jsonEncode({'result': []}), 200);
+          return http.Response(jsonEncode({'result': <dynamic>[]}), 200);
         }
         if (req.url.path == '/folders/content/foo-uuid/files') {
           return http.Response(
@@ -441,7 +441,7 @@ void main() {
 
     test('throws "Path not found" when segment missing', () async {
       final mock = MockClient((req) async => http.Response(
-          jsonEncode({'result': []}), 200));
+          jsonEncode({'result': <dynamic>[]}), 200));
       await expectLater(
         () => resolvePath(_api, _tok, 'root', {}, {}, '/Missing', client: mock),
         throwsA(predicate((e) => e.toString().contains('not found'))),

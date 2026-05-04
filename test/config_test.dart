@@ -111,7 +111,7 @@ void main() {
       expect(raw.contains(sentinelToken), isTrue,
           reason: 'credentials file is currently plaintext JSON');
       // Sanity: it's valid JSON
-      expect(jsonDecode(raw), isA<Map>());
+      expect(jsonDecode(raw), isA<Map<String, dynamic>>());
     });
   });
 

@@ -283,11 +283,11 @@ void main() {
       final keys = client.generateKeys('any-password');
       expect(keys['publicKey'], isA<String>());
       expect(keys['privateKeyEncrypted'], isA<String>());
-      expect(keys['ecc'], isA<Map>());
+      expect(keys['ecc'], isA<Map<String, dynamic>>());
       expect(keys['ecc']['publicKey'], isA<String>());
       expect(keys['ecc']['privateKeyEncrypted'], isA<String>());
       // Server requires kyber map present even with null values
-      expect(keys['kyber'], isA<Map>());
+      expect(keys['kyber'], isA<Map<String, dynamic>>());
     });
 
     test('privateKeyEncrypted decrypts back to the placeholder', () {

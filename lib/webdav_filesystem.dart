@@ -225,27 +225,27 @@ class InternxtFileSink implements io.IOSink {
 
   // ... (rest of InternxtFileSink methods are fine) ...
   @override
-  Future addStream(Stream<List<int>> stream) async {
+  Future<void> addStream(Stream<List<int>> stream) async {
     await for (final chunk in stream) {
       add(chunk);
     }
   }
 
   @override
-  Future get done => _doneCompleter.future;
+  Future<void> get done => _doneCompleter.future;
   @override
   Encoding encoding = utf8;
   @override
   void write(Object? obj) => add(encoding.encode(obj.toString()));
   @override
-  void writeAll(Iterable objects, [String separator = ""]) =>
+  void writeAll(Iterable<dynamic> objects, [String separator = ""]) =>
       write(objects.join(separator));
   @override
   void writeCharCode(int charCode) => add([charCode]);
   @override
   void writeln([Object? obj = ""]) => write("$obj\n");
   @override
-  Future flush() async {
+  Future<void> flush() async {
     if (_usingDisk) {
       await _tempFileSink?.flush();
     }
@@ -715,13 +715,27 @@ class InternxtFile implements File {
   // interface; this method is here in case the wsgi layer calls it via
   // dynamic dispatch. @override removed.
   Future<void> setStat(io.FileStat stat) async {
-    client.log('WebDAV: PROPPATCH (File) $path'); // <-- FIX
+    client.log('WebDAV: PROPPATCH (File) $path');
     try {
       final resolved = await client.resolvePath(path);
       await client.setFileTimestamp(resolved['uuid'] as String, stat.modified);
     } catch (e) {
-      client.log('WebDAV: Error setting file stat: $e'); // <-- FIX
-      throw io.FileSystemException('Failed to set file stat', path);
+      // KNOWN GATEWAY GAP: PUT /files/{uuid}/meta with the
+      // documented {plainName, type, modificationTime} payload
+      // returns 409 "name already exists" — the gateway runs a
+      // uniqueness check that doesn't exclude the file itself.
+      // Even if it didn't 409, the gateway silently ignores
+      // modificationTime end-to-end (verified by tool/probe_setmeta.dart).
+      //
+      // PROPPATCH is officially advisory in the WebDAV spec — the
+      // server MAY ignore unknown / unsupported properties. Finder
+      // / Explorer don't need PROPPATCH success to use the file.
+      // Swallow rather than fail the whole WebDAV op over a
+      // gateway bug we can't fix from the client.
+      //
+      // The drive.dart-level setFileTimestamp stays honest (throws)
+      // so non-WebDAV callers see the real error.
+      client.log('WebDAV: setFileTimestamp swallowed (known gateway gap): $e');
     }
   }
 
@@ -839,13 +853,13 @@ class InternxtFile implements File {
   DateTime lastAccessedSync() =>
       throw UnimplementedError('Sync ops not supported');
   @override
-  Future setLastAccessed(DateTime time) =>
+  Future<void> setLastAccessed(DateTime time) =>
       throw UnimplementedError('Not supported');
   @override
   void setLastAccessedSync(DateTime time) =>
       throw UnimplementedError('Sync ops not supported');
   @override
-  Future setLastModified(DateTime time) =>
+  Future<void> setLastModified(DateTime time) =>
       throw UnimplementedError('Not supported, use setStat');
   @override
   void setLastModifiedSync(DateTime time) =>

@@ -197,30 +197,57 @@ Same backend behaviour as the Python sibling:
   long. The lifecycle test's 6s retry was always doomed; the
   restore-then-find step is what actually verifies the lifecycle.
 
-## On gateway gaps in PUT meta operations (Phase 9.6 + later)
+## On gateway gaps in PUT meta operations (Phase 9.6 + probe)
 
-Two distinct shapes of brokenness in the metadata-update path,
-documented as live "known-broken" markers:
+Multiple distinct shapes of brokenness in the metadata-update path,
+verified empirically by `tool/probe_setmeta.dart` against the live
+gateway. Each has a dedicated live regression marker that fires
+when behavior changes.
 
-- **`setFolderTimestamp`**: PUT /folders/{uuid}/meta accepts
-  `modificationTime` but silently overwrites it with `now()`
-  server-side. Direct GET-PUT-GET inspection confirms the
-  requested value never lands. The Dart code is correctly
-  implemented (echoes plainName + sends mtime per the documented
-  contract); the gateway just ignores it.
-- **`setFileTimestamp`**: PUT /files/{uuid}/meta with the same
-  payload shape (plainName + type + modificationTime) returns
-  **409 Conflict** "A file with this name already exists in this
-  location" — even when echoing the file's own current name. The
-  gateway runs a uniqueness check that doesn't exclude the file
-  itself. This is a different bug than the folder version; the
-  file path can't even *attempt* the timestamp update, where the
-  folder path silently no-ops.
+**Folder path** (`setFolderTimestamp` / PUT /folders/{uuid}/meta):
 
-Both have dedicated live regression markers that fire when the
-gateway behavior changes. The implementation in `lib/drive.dart`
-is preserved as-is so the day either path comes online, the code
-is already correct.
+- Bare `{modificationTime}` → 400 "plainName should not be empty"
+- `{plainName, modificationTime}` → 200 but **gateway silently
+  overwrites mtime with `now()`**. Verified by GET-PUT-GET round-trip:
+  requested 2021-06-01 reflects back as today's timestamp.
+
+**File path** (`setFileTimestamp` / PUT /files/{uuid}/meta) — TWO
+compounding bugs:
+
+- Bare `{modificationTime}` → 400 "Missing update file metadata"
+- `{plainName, type, modificationTime}` (echoing self) → **409
+  "name already exists"** — the gateway runs a uniqueness check
+  that doesn't exclude the file itself
+- Bare same-name rename `{plainName, type}` (no mtime) → also
+  **409** — confirms the uniqueness check is independent of
+  the timestamp field
+- Rename to a NEW name + mtime → 200 but **gateway still silently
+  overwrites mtime** (same as folder path)
+
+So the file timestamp update is broken end-to-end: even
+sidestepping the 409 via temp-rename doesn't actually persist
+mtime.
+
+**Comparison with the Python sibling**: Python has
+`set_folder_timestamps` (only folder, no file) and sends a partial
+body `{modificationTime}` only. That body shape currently 400s
+against the live gateway — Python's tests are mocked
+(`tests/test_webdav_set_property.py` uses `unittest.mock.patch`),
+so they never observed this. Python's WebDAV PROPPATCH for folders
+would fail end-to-end against today's gateway; nobody has noticed
+because PROPPATCH is advisory and clients don't break on it.
+
+**Our handling**:
+- `lib/drive.dart`'s `setFileTimestamp` and `setFolderTimestamp`
+  stay honest — they do the documented PUT, surface whatever the
+  gateway returns. Non-WebDAV callers see real errors.
+- `lib/webdav_filesystem.dart` swallows the 409 in file PROPPATCH
+  (`InternxtFile.setStat`) — PROPPATCH is officially advisory in
+  the WebDAV spec, no point breaking the WebDAV op over a known
+  gateway gap.
+- Live markers `setFolderTimestamp known-broken marker` and
+  `setFileTimestamp known-broken marker (gateway 409)` pin both
+  failure modes.
 
 The mitigation in Dart: `package:test`'s built-in `retry:` parameter
 (2 retries) wrapped around each live test:
