@@ -1,16 +1,18 @@
 // ConfigService — credential / batch-state / WebDAV PID persistence.
 //
-// Extracted from cli.dart in Phase 4 (see PLAN.md). All file I/O lives
-// here; nothing in this file talks to the network or holds auth state.
-//
-// Tests import it via `import '../cli.dart';` — cli.dart re-exports
-// this module for backwards compatibility.
+// Extracted from cli.dart in Phase 4 (see PLAN.md). All persistence
+// goes through the [ConfigStorage] interface (Phase 6.a B5), which
+// defaults to file-system I/O — production CLI behavior unchanged.
+// Cloud-dart's Web build can pass a SharedPreferences-backed
+// [ConfigStorage] without touching this class.
 
 import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:path/path.dart' as p;
+
+import 'config_storage.dart';
 
 class ConfigService {
   late final String internxtCliDataDir;
@@ -19,11 +21,19 @@ class ConfigService {
   late final String batchStateDir;
   late final String webdavPidFile;
 
+  final ConfigStorage storage;
+
   /// [configPath] override is for tests and Flutter consumers that
   /// supply their own data directory (e.g., `path_provider`'s app
   /// support dir on mobile). Production CLI use defaults to
   /// `~/.internxt-cli`.
-  ConfigService({String? configPath}) {
+  ///
+  /// [storage] override (Phase 6.a B5) lets non-CLI consumers
+  /// (e.g. cloud-dart's Flutter Web build) plug in a
+  /// SharedPreferences-backed impl. Defaults to file-system I/O
+  /// via [FileConfigStorage].
+  ConfigService({String? configPath, ConfigStorage? storage})
+      : storage = storage ?? FileConfigStorage() {
     final home = configPath ??
         io.Platform.environment['HOME'] ??
         io.Platform.environment['USERPROFILE'] ??
@@ -34,9 +44,7 @@ class ConfigService {
     credentialsFile = p.join(internxtCliDataDir, '.inxtcli-dart-creds.json');
     webdavPidFile = p.join(internxtCliDataDir, 'webdav.pid');
 
-    io.Directory(internxtCliDataDir).createSync(recursive: true);
-    io.Directory(internxtCliLogsDir).createSync(recursive: true);
-    io.Directory(batchStateDir).createSync(recursive: true);
+    this.storage.init(internxtCliDataDir, [internxtCliLogsDir, batchStateDir]);
   }
 
   String get configDir => internxtCliDataDir;
@@ -44,7 +52,7 @@ class ConfigService {
   // --- WebDAV PID Management ---
   Future<void> saveWebdavPid(int pid) async {
     try {
-      await io.File(webdavPidFile).writeAsString(pid.toString());
+      await storage.write(webdavPidFile, pid.toString());
     } catch (e) {
       print('⚠️  Warning: Could not save WebDAV PID file: $e');
     }
@@ -52,21 +60,18 @@ class ConfigService {
 
   Future<int?> readWebdavPid() async {
     try {
-      if (await io.File(webdavPidFile).exists()) {
-        final content = await io.File(webdavPidFile).readAsString();
-        return int.tryParse(content.trim());
-      }
+      final content = await storage.read(webdavPidFile);
+      if (content == null) return null;
+      return int.tryParse(content.trim());
     } catch (e) {
       print('⚠️  Warning: Could not read WebDAV PID file: $e');
+      return null;
     }
-    return null;
   }
 
   Future<void> clearWebdavPid() async {
     try {
-      if (await io.File(webdavPidFile).exists()) {
-        await io.File(webdavPidFile).delete();
-      }
+      await storage.delete(webdavPidFile);
     } catch (e) {
       print('⚠️  Warning: Could not clear WebDAV PID file: $e');
     }
@@ -87,26 +92,22 @@ class ConfigService {
 
   Future<Map<String, dynamic>?> loadBatchState(String batchId) async {
     final filePath = getBatchStateFilePath(batchId);
-    final file = io.File(filePath);
-    if (await file.exists()) {
-      try {
-        final content = await file.readAsString();
-        return json.decode(content) as Map<String, dynamic>;
-      } catch (e) {
-        print("⚠️ Warning: Could not read batch state file '$filePath': $e");
-        await deleteBatchState(batchId);
-        return null;
-      }
+    final content = await storage.read(filePath);
+    if (content == null) return null;
+    try {
+      return json.decode(content) as Map<String, dynamic>;
+    } catch (e) {
+      print("⚠️ Warning: Could not parse batch state '$filePath': $e");
+      await deleteBatchState(batchId);
+      return null;
     }
-    return null;
   }
 
   Future<void> saveBatchState(
       String batchId, Map<String, dynamic> state) async {
     final filePath = getBatchStateFilePath(batchId);
-    final file = io.File(filePath);
     try {
-      await file.writeAsString(json.encode(state));
+      await storage.write(filePath, json.encode(state));
     } catch (e) {
       print("⚠️ Warning: Could not save batch state file '$filePath': $e");
     }
@@ -114,13 +115,10 @@ class ConfigService {
 
   Future<void> deleteBatchState(String batchId) async {
     final filePath = getBatchStateFilePath(batchId);
-    final file = io.File(filePath);
-    if (await file.exists()) {
-      try {
-        await file.delete();
-      } catch (e) {
-        print("⚠️ Warning: Could not delete batch state file '$filePath': $e");
-      }
+    try {
+      await storage.delete(filePath);
+    } catch (e) {
+      print("⚠️ Warning: Could not delete batch state file '$filePath': $e");
     }
   }
 
@@ -130,25 +128,20 @@ class ConfigService {
   // a regression test in test/config_test.dart so a future encryption
   // upgrade is intentional, not accidental.
   Future<void> saveCredentials(Map<String, dynamic> credentials) async {
-    final file = io.File(credentialsFile);
-    await file.writeAsString(json.encode(credentials), flush: true);
+    await storage.write(credentialsFile, json.encode(credentials));
   }
 
   Future<Map<String, dynamic>?> readCredentials() async {
-    final file = io.File(credentialsFile);
-    if (!await file.exists()) return null;
+    final contents = await storage.read(credentialsFile);
+    if (contents == null) return null;
     try {
-      final contents = await file.readAsString();
       return json.decode(contents) as Map<String, dynamic>;
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
 
   Future<void> clearCredentials() async {
-    final file = io.File(credentialsFile);
-    if (await file.exists()) {
-      await file.delete();
-    }
+    await storage.delete(credentialsFile);
   }
 }

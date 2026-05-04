@@ -240,4 +240,60 @@ void main() {
       expect(b!['name'], equals('beta'));
     });
   });
+
+  group('ConfigStorage composition (Phase 6.a B5)', () {
+    test('InMemoryConfigStorage swap: zero filesystem touches', () async {
+      final mem = InMemoryConfigStorage();
+      final cfg = ConfigService(configPath: tmp.path, storage: mem);
+      // Sanity: paths still computed for keying purposes, but the
+      // backing storage is in-memory.
+      expect(cfg.credentialsFile.endsWith('.inxtcli-dart-creds.json'), isTrue);
+
+      await cfg.saveCredentials({'token': 't1', 'userId': 'u1'});
+      final back = await cfg.readCredentials();
+      expect(back!['token'], equals('t1'));
+      expect(back['userId'], equals('u1'));
+
+      // The real filesystem under tmp.path has NO credentials file.
+      expect(File(cfg.credentialsFile).existsSync(), isFalse);
+
+      await cfg.clearCredentials();
+      expect(await cfg.readCredentials(), isNull);
+    });
+
+    test('InMemoryConfigStorage: batch + PID round-trip without disk', () async {
+      final mem = InMemoryConfigStorage();
+      final cfg = ConfigService(configPath: tmp.path, storage: mem);
+
+      await cfg.saveBatchState('b1', {'a': 1});
+      expect((await cfg.loadBatchState('b1'))!['a'], equals(1));
+      await cfg.deleteBatchState('b1');
+      expect(await cfg.loadBatchState('b1'), isNull);
+
+      await cfg.saveWebdavPid(42);
+      expect(await cfg.readWebdavPid(), equals(42));
+      await cfg.clearWebdavPid();
+      expect(await cfg.readWebdavPid(), isNull);
+
+      // Filesystem stayed clean
+      expect(File(cfg.webdavPidFile).existsSync(), isFalse);
+    });
+
+    test('default storage is FileConfigStorage when omitted', () {
+      final cfg = ConfigService(configPath: tmp.path);
+      expect(cfg.storage, isA<FileConfigStorage>());
+    });
+
+    test('FileConfigStorage round-trips strings via the filesystem', () async {
+      final fs = FileConfigStorage();
+      final key = '${tmp.path}/probe.txt';
+      expect(await fs.exists(key), isFalse);
+      expect(await fs.read(key), isNull);
+      await fs.write(key, 'hello');
+      expect(await fs.exists(key), isTrue);
+      expect(await fs.read(key), equals('hello'));
+      await fs.delete(key);
+      expect(await fs.exists(key), isFalse);
+    });
+  });
 }

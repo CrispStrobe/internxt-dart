@@ -30,6 +30,7 @@ import 'drive.dart' as inxt_drive;
 import 'upload.dart' as inxt_upload;
 import 'download.dart' as inxt_download;
 export 'config.dart' show ConfigService;
+export 'config_storage.dart';
 export 'crypto.dart';
 export 'utils.dart';
 export 'cache.dart';
