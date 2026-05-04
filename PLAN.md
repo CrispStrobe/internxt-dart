@@ -2,11 +2,24 @@
 
 What's known to be unimplemented, broken, or worth porting from the
 Python sibling ([`internxt-cli`](https://github.com/CrispStrobe/internxt-cli)).
-The 73-test suite (61 unit + 12 live) at the end of the audit serves
-as the safety net for everything below.
+The current 150-test suite (108 unit + 42 live) is the safety net
+for everything below.
 
 For what's been done already, see [`HISTORY.md`](HISTORY.md).
 For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
+
+## Status snapshot (after Phase 8)
+
+**Done:**
+- Phase 4 — module split (10 modules at root)
+- Phase 5 — 5 PINNED GAP feature ports (search, copy, update, listing, usage)
+- Phase 7 — 10 perf/UX parity items (memory gate, parallel upload, batch mv, pre-scan + size-skip, cache TTL, progress, Ctrl+C, mtime column, size limit, WebDAV test rig)
+- Phase 8 — 5 functional gaps closed (trash lifecycle, quota CLI, safety_pattern, WebDAV PUT preserves UUID)
+
+**Open (ordered by next-up priority):**
+1. CI workflow (GitHub Actions)
+2. Re-enable `strict-casts` / `strict-inference` now that JSON parsing is contained
+3. Phase 6 — publish as a Dart package + reunify with cloud-dart
 
 ---
 
@@ -188,285 +201,66 @@ Unifying lets the next audit cover both at once.
 
 ---
 
-## Functional gaps vs. the Python sibling
+## Functional gaps — all closed in Phases 5 and 8
 
-The Python CLI has features we never ported. Each is a self-contained
-addition.
+| Item | Status | Where |
+|---|---|---|
+| Trash lifecycle (list/restore/clear) | DONE | Phase 8.1 |
+| Search + find as CLI subcommands | DONE | already wired pre-8 |
+| `whoami` / `config` CLI subcommands | DONE | already wired pre-8 |
+| `quota` CLI subcommand | DONE | Phase 8.2 |
+| Conflict-handling: `safety_pattern` | DONE | Phase 8.4 |
+| File copy (`copy_item`) | DONE | Phase 5.c |
+| File replace-in-place (`update_file`) | DONE | Phase 5.d |
+| `list_folder_with_paths` enriched listing | DONE | Phase 5.b |
+| WebDAV PUT-on-existing preserves UUID | DONE | Phase 8.5 |
 
-### Trash lifecycle (`trash-list`, `trash-restore`, `trash-clear`)
-
-The Python sibling has `trash-list`, `trash-restore-path`, and
-`trash-clear` commands. The Dart version can trash items but has no
-recovery path from the CLI — the user has to use the Internxt web UI.
-
-Backend endpoints to add:
-- `GET /storage/trash/paginated` — list trash contents
-- `POST /trash/restore` — restore a single item
-- `DELETE /storage/trash/all` — empty trash
-
-Estimated work: ~80 LOC + 3 unit tests + 2 live tests.
-
-### Search (`search`, `find`) — DONE in Phase 5 (live-tested)
-
-`search` (server-side fuzzy via `GET /fuzzy/{query}`) and `findFiles`
-(client-side recursive glob) are both in `drive.dart` and exercised
-by live tests as of the live-test parity pass. The remaining work
-is wiring them to user-facing CLI subcommands (the methods exist but
-are not surfaced via `bin/inxt search` or similar).
-
-### `whoami`, `quota`, `config` commands
-
-Three small commands the Python sibling exposes. `whoami` prints the
-logged-in email; `quota` prints used/limit storage; `config` prints
-the active config keys.
-
-`getStorageUsage` is **DONE in Phase 5.a** — the endpoint helper
-exists in `api.dart`. What's missing is the `quota` user-facing
-subcommand wiring.
-
-Estimated work: ~30 LOC each + 1 unit test each.
-
-### Conflict-handling on upload — partial (`skip` + `overwrite` DONE)
-
-`onConflict='skip'` and `onConflict='overwrite'` are both implemented
-in `upload.dart` and exercised by the live suite. Still missing:
-`safety_pattern` (upload to temp name → rename existing to `.bak`
-→ promote temp). Without it, the `overwrite` branch destroys the
-previous version with no recovery path beyond Internxt's 30-day
-trash.
-
-Estimated work: ~80 LOC + 2 unit tests + 1 live test for the
-`safety_pattern` branch alone.
-
-### File copy (`copy_item`) — DONE in Phase 5.c
-
-Implemented in `upload.dart` as the download → re-upload pattern
-(no server-side copy endpoint exists). Live-tested.
-
-### File replace-in-place (`update_file`) — DONE in Phase 5.d
-
-Implemented in `upload.dart` as `updateFile` + `replaceFile`
-endpoint helper in `api.dart`. Same UUID is preserved across
-replace. Live-tested. **Wiring `updateFile` into the Dart WebDAV
-layer's PUT-on-existing path is the remaining work** — currently
-the WebDAV layer trashes + re-uploads, churning the UUID.
-
-### `list_folder_with_paths` enriched listing — DONE in Phase 5.b
-
-Library-level method in `drive.dart` returning entries annotated
-with `path`, `displayName`, `sizeDisplay`, and `modified`. Live-
-tested.
+See [`HISTORY.md`](HISTORY.md) for per-feature commit links and
+implementation notes.
 
 ---
 
-## Phase 7: performance + UX parity with the Python sibling
+## Phase 7 — all closed
 
-The Python sibling has had ~6 months of post-audit polish since the
+The Python sibling had ~6 months of post-audit polish since the
 fork point: chunked uploads, memory-gated concurrency, parallel
 worker pools, batch-mv ergonomics, throttled progress, clean Ctrl+C
-abort. The Dart port has the basic upload/download flows working
-but lacks most of the perf/UX layer above them. This phase brings
-the Dart port up to par.
+abort. Phase 7 ported each one. See [`HISTORY.md`](HISTORY.md) for
+the per-item commit table. All 10 sub-items closed:
 
-Items are listed in implementation order — earlier ones are
-prerequisites for later ones (memory gate must precede parallel
-upload pool; pre-scan layer needs the per-parent cache to land
-first).
+| # | What | Commit |
+|---|---|---|
+| 7.1 | Memory-gated upload concurrency (`MemoryGate`) | `b820578` |
+| 7.2 | `--workers N` parallel upload pool (`runBoundedPool`) | `d463197` |
+| 7.3 | Batch-mv ergonomics (multi-source / dry-run / parallel / on-conflict) | `cf40f20` |
+| 7.4 | Pre-scan + size-based skip on re-upload | `f4b1813` |
+| 7.5 | Folder cache TTL 10 min → 1 hr | `83790d4` |
+| 7.6 | Throttled progress counters (`ProgressLine`) | `ce661ad` |
+| 7.7 | Ctrl+C clean abort (`CancellationToken`) | `f9e4b7c` |
+| 7.8 | `list` shows Modified column | `8779029` |
+| 7.9 | 20 GB upper bound + dynamic timeout | `9a9be42` |
+| 7.10 | WebDAV reliability test rig + 2 real bug fixes | `81a182b` |
 
-### 7.1 Memory-gated upload concurrency
-
-Python `cdaa7d7` ("limit uploads < oom") wraps every upload in a
-`_mem_acquire` / `_mem_release` pair. The semaphore reserves
-~`2 * file_size` (plaintext + encrypted copy held simultaneously),
-blocks workers when free RAM falls below the reservation, and
-releases half the reservation right after `del plaintext` once the
-encrypt step completes.
-
-Without this, the Dart port can OOM the process when uploading a
-single large file on a small box, and the situation gets much
-worse when 7.2 lands and N uploads happen concurrently.
-
-**Status: GAP.** `uploadFile` reads the entire file into memory
-(`localFile.readAsBytes()`), encrypts in place, then sends. No
-back-pressure.
-
-Estimated work: ~80 LOC for the gate (process-wide mutex over a
-counter; condition variable to wake waiters on release) + ~20 LOC
-of integration in `uploadFile` and `updateFile`. Unit-testable.
-
-### 7.2 `--workers N` parallel upload pool
-
-Python `3af32cb` runs the per-file upload pass in a
-`ThreadPoolExecutor(max_workers=N)` with default 4. Per-file
-operations are independent (each gets its own shard URL, encrypts
-independently, hits a distinct network endpoint), so they
-parallelize cleanly. Memory gate prevents OOM when N workers all
-have large files in flight.
-
-**Status: GAP.** `upload()` in `upload.dart` is a sequential `for`
-loop over tasks.
-
-Estimated work: ~80 LOC. Use bounded `Future`-pool pattern (no
-isolates needed — Dart's I/O is async-friendly). Add `--workers`
-arg parsing in cli.dart, default 4.
-
-### 7.3 Batch-mv ergonomics (multi-source, dry-run, parallel, on-conflict)
-
-Python `4ed03c9` rebuilt the `mv` command around rsync-style
-multi-source semantics, parallel execution, dry-run preview, and a
-conflict policy.
-
-**Status: gap.** Dart `handleMovePath` accepts exactly two args
-(source pattern + dest), runs sequentially, has no `--dry-run`,
-no `--workers`, no `--on-conflict`, and doesn't filter "source
-already in target" no-ops.
-
-Estimated work: ~150 LOC. Mostly orthogonal to 7.1/7.2 (mv doesn't
-have a memory pressure problem) but reuses the parallel-pool
-helper from 7.2.
-
-### 7.4 Pre-scan + Pass 1/Pass 2 + size/mtime skip
-
-Python `3af32cb` restructured the recursive upload as:
-- **Pre-scan**: list the remote target subtree once.
-- **Pass 1 (mkdir)**: create remote folders, but skip everything
-  that pre-scan already saw.
-- **Pass 2 (uploads)**: per-file work, using the per-parent file
-  cache that Pass 1 seeded — Pass 2 makes zero listing calls.
-- **Per-file size/mtime skip**: re-uploads only when local size
-  differs from remote (and mtime when `-p`).
-
-**Status: gap.** Dart's `upload()` calls `createFolderRecursive`
-on every parent (hits the 409-conflict-recovery path on every
-existing folder), and `uploadSingleItem` calls `resolvePath` on
-every file (lists the parent on cold cache).
-
-Estimated work: ~120 LOC + 1 live test exercising the "re-run with
-zero changes is a no-op" assertion.
-
-### 7.5 Folder cache TTL 10m → 1h
-
-Python `3af32cb` bumped `_FOLDER_CACHE_TTL_S` from 600 to 3600 to
-avoid mid-batch cache misses on long uploads.
-
-**Status: gap.** `cache.dart`'s `cacheDuration` is still
-`Duration(minutes: 10)`.
-
-Estimated work: 1 line. Worth a brief comment explaining the
-tradeoff (staler reads vs fewer mid-batch refetches). Group with
-7.4's commit since they're related.
-
-### 7.6 Throttled progress counters for scan/plan/Pass 2
-
-Python `f0889fb` added a `~5/sec` in-place counter to each phase:
-
-```
-  -> 📋 Scanning remote: 1,234 folders, 45,678 files
-  -> 🔎 Planning: scanned 9,012, queued 8,500, skipped 512
-  -> 📤 Uploaded 4,250/8,500 ( 50.0%) ok=4,200 err=50
-```
-
-Each phase finalizes its line with a force-flush + newline so the
-next log message starts cleanly.
-
-**Status: gap.** Dart has the per-file chunk progress (the streamed
-PUT bar) but no scan/plan/batch counters — big batches show long
-silences.
-
-Estimated work: ~50 LOC. Tiny `_ProgressLine` helper that
-debounces stdout writes to ~200 ms intervals. Hook into the
-pre-scan, planning, and Pass-2 phases from 7.4.
-
-### 7.7 Ctrl+C clean abort
-
-Python `374a1be` wires SIGINT into the upload pipeline:
-- `threading.Event` flag is set on Ctrl+C.
-- Queued workers see the flag at the top of `_do_upload` and
-  return `('cancelled', ...)` immediately.
-- `executor.shutdown(wait=False, cancel_futures=True)` drops
-  futures that haven't started yet.
-- In-flight uploads finish their current network call (Python
-  threads can't be killed mid-stream).
-- Summary line still prints, with an "ABORTED by user" header
-  and the cancelled count. Process exits 130.
-
-**Status: gap.** Dart has nothing for cancellation. Ctrl+C just
-kills the process mid-stream, leaving the batch-state file in
-whatever state the last save left it.
-
-Estimated work: ~80 LOC. Use `ProcessSignal.sigint.watch()` and a
-shared `_Cancelled` flag threaded through the upload pipeline.
-Needs to be wired through 7.2's parallel pool too — should land
-together with or shortly after 7.2.
-
-### 7.8 List shows mtime column
-
-Python `764d9b1` added a Modified column to the `list` output.
-The Python `list_folder_with_paths` already includes the
-`modified` field (Python's name) → Dart's `modified` field via
-Phase 5.b — **the data is there**; only the rendering column is
-missing.
-
-**Status: gap.** `handleList` in cli.dart shows Type / Name / Size
-/ UUID. No timestamp column.
-
-Estimated work: ~10 LOC. Format the existing `modificationTime` /
-`updatedAt` field; widen the table by one column.
-
-### 7.9 20 GB upper bound + dynamic timeout
-
-Python `upload_file_to_folder` rejects files larger than
-`TWENTY_GIGABYTES = 20 GB` up front, and computes a per-file
-upload timeout as
-`max(300, file_size / (100 KB/s)) + 60` seconds so very-large
-uploads don't hit a fixed 30-second timeout mid-stream.
-
-**Status: gap.** Dart has no upper bound; oversized files fail
-later in the pipeline with confusing errors. There's no per-upload
-timeout at all (the `package:http` `StreamedRequest` inherits
-whatever the underlying client uses).
-
-Estimated work: ~20 LOC. Defensive check at the top of
-`uploadFile`/`updateFile`; pass a `Duration` into the streamed
-PUT.
-
-### 7.10 WebDAV reliability test rig
-
-Already in the Reliability section below — listed here as #10
-because it's in the same priority list. ~3 hours / ~400 LOC of
-test code. Spawn the WebDAV server on a free local port, run real
-HTTP requests against it (OPTIONS, PROPFIND, MKCOL, PUT, GET,
-DELETE, MOVE, PROPPATCH), all inside the existing live-test
-sentinel folder, both small (in-memory) and large (disk-buffer)
-PUT paths.
+The original detailed Phase 7 plan ran ~180 lines here; collapsed
+to this table since all items are now in HISTORY.md with full
+commit references.
 
 ---
 
 ## Reliability work
 
-### WebDAV provider — exists but lightly tested
+### WebDAV provider — DONE in Phase 7.10
 
-`webdav_filesystem.dart` (788 LOC) implements the WebDAV server side
-but has no unit tests. We removed 9 wrong `@override` annotations in
-Phase 1, but that only fixed compile-time noise — the actual behaviour
-under HTTP traffic is unverified.
+`test/webdav_live_test.dart` spawns the actual WebDAV server on a
+free local port (127.0.0.1 only) and drives it with raw HTTP for
+`OPTIONS`, `PUT`, `GET`, `DELETE`, `PROPFIND`. Caught two real
+bugs in `webdav_filesystem.dart`: `InternxtFile.create()` threw
+unconditionally (broke every PUT) and `creds['userIdForAuth']!`
+was null on fresh login (auth value lives under two keys).
 
-Same shape as the Python sibling's gap (see Python `PLAN.md` section
-F). The recommended path:
-
-1. Start the WebDAV server in a background isolate on a free local
-   port (127.0.0.1 only, no LAN exposure).
-2. Run real HTTP requests against it: `OPTIONS`, `PROPFIND`, `MKCOL`,
-   `PUT`, `GET`, `DELETE`, `MOVE`, `PROPPATCH`.
-3. All ops inside the existing live-test sentinel folder.
-4. Both the small-file (in-memory) and large-file (disk-buffer) paths
-   on PUT.
-
-This catches the macOS-Finder-specific quirks (`If: <token>`
-conditional headers, `Depth: infinity`) and the disk-buffer streaming
-path that's invisible to unit tests.
-
-Estimated work: ~3 hours, +400 LOC of test code.
+Possible follow-on tests if a future use case justifies them:
+`MKCOL`, `MOVE`, `COPY`, `PROPPATCH`, the macOS-Finder-specific
+quirks (`If: <token>` conditional headers, `Depth: infinity`).
 
 ### Stale-cache audit
 
@@ -495,43 +289,46 @@ Estimated work: ~2 hours of audit + ~5 live tests.
 
 ## Tooling
 
-### CI
+### CI — open
 
-No GitHub Actions in this repo. Should mirror the Python sibling:
+No GitHub Actions in this repo yet. Workflow needs to mirror the
+Python sibling's gates:
 
 ```yaml
 - run: dart pub get
 - run: dart analyze --fatal-infos
 - run: dart format --output=none --set-exit-if-changed .
-- run: dart test test/crypto_test.dart test/config_test.dart test/utils_test.dart
-  # Live tests skipped in CI (no creds; see below)
+- run: dart test test/crypto_test.dart test/config_test.dart \
+                  test/utils_test.dart test/cache_test.dart \
+                  test/upload_test.dart test/cli_test.dart
+  # Live tests stay opt-in via IXT_ACCOUNT / IXT_PWD env vars;
+  # CI skips them (don't put real creds in GitHub Secrets for a
+  # personal-use project).
 ```
-
-The live suite stays opt-in via `IXT_ACCOUNT` / `IXT_PWD` env vars.
-Same recommendation as Python: don't put real creds in GitHub Secrets
-for a personal-use project.
 
 Estimated work: 1 hour (one workflow file).
 
-### `dart fix --apply` is dangerous
+### `dart fix --apply` is dangerous (recorded in LEARNINGS.md)
 
-We learned this the painful way: `dart fix --apply` corrupted the
-source on its first invocation (504 errors after autofix, including
-158 undefined-identifier and 13 unterminated-string-literal errors —
-the auto-style transforms mangled string interpolations). Don't run
-it on this codebase. Use individual `dart fix` invocations with
-`--code <name>` if you need a specific lint fix at scale, but not the
-shotgun version.
+`dart fix --apply` corrupted the source on its first invocation
+during the audit. Use `dart fix --code <name>` for scoped fixes;
+never the unscoped form.
 
-Recorded in `LEARNINGS.md` so this is a one-time mistake.
+### Strict casts / inference — open
 
-### Coverage threshold
+`analysis_options.yaml` has `strict-casts` / `strict-inference`
+disabled. Phase 4 contained the JSON parsing layer in `api.dart`,
+so the dynamic-typed surface is now isolated. Re-enabling these
+would surface ~50–100 real type imprecisions across the rest of
+the codebase that we can fix incrementally.
 
-Once Phase 4 lands and per-module coverage is meaningful, set a CI
-gate: `crypto.dart` and `auth.dart` must be 100%, total ≥ 80%. The
-Python sibling has the same shape — non-trust-root code is allowed
-to drop coverage on platform-specific or print-heavy branches that
-unit tests can't exercise cleanly.
+Estimated work: 2 hours (turn on the flags, fix what surfaces).
+
+### Coverage threshold — open
+
+Set a CI gate: `crypto.dart` and `auth.dart` must be 100%, total
+≥ 80%. Per-module coverage is now meaningful since Phase 4
+extracted the modules.
 
 ---
 
@@ -549,25 +346,8 @@ These are intentionally not on the roadmap:
   command-line tool). Not worth merging via symlink — they'll diverge
   on intent (CLI ergonomics vs. Flutter callbacks).
 
----
-
-## Suggested next session
-
-If you want to ship one more bundle of work, in order of value:
-
-1. **Phase 4: split the monolith** (~4 hours) — unblocks measurable
-   coverage, strict typing, and clean module boundaries. Required
-   prerequisite for any of the gap work below.
-2. **Conflict-handling on upload** (~3 hours) — biggest data-safety
-   gap. Without `safety_pattern`, re-uploads are destructive.
-3. **WebDAV reliability test rig** (~3 hours) — biggest real-world
-   blind spot, mirrors what we'd recommended for Python.
-4. **Trash lifecycle** (~2 hours) — closes the most-visible upstream
-   functional gap.
-
-Total: roughly two sessions. Would close every meaningful gap
-identified by this audit and bring the Dart port to feature parity
-with the Python sibling on everything except search.
-
-If you can only do one: **Phase 4**. Everything else is much easier
-once the file is split.
+(See the "Status snapshot" at the top for the current open-work
+shortlist. The detailed "Suggested next session" prose that lived
+here through Phase 4 has been retired — every item it pointed at
+has either been done or is captured in a more specific section
+above.)

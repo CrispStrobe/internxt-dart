@@ -6,6 +6,92 @@ retrospective lessons see [`LEARNINGS.md`](LEARNINGS.md).
 
 ---
 
+## Phase 8: remaining functional gaps with the Python sibling
+
+Five user-facing gaps closed after Phase 7. cli.dart's command
+surface now matches the Python sibling on the operations that
+matter for daily use.
+
+| Commit | Phase | What |
+|---|---|---|
+| `c84806a` | 8.1 | Trash lifecycle. `restoreItem`/`clearTrash` endpoints in api.dart, `restoreFromTrash`/`clearTrashAll` in drive.dart, `handleTrashClear`. Existing `restore-uuid`/`restore-path` were rewired to use `restoreFromTrash` instead of `moveFile` (which silently no-ops on trashed items). The documented `POST /trash/restore` endpoint returns 404 on the live gateway as of this audit (same shape as `/users/me`); `restoreFromTrash` falls back to a `PATCH /files/{uuid}/destinationFolder` move which Internxt accepts as a restore. |
+| `9231efb` | 8.2 (+ 8.3) | `quota` CLI subcommand, surfaces `getStorageUsage` with bytes/limit/percent rendering. `whoami`/`config`/`search`/`find` were already wired (handlers existed; dispatch cases existed) — 8.3 was a no-op. |
+| `43c8f21` | 8.4 | `safety_pattern` upload conflict mode. Three-step rename dance: upload as `<original>.<hex>.tmp`, rename existing to `<original>.bak`, promote the temp upload. Failure-recoverable — no data is destroyed by this branch, unlike `overwrite`. Closes the highest-priority data-safety gap from PLAN.md. |
+| `b5fc46e` | 8.5 | WebDAV PUT-on-existing now uses `updateFile` (Phase 5.d). Same UUID is preserved across content replace — eliminates UUID churn for external WebDAV clients (most cache the URL→UUID mapping). The fall-through path (file doesn't exist yet) still uses `uploadSingleItem` to create new. |
+
+Live test count: 33 → 36 (+1 trash lifecycle, +1 safety_pattern,
++1 webdav-PUT-update). 150 tests total green at end of Phase 8.
+
+---
+
+## Phase 7: performance + UX parity with the Python sibling
+
+After the live test parity expansion (28 live tests + 5 PINNED
+GAPs), a 6-month diff against the Python sibling revealed 10
+performance and UX features the Python port had grown over time
+that the Dart fork lacked. Phase 7 ports each one with both unit
+and live test coverage, and surfaces 2 real bugs in the WebDAV
+layer along the way.
+
+| Commit | Phase | What |
+|---|---|---|
+| `b820578` | 7.1 | Memory-gated upload concurrency (`MemoryGate`). Counter of reserved bytes; uploads acquire `2 * file_size` before reading + encrypting, release in `finally`. Cross-platform `_availableMemory` (Linux: `/proc/meminfo`, macOS: `vm_stat` + `sysctl hw.pagesize`, fallback: 4 GB). Override hook for tests. Without this, parallel uploads (Phase 7.2) of large files OOM on small machines. |
+| `d463197` | 7.2 | `--workers N` parallel upload pool. New `runBoundedPool<T>(...)` helper. Pre-creates each unique parent path sequentially so concurrent workers don't all hit createFolderRecursive's 409-conflict-recovery on the same path. Worker exceptions caught + counted in summary so a single failure doesn't abort the batch. State saves serialized through a Future-chain. **Includes 11 unit tests covering both 7.1 and 7.2** (back-fills 7.1's coverage). |
+| `cf40f20` | 7.3 | Batch-mv ergonomics: multi-source rsync-style, `--dry-run`, `--workers`, `--on-conflict skip\|overwrite`. New static `executeMoveBatch(...)` is the testable entry-point; `handleMovePath` becomes a thin arg-parser. New pure `buildMovePlan(...)` decides per-item action — unit-tested with 7 scenarios. Overwrite branch uses `trashItems` (was incorrectly using `deletePermanently` which only works on already-trashed items). |
+| `f4b1813` | 7.4 | Pre-scan + size-based skip on re-upload. `preScanRemote` walks the remote target subtree once at batch start, builds `parentPath → {filename → sizeBytes}` map. Task generation marks each file `skipped_size_match` if local size matches remote — under `onConflict=skip`. Re-running an unchanged tree now uploads zero files. Mtime equality intentionally NOT enforced (Internxt re-stamps `modificationTime` on store, making mtime parity unreliable). |
+| `83790d4` | 7.5 | Folder cache TTL bumped 10 minutes → 1 hour. Long batch operations don't hit cache misses just because the wall clock crossed an arbitrary boundary. Trade-off: external mutations take up to 1 hour to surface, but internal mutations still invalidate eagerly. |
+| `ce661ad` | 7.6 | Throttled progress counters (`ProgressLine`). 200 ms minimum interval between stdout writes. Pre-scan and Pass-2 phases each render an in-place counter — big batches show real progress instead of long silences. Per-file chunk progress bar in `uploadChunkWithProgress` is unchanged. |
+| `f9e4b7c` | 7.7 | Ctrl+C clean abort. New `CancellationToken` class. `runOne` checks `isCancelled` at the top; if set, marks task `cancelled` and returns without doing work. cli.dart subscribes to `ProcessSignal.sigint.watch()` — first Ctrl+C cancels, second Ctrl+C does `exit(130)`. Batch state file preserved on cancel so the user can resume by re-running the same command. |
+| `8779029` | 7.8 | `list` shows Modified column. Switched `handleList` to request `detailed: true` from the listing primitives so each entry carries `modificationTime` / `updatedAt`. New static `formatMtime` produces a fixed-width `YYYY-MM-DD HH:MM` string with proper null/short-input padding for column alignment. |
+| `9a9be42` | 7.9 | 20 GB upper bound + dynamic timeout. `maxFileSizeBytes` constant rejects oversized files before encryption starts. `uploadTimeoutForSize(fileSize)` computes per-file timeout as `max(300, file_size / 100 KB/s) + 60` seconds, applied to the response wait in `uploadChunkWithProgress`. |
+| `81a182b` | 7.10 | **WebDAV reliability test rig + 2 real bug fixes.** Spawns the actual WebDAV server on a free local port, drives it with raw HTTP (`OPTIONS`, `PUT`, `GET`, `DELETE`, `PROPFIND`). Caught: (1) `InternxtFile.create()` threw `UnimplementedError` unconditionally — broke EVERY PUT through WebDAV. Fixed to no-op. (2) `writeAsBytes` and `readAsBytes` used `creds['userIdForAuth']!` which is null on fresh login (only set by `refreshToken`) — same shape as the Phase 3 folderId/folderUuid keying bug. Fixed to fall back to `creds['userId']`. |
+
+### Live test parity with the Python sibling (mid-Phase 7 expansion)
+
+Before the perf/UX work, the live suite was expanded from 12 →
+23 + 5 PINNED GAPs to match the Python sibling's `test_live_smoke.py`
+test count. Notable adds: unicode filenames, extensionless files,
+2 MB chunked upload, search/find end-to-end, recursive batch
+upload, move-non-empty-folder with UUID preservation, conflict-skip
++ conflict-overwrite. Conflict-policy tests were particularly
+load-bearing — those code paths existed in `upload.dart` since
+Phase 4.i but had zero integration coverage before this pass.
+
+The 5 PINNED GAPs (skipped tests with documented reasons) were
+all closed in Phase 5 before the Phase 7 work began.
+
+### Phase 5 (mid-flight): close the 5 PINNED GAPs
+
+| Commit | Phase | What |
+|---|---|---|
+| `c391cd1` | 5.a | `getStorageUsage` + `getUserInfo` endpoints in api.dart. `/users/me` is a known-404 regression marker — it doesn't exist on the live gateway but is kept for parity with Python. |
+| `73b0609` | 5.b | `listFolderWithPaths` library method in drive.dart. Returns entries enriched with `path`, `displayName`, `sizeDisplay`, `modified`. |
+| `c10baa1` | 5.c | `copyItem` in upload.dart. No server-side copy endpoint exists; implementation is download → re-upload, mirroring the Python pattern. New file gets a new UUID. |
+| `27edf15` | 5.d | `replaceFile` endpoint in api.dart + `updateFile` orchestrator in upload.dart. Encrypt + start/chunk/finish, then PUT `/files/{uuid}` with `{fileId, size}` to repoint the drive entry. **Same UUID preserved** — used by 8.5 to fix WebDAV PUT-on-existing. |
+
+Final state at end of Phase 5: live suite at 28/28 with 0 skips,
+matching Python sibling's test count.
+
+### Final module + test counts at end of Phase 8
+
+| Module | LOC | Tests |
+|---|---|---|
+| `cli.dart` | ~2700 | unit: 12 (cli_test.dart); integrated by every live test |
+| `config.dart` | 152 | unit: 22 (config_test.dart) |
+| `crypto.dart` | 211 | unit: 22 (crypto_test.dart) |
+| `utils.dart` | 45 | unit: 17 (utils_test.dart) |
+| `cache.dart` | 84 | unit: 3 (cache_test.dart) |
+| `api.dart` | ~280 | integrated by every live test |
+| `auth.dart` | 167 | integrated by every live test |
+| `drive.dart` | ~1100 | integrated by every live test |
+| `upload.dart` | ~1500 | unit: 32 (upload_test.dart); integrated by every live test |
+| `download.dart` | 460 | integrated by every live test |
+| `webdav_filesystem.dart` | ~810 | live: 4 (webdav_live_test.dart) |
+
+Total tests: 150 (108 unit + 39 live smoke + 3 live webdav).
+
+---
+
 ## Phase 4 (complete): module split
 
 `cli.dart` was decomposed from a 4317-line monolith into focused
