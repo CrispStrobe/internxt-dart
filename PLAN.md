@@ -2,13 +2,13 @@
 
 What's known to be unimplemented, broken, or worth porting from the
 Python sibling ([`internxt-cli`](https://github.com/CrispStrobe/internxt-cli)).
-The current 150-test suite (108 unit + 42 live) is the safety net
+The current 194-test suite (155 unit + 39 live) is the safety net
 for everything below.
 
 For what's been done already, see [`HISTORY.md`](HISTORY.md).
 For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
-## Status snapshot (after Phase 9)
+## Status snapshot (after Phase 6.c)
 
 **Done:**
 - Phase 4 — module split (10 modules at root)
@@ -16,29 +16,30 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - Phase 7 — 10 perf/UX parity items (memory gate, parallel upload, batch mv, pre-scan + size-skip, cache TTL, progress, Ctrl+C, mtime column, size limit, WebDAV test rig)
 - Phase 8 — 5 functional gaps closed (trash lifecycle, quota CLI, safety_pattern, WebDAV PUT preserves UUID)
 - Phase 9 — doc sweep, GitHub Actions CI, `strict-casts: true` everywhere, publish-prep (pubspec / bin / CHANGELOG)
-- Phase 9.5 — coverage gate in CI (per-file thresholds: `crypto.dart` 100%, `utils.dart` 100%, `config.dart` 90%; gate script at `tool/check_coverage.dart`)
+- Phase 9.5 — coverage gate in CI (per-file thresholds; gate script at `tool/check_coverage.dart`)
 - Phase 9.6 — stale-cache audit + cache-invalidation fixes for `set{File,Folder}Timestamp`; pinned a gateway-side gap (Internxt silently overwrites `modificationTime` on PUT-meta) as a known-broken regression marker
-- Phase 9.7 — extend coverage gate to `cache.dart` at 90%; add `test/auth_test.dart` pinning `computeBridgePass`
-- Phase 9.7.1 — http-injectable refactor: `makeRequest` and auth.dart's three http-bound functions now accept an optional `http.Client`, defaulting to the top-level `http.get/post/...` helpers in production. Tests use `MockClient` from `package:http/testing.dart`. New `test/api_test.dart` (13 tests) + expanded `test/auth_test.dart` (11 tests). `api.dart` and `auth.dart` added to coverage gate at 30% each (testable-without-live-creds slice; remaining surface is 5xx-retry-with-backoff and login's crypto path)
-
-**Open — load-bearing (next session candidates):**
-1. **Phase 6.a continuation — lib/ restructure + 5 cloud-dart-enabling extensions.** Move modules to `lib/internxt_client/` + barrel + update test imports (~1h), AND bundle the five extensions Phase 6.b validation identified as load-bearing for the rewire (~2h):
-   - **B1**: add `downloadFileBytes(String, {Function(int,int)? onProgress})` method to `InternxtClient` (~15 min). Thin wrapper over the streamed download with `BytesBuilder` accumulation.
-   - **B2**: port the 7 path-facade methods from cloud-dart's `internxt_client_extensions.dart` upstream as a `paths.dart` module or extension methods (`listPath`, `uploadFile`-by-path, `downloadFileByPath`, `createFolderPath`, `deletePath`, `movePath`, `renamePath`) (~30 min).
-   - **B3**: rename `ConfigService({String? dataDir})` → `ConfigService({String? configPath})` (~5 min). Affects `config.dart` constructor + 2 callsites in `cli.dart` + tests. cloud-dart's `main.dart` and `internxt_client_adapter.dart` use `configPath:`.
-   - **B4**: make `networkUrl` / `driveApiUrl` non-static instance fields with constructor defaults (~20 min). cloud-dart's Web build needs to pass Vercel proxy paths.
-   - **B5**: extract a `ConfigStorage` interface (`read` / `write` / `delete` / `list`) that `ConfigService` composes; default impl is current file-IO (~45 min). cloud-dart's Web build needs a `SharedPreferences` impl.
-   See `AUDIT_6B.md` for the per-blocker rationale and cloud-dart consumer callsites that pin each one.
-2. **Phase 6.b — audit cloud-dart's divergence. DONE.** See `AUDIT_6B.md`. Headline: cloud-dart is a pre-Phase-4 fork lacking all Phase 5/7/8/9 work; rewire is mechanical drop-in once Phase 6.a B1–B5 land. Validation pass confirmed every consumer call has a target with a matching signature.
-3. **Phase 6.c — rewire cloud-dart.** Mechanical drop-in: delete the embedded protocol class + dead CLI + dead file-system classes (~4400 LOC removed), swap imports, wire B4/B5 impls, smoke-test. ~2h. Closes the multi-repo divergence permanently. Gated on 6.a B1–B5.
+- Phase 9.7 / 9.7.1 — extend coverage to `cache.dart`/`api.dart`/`auth.dart`; http-injectable refactor (optional `http.Client` on `makeRequest` + auth functions, MockClient pattern in tests)
+- **Phase 6.a — lib/ restructure + 5 cloud-dart-enabling extensions.** All 11 root modules moved into `lib/`, public barrel at `lib/internxt_client.dart`, test imports switched to `package:internxt_client/...`. Plus the five extensions (B1–B5) the cloud-dart rewire required:
+  - B1: `downloadFileBytes(...)` (UUID-based) on `InternxtClient` + extends Phase 9.7.1's http.Client injection to `getFileMetadata` and `getDownloadLinks`. New `test/download_test.dart` mocks the full streaming-decrypt pipeline.
+  - B2: path facade upstreamed from cloud-dart as `lib/paths.dart` (extension methods on `InternxtClient`: `listPath`, `uploadFileBytes`, `downloadFileByPath`, `downloadFileBytesByPath`, `createFolderPath`, `deletePath`, `movePath`, `renamePath`). Added `bridgeUser` / `userIdForAuth` as InternxtClient state with the Phase 7.10 fallback (fresh login lacks `userIdForAuth` → fall back to `userId`). New `test/paths_test.dart`.
+  - B3: `ConfigService({String? dataDir})` → `ConfigService({String? configPath})`. Symmetric `configPath` getter added later for cloud-dart's adapter to read.
+  - B4: `networkUrl` / `driveApiUrl` → constructor-overridable instance fields with `defaultNetworkUrl` / `defaultDriveApiUrl` static constants. cloud-dart's Web build passes Vercel proxy paths.
+  - B5: `ConfigStorage` interface (`exists` / `read` / `write` / `delete` / `init`) that `ConfigService` composes. Default `FileConfigStorage` mirrors prior file-IO behavior; `InMemoryConfigStorage` for tests. cloud-dart's Web build provides a `SharedPreferencesStorage` impl.
+- **Phase 6.b — cloud-dart divergence audit.** See `AUDIT_6B.md`. Read-and-classify pass over cloud-dart's 4681-line `internxt_client.dart` plus 3 sibling files. Headline: cloud-dart was a pre-Phase-4 fork lacking all Phase 5/7/8/9 work; rewire was mechanical drop-in after B1–B5 landed. Validation pass mapped every adapter callsite to a matching package signature.
+- **Phase 6.c — cloud-dart rewire.** Done in cloud-dart's commit `e0eecd2` (and live-verified in `322b010`). Removed ~4640 LOC of embedded protocol from `cloud-dart/lib/services/internxt_client.dart`; replaced with a 41-line shim re-exporting the package + a kIsWeb-aware `InternxtUrls` helper. Adapter rewired to construct from the package. Path facade comes from B2 upstream — cloud-dart's `internxt_client_extensions.dart` deleted. Live smoke test (`test/internxt_rewire_live_test.dart`) drives login → upload → download → trash through the rewired adapter against the real gateway: 5/5 pass. flutter analyze: 0 errors. flutter build macos + flutter build web both succeed. Multi-repo divergence is permanently closed.
 
 **Open — independently shippable:**
-- **Drive unit coverage.** With `auth.dart` and `api.dart` done in Phase 9.7.1, the next logical expansion is `drive.dart`. Each function takes `(driveApiUrl, bearerToken, ...)` plus the cache maps; refactoring `makeRequest`-style optional `http.Client` plumbing through every drive function would make most of them unit-testable. ~2 hours; would expand the gate from 6 modules to 7. Note: this overlaps with the Phase 6.a lib/ restructure — the right move may be to wait until cloud-dart consumes the package, then refactor drive.dart's surface once cleanly.
+- **Drive unit coverage.** Apply the Phase 9.7.1 + B1 http.Client injection pattern to `drive.dart`'s functions. Add `test/drive_test.dart` with MockClient covering listFolders / listFolderFiles / resolvePath / createFolder / move / rename / trash. Would expand the coverage gate from 6 modules to 7. ~2h.
+- **Re-enable `strict-inference` / `strict-raw-types`.** Currently off in `analysis_options.yaml`. Phase 9.3 turned on `strict-casts` but the other two were producing noise on dynamic JSON. Now that the public surface is settled (Phase 6.a + 6.c shipped), worth revisiting. ~2h.
+- **Publish to pub.dev.** The package is consumed via path dep by cloud-dart. Publishing v0.1.0 → v0.2.0 (with the B1–B5 changes) would let cloud-dart pin a version. Wait until the API has had a couple of weeks of cloud-dart usage to surface any rough edges first.
 
 **Open — small follow-ons (notes, not session-sized work):**
-- **Trash-listing eventual-consistency.** The `trash lifecycle` live test uses a best-effort 4-attempt retry (~6s) to surface a just-trashed file in `getTrashContent`. The retry is correct but the underlying lag is a backend characteristic — worth understanding precisely (and tightening the test) if Internxt fixes it.
-- **`/users/me` regression marker.** Already pinned as a live test (`auth.dart`'s `getUserInfo` is expected to throw with 404 against the live gateway). No action needed unless the endpoint comes online.
-- **Re-enable `strict-inference` / `strict-raw-types`.** Currently off in `analysis_options.yaml`. Phase 9.3 turned on `strict-casts` but the other two were producing too much signal-from-noise on dynamic JSON. Worth revisiting once the lib/ restructure (Phase 6.a) decides what's typed vs. dynamic in the public surface.
+- **Trash-listing eventual-consistency.** The `trash lifecycle` live test uses a best-effort 4-attempt retry (~6s) to surface a just-trashed file in `getTrashContent`. Worth understanding precisely (and tightening the test) if Internxt fixes the backend lag.
+- **`/users/me` regression marker.** Already pinned as a live test (`auth.dart`'s `getUserInfo` is expected to throw 404). No action needed unless the endpoint comes online.
+- **`setFolderTimestamp` known-broken marker.** Gateway silently overwrites `modificationTime` on PUT-meta (Phase 9.6 finding). Fires if the gateway behavior changes.
+
+**Open — cloud-dart side:**
+- **Add GitHub Actions to cloud-dart.** No CI workflow currently. Would catch any future drift like the placeholder signature mismatch we fixed during 6.c. Mirror internxt-dart's `.github/workflows/ci.yml`: `flutter analyze` + `flutter test` on push/PR to main. Skip live tests (need creds). ~30 min.
 
 ---
 
