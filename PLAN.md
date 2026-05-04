@@ -133,20 +133,35 @@ unless we unify them.
 
 The plan, **after Phase 4 finishes**:
 
-### Step 6a: convert internxt-dart to a real Dart package
+### Step 6a — partially DONE (publish-prep landed in Phase 9.4)
 
-Once cli.dart is fully decomposed (auth/api/cache/drive/upload/
-download all extracted), restructure for `package:` import:
+Phase 9.4 (commit pending) shipped the publish-prep portion:
 
-- Move modules to `lib/internxt_client/`
-- Add `lib/internxt_client.dart` as the public barrel (re-exports
-  everything CrispCloud-or-other consumers might want)
-- Keep `bin/inxt.dart` as the CLI entrypoint
-- Keep root `cli.dart` as a backwards-compat shim if/when needed
-- Tag a version (`v0.1.0`) and pin it from `cloud-dart`'s pubspec.yaml
-  via `git: { url: ..., ref: v0.1.0 }`
+- pubspec.yaml has `description`, `homepage`, `repository`,
+  `issue_tracker`, version `0.1.0`, and `executables: { inxt: inxt }`.
+- `bin/inxt.dart` is the CLI entry-point (a thin shim over root
+  `cli.dart`).
+- `LICENSE.txt` → `LICENSE`, `readme.md` → `README.md`,
+  `CHANGELOG.md` added.
+- `dart pub publish --dry-run` accepts the package shape (only
+  warning is "uncommitted files," which clears on commit).
 
-Estimated work: ~2 hours after Phase 4 lands.
+**Still ahead — the full library restructure**, gated on cloud-dart
+being ready to consume:
+
+- Move modules to `lib/internxt_client/` (or `lib/src/`).
+- Add `lib/internxt_client.dart` as the public barrel.
+- Update internal cross-imports + test imports.
+- Keep root `cli.dart` as a thin shim if/when needed for legacy
+  test paths, OR drop it and migrate tests to package imports.
+
+The publish-prep landed first because the restructure requires
+disrupting test imports (`'../cli.dart'` → `'package:internxt_client/...'`)
+across all `test/*.dart` files, and there's no concrete consumer
+need yet. When cloud-dart is ready (step 6b/6c), we do the move
+in one focused commit and tag v0.2.0.
+
+Estimated remaining work: ~1 hour for the move itself.
 
 ### Step 6b: audit cloud-dart's divergence
 

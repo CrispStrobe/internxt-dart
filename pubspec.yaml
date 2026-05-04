@@ -1,9 +1,25 @@
 name: internxt_client
-description: Internxt API client in Dart
-version: 1.0.0
+description: >-
+  Internxt cloud storage client + CLI for Dart. Pure-Dart port of the
+  Python internxt-cli. Provides login/auth, drive operations
+  (list/move/rename/copy/trash), encrypted upload/download with
+  resumable batch state, parallel-worker pool, memory-gated
+  concurrency, and a WebDAV server bridging Internxt to standard
+  file-system clients.
+version: 0.1.0
+homepage: https://github.com/CrispStrobe/internxt-dart
+repository: https://github.com/CrispStrobe/internxt-dart
+issue_tracker: https://github.com/CrispStrobe/internxt-dart/issues
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
+
+# Phase 9.4 publish prep. The CLI is the executable entry-point
+# (`inxt`); the library entry-point will land when the full lib/
+# restructure ships in Phase 6.a.next (gated on cloud-dart being
+# ready to consume — see PLAN.md).
+executables:
+  inxt: inxt
 
 dependencies:
   http: ^1.1.0
