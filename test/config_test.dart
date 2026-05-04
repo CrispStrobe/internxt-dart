@@ -295,5 +295,43 @@ void main() {
       await fs.delete(key);
       expect(await fs.exists(key), isFalse);
     });
+
+    test('storage exceptions are swallowed (defensive fallback)', () async {
+      final cfg = ConfigService(
+        configPath: tmp.path,
+        storage: _ThrowingStorage(),
+      );
+      // Each of these methods has a try/catch that prints a warning
+      // and either returns null/void on failure. None should throw
+      // — that contract matters because the CLI shouldn't crash
+      // when its data dir is unwritable.
+      await cfg.saveWebdavPid(42); // L57 print branch
+      expect(await cfg.readWebdavPid(), isNull); // L67 print branch
+      await cfg.clearWebdavPid(); // L76 print branch
+      await cfg.saveBatchState('b', {'a': 1}); // L112 print branch
+      await cfg.deleteBatchState('b'); // L121 print branch
+    });
   });
+}
+
+/// Test-only ConfigStorage that throws on every operation. Used to
+/// verify ConfigService's defensive try/catch branches swallow
+/// errors as documented (CLI shouldn't crash on an unwritable
+/// data dir). Note: init() must NOT throw or ConfigService's
+/// constructor itself fails — only the I/O methods throw.
+class _ThrowingStorage implements ConfigStorage {
+  @override
+  void init(String dataDir, List<String> subDirs) {}
+  @override
+  Future<bool> exists(String key) async =>
+      throw Exception('exists deliberately failed');
+  @override
+  Future<String?> read(String key) async =>
+      throw Exception('read deliberately failed');
+  @override
+  Future<void> write(String key, String value) async =>
+      throw Exception('write deliberately failed');
+  @override
+  Future<void> delete(String key) async =>
+      throw Exception('delete deliberately failed');
 }
