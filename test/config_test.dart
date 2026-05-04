@@ -261,7 +261,8 @@ void main() {
       expect(await cfg.readCredentials(), isNull);
     });
 
-    test('InMemoryConfigStorage: batch + PID round-trip without disk', () async {
+    test('InMemoryConfigStorage: batch + PID round-trip without disk',
+        () async {
       final mem = InMemoryConfigStorage();
       final cfg = ConfigService(configPath: tmp.path, storage: mem);
 

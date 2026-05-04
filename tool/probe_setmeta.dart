@@ -33,7 +33,11 @@ Future<String?> _envLookup(String key) async {
       final eq = t.indexOf('=');
       final k = t.substring(0, eq).trim();
       if (k == key) {
-        return t.substring(eq + 1).trim().replaceAll('"', '').replaceAll("'", '');
+        return t
+            .substring(eq + 1)
+            .trim()
+            .replaceAll('"', '')
+            .replaceAll("'", '');
       }
     }
   }
@@ -108,59 +112,61 @@ Future<void> main() async {
     // --- FOLDER probes ---
     print('=== PUT /folders/$folderUuid/meta ===');
     print('  (A) bare {modificationTime}:');
-    var r = await _put(
-        '${client.driveApiUrl}/folders/$folderUuid/meta', token,
+    var r = await _put('${client.driveApiUrl}/folders/$folderUuid/meta', token,
         {'modificationTime': targetMtime});
-    print('       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
+    print(
+        '       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
 
     print('  (B) {plainName, modificationTime}:');
     final folderMeta = await client.getFolderMetadata(folderUuid);
-    r = await _put(
-        '${client.driveApiUrl}/folders/$folderUuid/meta', token, {
+    r = await _put('${client.driveApiUrl}/folders/$folderUuid/meta', token, {
       'plainName': folderMeta['plainName'] ?? folderMeta['name'],
       'modificationTime': targetMtime,
     });
-    print('       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
+    print(
+        '       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
 
     final folderAfter = await client.getFolderMetadata(folderUuid);
-    print('  → after both: modificationTime=${folderAfter['modificationTime']}');
+    print(
+        '  → after both: modificationTime=${folderAfter['modificationTime']}');
     print('');
 
     // --- FILE probes ---
     print('=== PUT /files/$fileUuid/meta ===');
     print('  (A) bare {modificationTime}:');
-    r = await _put(
-        '${client.driveApiUrl}/files/$fileUuid/meta', token,
+    r = await _put('${client.driveApiUrl}/files/$fileUuid/meta', token,
         {'modificationTime': targetMtime});
-    print('       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
+    print(
+        '       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
 
     print('  (B) {plainName, type, modificationTime}:');
     final fileMeta = await client.getFileMetadata(fileUuid);
-    r = await _put(
-        '${client.driveApiUrl}/files/$fileUuid/meta', token, {
+    r = await _put('${client.driveApiUrl}/files/$fileUuid/meta', token, {
       'plainName': fileMeta['plainName'] ?? fileMeta['name'],
       'type': fileMeta['type'] ?? '',
       'modificationTime': targetMtime,
     });
-    print('       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
+    print(
+        '       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
 
     print('  (C) bare same-name rename {plainName, type} (no mtime):');
-    r = await _put(
-        '${client.driveApiUrl}/files/$fileUuid/meta', token, {
+    r = await _put('${client.driveApiUrl}/files/$fileUuid/meta', token, {
       'plainName': fileMeta['plainName'] ?? fileMeta['name'],
       'type': fileMeta['type'] ?? '',
     });
-    print('       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
+    print(
+        '       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
 
     print('  (D) rename to NEW name + mtime (then rename back):');
-    final tempName = '${(fileMeta['plainName'] ?? fileMeta['name'])}_tmp_$stamp';
-    r = await _put(
-        '${client.driveApiUrl}/files/$fileUuid/meta', token, {
+    final tempName =
+        '${(fileMeta['plainName'] ?? fileMeta['name'])}_tmp_$stamp';
+    r = await _put('${client.driveApiUrl}/files/$fileUuid/meta', token, {
       'plainName': tempName,
       'type': fileMeta['type'] ?? '',
       'modificationTime': targetMtime,
     });
-    print('       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
+    print(
+        '       status=${r['status']}  body=${(r['body'] as String).substring(0, (r['body'] as String).length > 200 ? 200 : (r['body'] as String).length)}');
 
     // Rename back to avoid leaking state.
     if (r['status'] == 200) {
@@ -171,7 +177,8 @@ Future<void> main() async {
     }
 
     final fileAfter = await client.getFileMetadata(fileUuid);
-    print('  → after all: modificationTime=${fileAfter['modificationTime']}  plainName=${fileAfter['plainName']}');
+    print(
+        '  → after all: modificationTime=${fileAfter['modificationTime']}  plainName=${fileAfter['plainName']}');
 
     // Cleanup
     print('\n🧹 Cleaning up sentinel folder ...');

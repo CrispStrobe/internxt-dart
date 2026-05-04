@@ -35,7 +35,12 @@ const _tok = 'tok';
 /// Helper: builds a MockClient that records every request and
 /// dispatches based on (method, urlMatcher) → response handler.
 MockClient _routingMock(
-    List<({String method, bool Function(Uri) match, http.Response Function(http.Request) respond})>
+    List<
+            ({
+              String method,
+              bool Function(Uri) match,
+              http.Response Function(http.Request) respond
+            })>
         routes,
     {List<String>? recordedCalls}) {
   return MockClient((req) async {
@@ -51,7 +56,8 @@ MockClient _routingMock(
 
 void main() {
   group('moveFile (Phase 6.a drive coverage)', () {
-    test('PATCHes /files/{uuid} with destinationFolder; clears parent first', () async {
+    test('PATCHes /files/{uuid} with destinationFolder; clears parent first',
+        () async {
       final calls = <String>[];
       final folderCache = <String, CacheEntry>{};
       final fileCache = <String, CacheEntry>{};
@@ -61,25 +67,34 @@ void main() {
       const srcParent = 'src-parent-uuid';
       const dstParent = 'dst-parent-uuid';
       const fileUuid = 'file-1';
-      folderCache[srcParent] = CacheEntry(items: [{'name': 'placeholder'}], timestamp: DateTime.now());
-      fileCache[srcParent] = CacheEntry(items: [{'name': 'placeholder'}], timestamp: DateTime.now());
-      folderCache[dstParent] = CacheEntry(items: [{'name': 'pre-existing'}], timestamp: DateTime.now());
+      folderCache[srcParent] = CacheEntry(items: [
+        {'name': 'placeholder'}
+      ], timestamp: DateTime.now());
+      fileCache[srcParent] = CacheEntry(items: [
+        {'name': 'placeholder'}
+      ], timestamp: DateTime.now());
+      folderCache[dstParent] = CacheEntry(items: [
+        {'name': 'pre-existing'}
+      ], timestamp: DateTime.now());
 
       final mock = _routingMock([
         // _clearParent fetches metadata to find the parent UUID
         (
           method: 'GET',
           match: (u) => u.path == '/files/$fileUuid/meta',
-          respond: (_) => http.Response(jsonEncode({
-            'folderUuid': srcParent,
-          }), 200),
+          respond: (_) => http.Response(
+              jsonEncode({
+                'folderUuid': srcParent,
+              }),
+              200),
         ),
         // The actual PATCH
         (
           method: 'PATCH',
           match: (u) => u.path == '/files/$fileUuid',
           respond: (req) {
-            expect(jsonDecode(req.body)['destinationFolder'], equals(dstParent));
+            expect(
+                jsonDecode(req.body)['destinationFolder'], equals(dstParent));
             return http.Response('{"ok":true}', 200);
           },
         ),
@@ -111,8 +126,8 @@ void main() {
         (
           method: 'GET',
           match: (u) => u.path == '/files/$fileUuid/meta',
-          respond: (_) => http.Response(
-              jsonEncode({'folderUuid': parentUuid}), 200),
+          respond: (_) =>
+              http.Response(jsonEncode({'folderUuid': parentUuid}), 200),
         ),
         (
           method: 'PUT',
@@ -157,7 +172,8 @@ void main() {
   });
 
   group('setFileTimestamp (Phase 9.6 contract)', () {
-    test('echoes plainName + type from current meta + sends modificationTime', () async {
+    test('echoes plainName + type from current meta + sends modificationTime',
+        () async {
       final folderCache = <String, CacheEntry>{};
       final fileCache = <String, CacheEntry>{};
       final ts = DateTime.utc(2024, 6, 1, 12, 30);
@@ -315,7 +331,12 @@ void main() {
           method: 'GET',
           match: (u) => u.queryParameters['type'] == 'folders',
           respond: (_) => http.Response(
-              jsonEncode({'result': [{'plainName': 'F', 'uuid': 'fx'}]}), 200),
+              jsonEncode({
+                'result': [
+                  {'plainName': 'F', 'uuid': 'fx'}
+                ]
+              }),
+              200),
         ),
       ]);
 
@@ -329,7 +350,9 @@ void main() {
     test('cache hit within TTL returns without HTTP', () async {
       final folderCache = <String, CacheEntry>{
         'fid': CacheEntry(
-          items: [{'type': 'folder', 'name': 'cached'}],
+          items: [
+            {'type': 'folder', 'name': 'cached'}
+          ],
           timestamp: DateTime.now(),
         ),
       };
@@ -357,11 +380,11 @@ void main() {
       });
 
       final folderCache = <String, CacheEntry>{};
-      final result = await listFolders(_api, _tok, folderCache, 'fid', client: mock);
+      final result =
+          await listFolders(_api, _tok, folderCache, 'fid', client: mock);
 
       expect(result, hasLength(53));
-      expect(folderCache['fid'], isNotNull,
-          reason: 'should cache the result');
+      expect(folderCache['fid'], isNotNull, reason: 'should cache the result');
       expect(page, equals(2), reason: 'should stop paginating at < limit');
     });
 
@@ -389,8 +412,8 @@ void main() {
   group('resolvePath', () {
     test('"/" returns root immediately, no HTTP', () async {
       final mock = MockClient((req) async => fail('no HTTP expected: $req'));
-      final r = await resolvePath(
-          _api, _tok, 'root-uuid', {}, {}, '/', client: mock);
+      final r =
+          await resolvePath(_api, _tok, 'root-uuid', {}, {}, '/', client: mock);
       expect(r['type'], equals('folder'));
       expect(r['uuid'], equals('root-uuid'));
     });
@@ -440,8 +463,8 @@ void main() {
     });
 
     test('throws "Path not found" when segment missing', () async {
-      final mock = MockClient((req) async => http.Response(
-          jsonEncode({'result': <dynamic>[]}), 200));
+      final mock = MockClient((req) async =>
+          http.Response(jsonEncode({'result': <dynamic>[]}), 200));
       await expectLater(
         () => resolvePath(_api, _tok, 'root', {}, {}, '/Missing', client: mock),
         throwsA(predicate((e) => e.toString().contains('not found'))),

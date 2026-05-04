@@ -54,8 +54,8 @@ extension InternxtClientPaths on InternxtClient {
     final tempFile = io.File(p.join(tempDir.path, fileName));
     await tempFile.writeAsBytes(fileData);
     try {
-      final batchId = config.generateBatchId(
-          'upload-bytes', [tempFile.path], targetPath);
+      final batchId =
+          config.generateBatchId('upload-bytes', [tempFile.path], targetPath);
       await upload(
         [tempFile.path],
         targetPath,
@@ -93,8 +93,8 @@ extension InternxtClientPaths on InternxtClient {
       throw Exception('Path is not a file: $remotePath');
     }
     final localDir = io.File(localPath).parent.path;
-    final batchId = config.generateBatchId(
-        'download-bypath', [remotePath], localPath);
+    final batchId =
+        config.generateBatchId('download-bypath', [remotePath], localPath);
     await downloadPath(
       remotePath,
       localDestination: localDir,

@@ -155,9 +155,8 @@ Future<Uint8List> downloadFileBytes(
   void Function(int bytesDownloaded, int totalBytes)? onProgress,
   http.Client? httpClient,
 }) async {
-  final metadata = await inxt_api.getFileMetadata(
-      driveApiUrl, bearerToken, fileUuid,
-      client: httpClient);
+  final metadata = await inxt_api
+      .getFileMetadata(driveApiUrl, bearerToken, fileUuid, client: httpClient);
   final fileSize = int.parse(metadata['size'].toString());
   final bucketId = metadata['bucket'] as String;
   final networkFileId = metadata['fileId'] as String;
@@ -175,8 +174,7 @@ Future<Uint8List> downloadFileBytes(
     final request = http.Request('GET', Uri.parse(downloadUrl));
     final response = await client.send(request);
     if (response.statusCode != 200) {
-      throw Exception(
-          'Failed to download file: ${response.statusCode}');
+      throw Exception('Failed to download file: ${response.statusCode}');
     }
 
     final total = response.contentLength ?? -1;

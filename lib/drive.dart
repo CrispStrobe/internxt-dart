@@ -51,10 +51,10 @@ Future<void> _clearParent(
       fileCache,
       itemUuid,
       itemType,
-      (uuid) =>
-          inxt_api.getFileMetadata(driveApiUrl, bearerToken, uuid, client: client),
-      (uuid) =>
-          inxt_api.getFolderMetadata(driveApiUrl, bearerToken, uuid, client: client),
+      (uuid) => inxt_api.getFileMetadata(driveApiUrl, bearerToken, uuid,
+          client: client),
+      (uuid) => inxt_api.getFolderMetadata(driveApiUrl, bearerToken, uuid,
+          client: client),
     );
 
 /// PATCH /files/{uuid}  body: `{destinationFolder: ...}`.
@@ -69,8 +69,8 @@ Future<void> moveFile(
   String destinationFolderUuid, {
   http.Client? client,
 }) async {
-  await _clearParent(driveApiUrl, bearerToken, folderCache, fileCache, fileUuid,
-      'file',
+  await _clearParent(
+      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file',
       client: client);
   await inxt_api.makeRequest(
     'PATCH',
@@ -116,13 +116,18 @@ Future<void> renameFile(
   String? newType, {
   http.Client? client,
 }) async {
-  await _clearParent(driveApiUrl, bearerToken, folderCache, fileCache, fileUuid,
-      'file',
+  await _clearParent(
+      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file',
       client: client);
-  await inxt_api.updateFileMetadata(driveApiUrl, bearerToken, fileUuid, {
-    'plainName': newPlainName,
-    'type': newType ?? '',
-  }, client: client);
+  await inxt_api.updateFileMetadata(
+      driveApiUrl,
+      bearerToken,
+      fileUuid,
+      {
+        'plainName': newPlainName,
+        'type': newType ?? '',
+      },
+      client: client);
 }
 
 /// PUT /folders/{uuid}/meta  body: `{plainName}`.
@@ -188,16 +193,21 @@ Future<void> setFileTimestamp(
   DateTime mTime, {
   http.Client? client,
 }) async {
-  final meta = await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid,
+  final meta = await inxt_api
+      .getFileMetadata(driveApiUrl, bearerToken, fileUuid, client: client);
+  await _clearParent(
+      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file',
       client: client);
-  await _clearParent(driveApiUrl, bearerToken, folderCache, fileCache, fileUuid,
-      'file',
+  await inxt_api.updateFileMetadata(
+      driveApiUrl,
+      bearerToken,
+      fileUuid,
+      {
+        'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
+        'type': (meta['type'] ?? '') as String,
+        'modificationTime': mTime.toUtc().toIso8601String(),
+      },
       client: client);
-  await inxt_api.updateFileMetadata(driveApiUrl, bearerToken, fileUuid, {
-    'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
-    'type': (meta['type'] ?? '') as String,
-    'modificationTime': mTime.toUtc().toIso8601String(),
-  }, client: client);
 }
 
 /// Set the modification time on a folder. Same gateway limitation
@@ -374,7 +384,8 @@ Future<List<Map<String, dynamic>>> getTrashContent(
       client: client,
     );
     final data = json.decode(response.body);
-    final files = (data['result'] ?? data['items'] ?? <dynamic>[]) as List<dynamic>;
+    final files =
+        (data['result'] ?? data['items'] ?? <dynamic>[]) as List<dynamic>;
     for (var item in files) {
       allItems.add({
         'type': 'file',
@@ -400,7 +411,8 @@ Future<List<Map<String, dynamic>>> getTrashContent(
       client: client,
     );
     final data = json.decode(response.body);
-    final folders = (data['result'] ?? data['items'] ?? <dynamic>[]) as List<dynamic>;
+    final folders =
+        (data['result'] ?? data['items'] ?? <dynamic>[]) as List<dynamic>;
     for (var item in folders) {
       allItems.add({
         'type': 'folder',
@@ -469,7 +481,8 @@ Future<List<Map<String, dynamic>>> listFolders(
     );
 
     final data = json.decode(response.body);
-    final folders = (data['result'] ?? data['folders'] ?? <dynamic>[]) as List<dynamic>;
+    final folders =
+        (data['result'] ?? data['folders'] ?? <dynamic>[]) as List<dynamic>;
 
     for (var folder in folders) {
       allItems.add({
@@ -548,7 +561,8 @@ Future<List<Map<String, dynamic>>> listFolderFiles(
     );
 
     final data = json.decode(response.body);
-    final files = (data['result'] ?? data['files'] ?? <dynamic>[]) as List<dynamic>;
+    final files =
+        (data['result'] ?? data['files'] ?? <dynamic>[]) as List<dynamic>;
 
     for (var file in files) {
       allItems.add({

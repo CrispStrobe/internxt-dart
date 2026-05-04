@@ -50,7 +50,8 @@ void main() {
     });
 
     test('uploadFileBytes pre-auth → StateError', () async {
-      final client = InternxtClient(config: ConfigService(configPath: tmp.path));
+      final client =
+          InternxtClient(config: ConfigService(configPath: tmp.path));
       await expectLater(
         () => client.uploadFileBytes([0, 1, 2], 'x.bin', '/'),
         throwsA(isA<StateError>().having(
@@ -62,7 +63,8 @@ void main() {
     });
 
     test('downloadFileByPath pre-auth → StateError', () async {
-      final client = InternxtClient(config: ConfigService(configPath: tmp.path));
+      final client =
+          InternxtClient(config: ConfigService(configPath: tmp.path));
       await expectLater(
         () => client.downloadFileByPath('/foo.txt', '${tmp.path}/foo.txt'),
         throwsA(isA<StateError>()),
@@ -70,7 +72,8 @@ void main() {
     });
 
     test('downloadFileBytesByPath pre-auth → StateError', () async {
-      final client = InternxtClient(config: ConfigService(configPath: tmp.path));
+      final client =
+          InternxtClient(config: ConfigService(configPath: tmp.path));
       await expectLater(
         () => client.downloadFileBytesByPath('/foo.txt'),
         throwsA(isA<StateError>()),
@@ -79,7 +82,8 @@ void main() {
 
     test('setAuth populates bridgeUser + userIdForAuth (Phase 7.10 fallback)',
         () async {
-      final client = InternxtClient(config: ConfigService(configPath: tmp.path));
+      final client =
+          InternxtClient(config: ConfigService(configPath: tmp.path));
 
       // Fresh-login style creds (no userIdForAuth) — fallback to userId.
       client.setAuth({

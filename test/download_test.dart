@@ -32,8 +32,7 @@ void main() {
       // Bucket IDs are HEX-decoded by generateFileBucketKey, so the
       // test value must be valid hex (real Internxt uses 24-char hex).
       const bucketId = '0123456789abcdef01234567';
-      final plaintext = Uint8List.fromList(
-          List.generate(2048, (i) => i % 256));
+      final plaintext = Uint8List.fromList(List.generate(2048, (i) => i % 256));
       final enc = encryptStream(plaintext, mnemonic, bucketId);
       final ciphertext = enc['data'] as Uint8List;
       final indexHex = enc['index'] as String;
@@ -142,8 +141,7 @@ void main() {
           'uid',
           httpClient: mock,
         ),
-        throwsA(predicate(
-            (e) => e.toString().contains('503'))),
+        throwsA(predicate((e) => e.toString().contains('503'))),
       );
     });
   });

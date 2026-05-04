@@ -1867,8 +1867,8 @@ class InternxtCLI {
     }
     client.setAuth(creds);
 
-    final usage = await inxt_api.getStorageUsage(
-        client.driveApiUrl, client.newToken);
+    final usage =
+        await inxt_api.getStorageUsage(client.driveApiUrl, client.newToken);
 
     // Internxt has historically returned a few different shapes
     // (`{usage, limit}` is the current one; older versions used
@@ -2176,8 +2176,7 @@ class InternxtClient {
     // (only refresh responses do). Fall back to userId so callers
     // that depend on this field — including the path facade —
     // don't NPE on a fresh session.
-    userIdForAuth =
-        (creds['userIdForAuth'] ?? creds['userId'])?.toString();
+    userIdForAuth = (creds['userIdForAuth'] ?? creds['userId'])?.toString();
 
     log("📊 TRACE: Session loaded for $userEmail (Bucket: $bucketId)");
   }
