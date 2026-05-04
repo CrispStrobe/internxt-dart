@@ -139,14 +139,27 @@ class InternxtFileSink implements io.IOSink {
         await localFileToUpload.writeAsBytes(bytes);
       }
 
+      // PREFER userId (set by login) over userIdForAuth (only set
+      // on refresh). This is the same folderId-vs-folderUuid bug
+      // shape from Phase 3 — the auth value lives under two keys
+      // depending on which credential path produced the map.
+      // Fresh-login + WebDAV PUT used to crash with a null check
+      // operator error here.
+      final bridgeUser = (creds['bridgeUser'] ?? '').toString();
+      final userIdForAuth =
+          (creds['userIdForAuth'] ?? creds['userId'] ?? '').toString();
+      if (bridgeUser.isEmpty || userIdForAuth.isEmpty) {
+        throw io.FileSystemException(
+            'Credentials missing bridgeUser or userId — please log in again',
+            remotePath);
+      }
       final result = await client.uploadSingleItem(
-        // <-- FIX
         localFileToUpload!,
         remoteParentPath,
         parentResolved['uuid'],
         'overwrite',
-        bridgeUser: creds['bridgeUser']!,
-        userIdForAuth: creds['userIdForAuth']!,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
         preserveTimestamps: preserveTimestamps,
         remoteFileName: remoteFilename,
       );
@@ -542,14 +555,23 @@ class InternxtFile implements File {
       final creds = await client.config.readCredentials();
       if (creds == null) throw io.FileSystemException('Not logged in', path);
 
+      // Same userId-vs-userIdForAuth fix as the PUT path.
+      final bridgeUser = (creds['bridgeUser'] ?? '').toString();
+      final userIdForAuth =
+          (creds['userIdForAuth'] ?? creds['userId'] ?? '').toString();
+      if (bridgeUser.isEmpty || userIdForAuth.isEmpty) {
+        throw io.FileSystemException(
+            'Credentials missing bridgeUser or userId — please log in again',
+            path);
+      }
       final result = await client.downloadFile(
         resolved['uuid'],
-        creds['bridgeUser']!,
-        creds['userIdForAuth']!,
+        bridgeUser,
+        userIdForAuth,
       );
       return result['data'];
     } catch (e) {
-      client.log('WebDAV: Error reading $path: $e'); // <-- FIX
+      client.log('WebDAV: Error reading $path: $e');
       throw io.FileSystemException('Error reading file', path);
     }
   }
@@ -674,8 +696,15 @@ class InternxtFile implements File {
   String resolveSymbolicLinksSync() =>
       throw UnimplementedError('Sync ops not supported');
   @override
-  Future<File> create({bool recursive = false, bool exclusive = false}) =>
-      throw UnimplementedError('Use writeAsBytes');
+  Future<File> create({bool recursive = false, bool exclusive = false}) async {
+    // No-op for the remote-backed filesystem. The actual upload
+    // happens at `writeAsBytes` time. shelf_dav's PUT handler
+    // pre-creates via `create()` then writes, so we just return
+    // self here. (Phase 7.10: this used to throw
+    // UnimplementedError('Use writeAsBytes'), which broke every
+    // PUT through the WebDAV layer.)
+    return this;
+  }
   @override
   void createSync({bool recursive = false, bool exclusive = false}) =>
       throw UnimplementedError('Sync ops not supported');
