@@ -26,6 +26,7 @@
 import 'dart:convert';
 
 import 'package:glob/glob.dart';
+import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 import 'api.dart' as inxt_api;
@@ -42,15 +43,18 @@ Future<void> _clearParent(
   Map<String, inxt_cache.CacheEntry> folderCache,
   Map<String, inxt_cache.CacheEntry> fileCache,
   String itemUuid,
-  String itemType,
-) =>
+  String itemType, {
+  http.Client? client,
+}) =>
     inxt_cache.clearParentCache(
       folderCache,
       fileCache,
       itemUuid,
       itemType,
-      (uuid) => inxt_api.getFileMetadata(driveApiUrl, bearerToken, uuid),
-      (uuid) => inxt_api.getFolderMetadata(driveApiUrl, bearerToken, uuid),
+      (uuid) =>
+          inxt_api.getFileMetadata(driveApiUrl, bearerToken, uuid, client: client),
+      (uuid) =>
+          inxt_api.getFolderMetadata(driveApiUrl, bearerToken, uuid, client: client),
     );
 
 /// PATCH /files/{uuid}  body: `{destinationFolder: ...}`.
@@ -62,15 +66,18 @@ Future<void> moveFile(
   Map<String, inxt_cache.CacheEntry> folderCache,
   Map<String, inxt_cache.CacheEntry> fileCache,
   String fileUuid,
-  String destinationFolderUuid,
-) async {
-  await _clearParent(
-      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file');
+  String destinationFolderUuid, {
+  http.Client? client,
+}) async {
+  await _clearParent(driveApiUrl, bearerToken, folderCache, fileCache, fileUuid,
+      'file',
+      client: client);
   await inxt_api.makeRequest(
     'PATCH',
     Uri.parse('$driveApiUrl/files/$fileUuid'),
     bearerToken: bearerToken,
     body: json.encode({'destinationFolder': destinationFolderUuid}),
+    client: client,
   );
   inxt_cache.invalidateCache(folderCache, fileCache, destinationFolderUuid);
 }
@@ -106,14 +113,16 @@ Future<void> renameFile(
   Map<String, inxt_cache.CacheEntry> fileCache,
   String fileUuid,
   String newPlainName,
-  String? newType,
-) async {
-  await _clearParent(
-      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file');
+  String? newType, {
+  http.Client? client,
+}) async {
+  await _clearParent(driveApiUrl, bearerToken, folderCache, fileCache, fileUuid,
+      'file',
+      client: client);
   await inxt_api.updateFileMetadata(driveApiUrl, bearerToken, fileUuid, {
     'plainName': newPlainName,
     'type': newType ?? '',
-  });
+  }, client: client);
 }
 
 /// PUT /folders/{uuid}/meta  body: `{plainName}`.
@@ -166,17 +175,19 @@ Future<void> setFileTimestamp(
   Map<String, inxt_cache.CacheEntry> folderCache,
   Map<String, inxt_cache.CacheEntry> fileCache,
   String fileUuid,
-  DateTime mTime,
-) async {
-  final meta =
-      await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
-  await _clearParent(
-      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file');
+  DateTime mTime, {
+  http.Client? client,
+}) async {
+  final meta = await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid,
+      client: client);
+  await _clearParent(driveApiUrl, bearerToken, folderCache, fileCache, fileUuid,
+      'file',
+      client: client);
   await inxt_api.updateFileMetadata(driveApiUrl, bearerToken, fileUuid, {
     'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
     'type': (meta['type'] ?? '') as String,
     'modificationTime': mTime.toUtc().toIso8601String(),
-  });
+  }, client: client);
 }
 
 /// Set the modification time on a folder. Same gateway limitation
@@ -212,10 +223,12 @@ Future<void> trashItems(
   Map<String, inxt_cache.CacheEntry> folderCache,
   Map<String, inxt_cache.CacheEntry> fileCache,
   String uuid,
-  String type,
-) async {
+  String type, {
+  http.Client? client,
+}) async {
   await _clearParent(
-      driveApiUrl, bearerToken, folderCache, fileCache, uuid, type);
+      driveApiUrl, bearerToken, folderCache, fileCache, uuid, type,
+      client: client);
   await inxt_api.makeRequest(
     'POST',
     Uri.parse('$driveApiUrl/storage/trash/add'),
@@ -225,6 +238,7 @@ Future<void> trashItems(
         {'uuid': uuid, 'type': type}
       ]
     }),
+    client: client,
   );
 }
 
@@ -236,8 +250,9 @@ Future<void> deletePermanently(
   String driveApiUrl,
   String? bearerToken,
   String uuid,
-  String type,
-) async {
+  String type, {
+  http.Client? client,
+}) async {
   await inxt_api.makeRequest(
     'DELETE',
     Uri.parse('$driveApiUrl/storage/trash'),
@@ -247,6 +262,7 @@ Future<void> deletePermanently(
         {'uuid': uuid, 'type': type}
       ]
     }),
+    client: client,
   );
 }
 
@@ -316,9 +332,10 @@ Future<Map<String, dynamic>> restoreFromTrash(
 /// recovery after this. Caller must confirm before invoking.
 Future<void> clearTrashAll(
   String driveApiUrl,
-  String? bearerToken,
-) =>
-    inxt_api.clearTrash(driveApiUrl, bearerToken);
+  String? bearerToken, {
+  http.Client? client,
+}) =>
+    inxt_api.clearTrash(driveApiUrl, bearerToken, client: client);
 
 /// Paginated trash listing — fetches one page of files AND one page
 /// of folders at the given offset, returns the combined list. Each
@@ -330,6 +347,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
   String? bearerToken, {
   int offset = 0,
   int limit = 50,
+  http.Client? client,
 }) async {
   final url = Uri.parse('$driveApiUrl/storage/trash/paginated');
   final allItems = <Map<String, dynamic>>[];
@@ -343,6 +361,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
         'type': 'files',
       }),
       bearerToken: bearerToken,
+      client: client,
     );
     final data = json.decode(response.body);
     final files = (data['result'] ?? data['items'] ?? []) as List<dynamic>;
@@ -368,6 +387,7 @@ Future<List<Map<String, dynamic>>> getTrashContent(
         'type': 'folders',
       }),
       bearerToken: bearerToken,
+      client: client,
     );
     final data = json.decode(response.body);
     final folders = (data['result'] ?? data['items'] ?? []) as List<dynamic>;
@@ -412,6 +432,7 @@ Future<List<Map<String, dynamic>>> listFolders(
   Map<String, inxt_cache.CacheEntry> folderCache,
   String folderId, {
   bool detailed = false,
+  http.Client? client,
 }) async {
   final cached = folderCache[folderId];
   if (cached != null &&
@@ -434,6 +455,7 @@ Future<List<Map<String, dynamic>>> listFolders(
         'direction': 'ASC',
       }),
       bearerToken: bearerToken,
+      client: client,
     );
 
     final data = json.decode(response.body);
@@ -489,6 +511,7 @@ Future<List<Map<String, dynamic>>> listFolderFiles(
   Map<String, inxt_cache.CacheEntry> fileCache,
   String folderId, {
   bool detailed = false,
+  http.Client? client,
 }) async {
   final cached = fileCache[folderId];
   if (cached != null &&
@@ -511,6 +534,7 @@ Future<List<Map<String, dynamic>>> listFolderFiles(
         'direction': 'ASC',
       }),
       bearerToken: bearerToken,
+      client: client,
     );
 
     final data = json.decode(response.body);
@@ -582,8 +606,9 @@ Future<Map<String, dynamic>> resolvePath(
   String? rootFolderId,
   Map<String, inxt_cache.CacheEntry> folderCache,
   Map<String, inxt_cache.CacheEntry> fileCache,
-  String path,
-) async {
+  String path, {
+  http.Client? client,
+}) async {
   if (rootFolderId == null) {
     throw Exception('Root folder ID is not set. Please log in.');
   }
@@ -622,6 +647,7 @@ Future<Map<String, dynamic>> resolvePath(
       folderCache,
       currentFolderUuid,
       detailed: true,
+      client: client,
     );
 
     Map<String, dynamic>? foundFolder;
@@ -640,6 +666,7 @@ Future<Map<String, dynamic>> resolvePath(
         fileCache,
         currentFolderUuid,
         detailed: true,
+        client: client,
       );
       for (var file in files) {
         final plainName = (file['name'] ?? '') as String;

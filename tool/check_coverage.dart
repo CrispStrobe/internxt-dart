@@ -37,6 +37,14 @@ const _thresholds = <String, double>{
   // happy-path. 30% reflects the testable-without-live-creds slice.
   'api.dart': 30.0,
   'auth.dart': 30.0,
+  // drive.dart added in the Phase 9.7.1+B1 client-injection
+  // extension (drive_test.dart with MockClient). 40% covers the
+  // testable subset (mutating ops + listing primitives + path
+  // resolution); the remaining 60% is the higher-level
+  // orchestrators (createFolderRecursive, search, findFiles,
+  // printTree, listFolderWithPaths) which have heavy branching
+  // and are exercised by the live suite.
+  'drive.dart': 40.0,
 };
 
 void main() {

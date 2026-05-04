@@ -59,6 +59,7 @@ jobs:
             test/auth_test.dart \
             test/api_test.dart \
             test/download_test.dart \
+            test/drive_test.dart \
             test/paths_test.dart
 
       - name: Format coverage to lcov

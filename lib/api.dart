@@ -166,12 +166,14 @@ Future<Map<String, dynamic>> getFileMetadata(
 Future<Map<String, dynamic>> getFolderMetadata(
   String driveApiUrl,
   String? bearerToken,
-  String folderUuid,
-) async {
+  String folderUuid, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'GET',
     Uri.parse('$driveApiUrl/folders/$folderUuid/meta'),
     bearerToken: bearerToken,
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -183,13 +185,15 @@ Future<Map<String, dynamic>> updateFileMetadata(
   String driveApiUrl,
   String? bearerToken,
   String fileUuid,
-  Map<String, dynamic> payload,
-) async {
+  Map<String, dynamic> payload, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'PUT',
     Uri.parse('$driveApiUrl/files/$fileUuid/meta'),
     bearerToken: bearerToken,
     body: json.encode(payload),
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -200,13 +204,15 @@ Future<Map<String, dynamic>> updateFolderMetadata(
   String driveApiUrl,
   String? bearerToken,
   String folderUuid,
-  Map<String, dynamic> payload,
-) async {
+  Map<String, dynamic> payload, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'PUT',
     Uri.parse('$driveApiUrl/folders/$folderUuid/meta'),
     bearerToken: bearerToken,
     body: json.encode(payload),
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -219,12 +225,14 @@ Future<Map<String, dynamic>> updateFolderMetadata(
 Future<List<dynamic>> searchFiles(
   String driveApiUrl,
   String? bearerToken,
-  String query,
-) async {
+  String query, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'GET',
     Uri.parse('$driveApiUrl/fuzzy/$query'),
     bearerToken: bearerToken,
+    client: client,
   );
   final data = json.decode(response.body);
   final items = data['data'] ?? data['results'] ?? data;
@@ -237,12 +245,14 @@ Future<List<dynamic>> searchFiles(
 Future<List<dynamic>> getFolderAncestors(
   String driveApiUrl,
   String? bearerToken,
-  String folderUuid,
-) async {
+  String folderUuid, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'GET',
     Uri.parse('$driveApiUrl/folders/$folderUuid/ancestors'),
     bearerToken: bearerToken,
+    client: client,
   );
   final data = json.decode(response.body);
   return data is List ? data : <dynamic>[];
@@ -253,12 +263,14 @@ Future<List<dynamic>> getFolderAncestors(
 /// Returns the raw map for the caller to interpret.
 Future<Map<String, dynamic>> getStorageUsage(
   String driveApiUrl,
-  String? bearerToken,
-) async {
+  String? bearerToken, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'GET',
     Uri.parse('$driveApiUrl/users/usage'),
     bearerToken: bearerToken,
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -274,13 +286,15 @@ Future<Map<String, dynamic>> replaceFile(
   String driveApiUrl,
   String? bearerToken,
   String fileUuid,
-  Map<String, dynamic> payload,
-) async {
+  Map<String, dynamic> payload, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'PUT',
     Uri.parse('$driveApiUrl/files/$fileUuid'),
     bearerToken: bearerToken,
     body: json.encode(payload),
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -298,6 +312,7 @@ Future<Map<String, dynamic>> restoreItem(
   String itemUuid,
   String itemType, {
   String? destinationFolderUuid,
+  http.Client? client,
 }) async {
   final response = await makeRequest(
     'POST',
@@ -309,6 +324,7 @@ Future<Map<String, dynamic>> restoreItem(
       if (destinationFolderUuid != null)
         'destinationFolderUuid': destinationFolderUuid,
     }),
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
@@ -320,12 +336,14 @@ Future<Map<String, dynamic>> restoreItem(
 /// always confirm before invoking this.
 Future<void> clearTrash(
   String driveApiUrl,
-  String? bearerToken,
-) async {
+  String? bearerToken, {
+  http.Client? client,
+}) async {
   await makeRequest(
     'DELETE',
     Uri.parse('$driveApiUrl/storage/trash/all'),
     bearerToken: bearerToken,
+    client: client,
   );
 }
 
@@ -342,12 +360,14 @@ Future<void> clearTrash(
 /// real callers (e.g. a richer `whoami` or `config` command).
 Future<Map<String, dynamic>> getUserInfo(
   String driveApiUrl,
-  String? bearerToken,
-) async {
+  String? bearerToken, {
+  http.Client? client,
+}) async {
   final response = await makeRequest(
     'GET',
     Uri.parse('$driveApiUrl/users/me'),
     bearerToken: bearerToken,
+    client: client,
   );
   return json.decode(response.body) as Map<String, dynamic>;
 }
