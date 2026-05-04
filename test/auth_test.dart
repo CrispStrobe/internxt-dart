@@ -18,7 +18,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
-import '../auth.dart';
+import 'package:internxt_client/auth.dart';
 
 void main() {
   group('computeBridgePass (bridge auth derivation)', () {

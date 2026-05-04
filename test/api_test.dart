@@ -19,7 +19,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
-import '../api.dart';
+import 'package:internxt_client/api.dart';
 
 void main() {
   group('makeRequest — happy paths', () {

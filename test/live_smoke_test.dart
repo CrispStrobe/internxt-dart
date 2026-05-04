@@ -35,7 +35,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 
-import '../cli.dart';
+import 'package:internxt_client/cli.dart';
 
 // ---------- credential loading ----------
 

@@ -7,7 +7,7 @@
 
 import 'package:test/test.dart';
 
-import '../cache.dart';
+import 'package:internxt_client/cache.dart';
 
 void main() {
   group('cacheDuration (Phase 7.5 regression marker)', () {

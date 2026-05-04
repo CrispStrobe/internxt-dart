@@ -23,7 +23,7 @@ import 'dart:math';
 
 import 'package:test/test.dart';
 
-import '../cli.dart';
+import 'package:internxt_client/cli.dart';
 
 const _validMnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';

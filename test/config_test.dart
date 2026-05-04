@@ -17,7 +17,7 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
-import '../cli.dart';
+import 'package:internxt_client/cli.dart';
 
 ConfigService _newConfig(Directory tmp) => ConfigService(dataDir: tmp.path);
 

@@ -5,7 +5,7 @@
 // errors at the unit-boundary thresholds.
 
 import 'package:test/test.dart';
-import '../cli.dart';
+import 'package:internxt_client/cli.dart';
 
 InternxtClient _newClient() => InternxtClient(config: ConfigService());
 

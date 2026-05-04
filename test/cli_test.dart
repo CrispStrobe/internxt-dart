@@ -7,7 +7,7 @@
 
 import 'package:test/test.dart';
 
-import '../cli.dart';
+import 'package:internxt_client/cli.dart';
 
 void main() {
   group('InternxtCLI.formatMtime (Phase 7.8)', () {

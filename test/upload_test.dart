@@ -10,7 +10,7 @@ import 'dart:async';
 
 import 'package:test/test.dart';
 
-import '../upload.dart';
+import 'package:internxt_client/upload.dart';
 
 void main() {
   group('MemoryGate (Phase 7.1)', () {

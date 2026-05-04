@@ -28,8 +28,8 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_dav/shelf_dav.dart';
 import 'package:test/test.dart';
 
-import '../cli.dart';
-import '../webdav_filesystem.dart';
+import 'package:internxt_client/cli.dart';
+import 'package:internxt_client/webdav_filesystem.dart';
 
 // ---------- credential loading (mirror of live_smoke_test.dart) ----------
 
