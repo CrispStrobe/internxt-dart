@@ -1217,6 +1217,74 @@ void main() {
         reason: 'overwrite should have trashed the original dst file');
   });
 
+  liveTest('upload() pre-scan + size-match skip: re-running an unchanged tree '
+      'uploads nothing', timeout: const Timeout(Duration(minutes: 3)), () async {
+    // Build a tiny local tree, upload it once, then re-run with the
+    // same inputs. The second run's pre-scan should see the same
+    // sizes already on the remote and mark every task as
+    // 'skipped_size_match'.
+    final localDir =
+        Directory('${tmpRoot.path}/${_uniqueName('rescan-tree')}');
+    localDir.createSync();
+    for (var i = 0; i < 4; i++) {
+      _writePayload(localDir, '${_uniqueName('f$i')}.txt', sizeBytes: 64);
+    }
+
+    final remoteRoot = _uniqueSubpath('rescan-target');
+
+    Future<void> runUploadOnce(String marker) async {
+      final batchId = config.generateBatchId(
+          marker, [localDir.path], remoteRoot);
+      await client.upload(
+        [localDir.path],
+        remoteRoot,
+        recursive: true,
+        onConflict: 'skip',
+        preserveTimestamps: false,
+        include: const [],
+        exclude: const [],
+        bridgeUser: _creds!['bridgeUser'] as String,
+        userIdForAuth: _creds!['userId'].toString(),
+        batchId: batchId,
+        initialBatchState: null,
+        saveStateCallback: (state) async {
+          await config.saveBatchState(batchId, state);
+        },
+        workers: 4,
+      );
+      await config.deleteBatchState(batchId);
+    }
+
+    // First run: actually uploads.
+    await runUploadOnce('rescan-1');
+
+    // Second run: should pre-scan, see same sizes, skip everything.
+    // We assert by checking the batch state file mid-flight, but
+    // post-run validation is cleaner: count the files in the remote
+    // subdir and verify their UUIDs are unchanged.
+    final dirBase = localDir.path.split(Platform.pathSeparator).last;
+    final remoteSubdir = '$remoteRoot/$dirBase';
+    final firstRunFiles =
+        await client.listFolderFiles((await client.resolvePath(remoteSubdir))['uuid'] as String);
+    final firstRunUuids =
+        firstRunFiles.map((f) => f['uuid'] as String).toSet();
+
+    await runUploadOnce('rescan-2');
+
+    final secondRunFiles =
+        await client.listFolderFiles((await client.resolvePath(remoteSubdir))['uuid'] as String);
+    final secondRunUuids =
+        secondRunFiles.map((f) => f['uuid'] as String).toSet();
+
+    // No new uploads = no new UUIDs.
+    expect(secondRunUuids, equals(firstRunUuids),
+        reason:
+            'second run should have skipped via size-match; new UUIDs '
+            'imply re-upload.');
+    expect(secondRunFiles.length, equals(firstRunFiles.length),
+        reason: 'second run should not duplicate files');
+  });
+
   liveTest('client.upload() parallelism uploads all files', timeout: const Timeout(Duration(minutes: 3)), () async {
     // Drives the high-level batch driver (`client.upload(...)`) end
     // to end so the Phase 7.2 parallel pool + Phase 7.1 memory gate +

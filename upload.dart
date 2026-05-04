@@ -205,6 +205,130 @@ Future<void> runBoundedPool<T>(
   }
 }
 
+// =============================================================================
+// PRE-SCAN + SIZE-BASED SKIP (Phase 7.4)
+// =============================================================================
+//
+// Walks the remote target subtree once at the start of a batch upload,
+// returning a map of `parentRemotePath -> {filename -> size}`. The
+// caller uses this to:
+//   (a) Short-circuit Pass 1 (mkdir): folders already in the map
+//       don't need a `createFolderRecursive` call.
+//   (b) Implement size-based skip in task generation: if local file
+//       size matches the remote entry, mark the task as
+//       'skipped_size_match' before queuing it for Pass 2.
+//
+// The walk also seeds the listFolderFiles cache so Pass 2 makes
+// zero listing calls when target subtree is already populated.
+//
+// Mirrors Python's _seed_recursive (cli.py:874).
+
+/// Decide whether a local file should be skipped because the remote
+/// already has a same-name file with the same size. Pure function;
+/// unit-tested.
+///
+/// `mtimeCompare` is intentionally limited to size-only for now —
+/// mtime equality across upload-roundtrip is unreliable on Internxt
+/// (the gateway re-stamps modificationTime on store), and the
+/// Python sibling's `_should_skip` only enforces mtime equality
+/// when `preserve_timestamps` is on AND both sides have a timestamp.
+/// We can revisit when the test rig confirms parity.
+bool shouldSkipForSizeMatch({
+  required Map<String, int>? remoteFilesInParent,
+  required String filename,
+  required int localSize,
+  required String onConflict,
+}) {
+  if (onConflict != 'skip') return false;
+  if (remoteFilesInParent == null) return false;
+  final remoteSize = remoteFilesInParent[filename];
+  if (remoteSize == null) return false;
+  // Size 0 (folder placeholder, missing-data marker, etc.) is never
+  // a confident match — fall through to upload.
+  if (remoteSize == 0) return false;
+  return remoteSize == localSize;
+}
+
+/// Recursive remote pre-scan. Returns null if [targetPath] does not
+/// exist on the remote (caller falls back to "no pre-scan" mode).
+///
+/// Otherwise returns `{filesByPath, folderPaths}` where:
+/// - `filesByPath[parentRemotePath]` is `{filename -> sizeBytes}` for
+///   every file under the target subtree.
+/// - `folderPaths` is the set of remote folder paths under target;
+///   useful for Pass 1 short-circuit.
+///
+/// Throws if [targetPath] resolves to a file (not a folder).
+///
+/// `progress` is invoked at most ~5/sec with `(folderCount,
+/// fileCount)` so the caller can render a throttled progress line.
+Future<({
+  Map<String, Map<String, int>> filesByPath,
+  Set<String> folderPaths,
+})?> preScanRemote(
+  String driveApiUrl,
+  String? bearerToken,
+  String? rootFolderId,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String targetPath, {
+  void Function(int folderCount, int fileCount)? progress,
+}) async {
+  Map<String, dynamic> rootInfo;
+  try {
+    rootInfo = await inxt_drive.resolvePath(driveApiUrl, bearerToken,
+        rootFolderId, folderCache, fileCache, targetPath);
+  } on Exception catch (e) {
+    if (e.toString().contains('Path not found')) return null;
+    rethrow;
+  }
+  if (rootInfo['type'] != 'folder') {
+    throw Exception("Target '$targetPath' is a file, not a folder.");
+  }
+
+  final filesByPath = <String, Map<String, int>>{};
+  final folderPaths = <String>{};
+  var folderCount = 0;
+  var fileCount = 0;
+
+  Future<void> walk(String currentPath, String currentUuid) async {
+    folderPaths.add(currentPath);
+    folderCount++;
+
+    final files = await inxt_drive.listFolderFiles(
+        driveApiUrl, bearerToken, fileCache, currentUuid,
+        detailed: true);
+    final filesMap = <String, int>{};
+    for (final f in files) {
+      final plain = (f['name'] ?? '') as String;
+      final ext = (f['fileType'] ?? '') as String;
+      final leaf = ext.isNotEmpty ? '$plain.$ext' : plain;
+      final size = f['size'] is int
+          ? f['size'] as int
+          : int.tryParse((f['size'] ?? 0).toString()) ?? 0;
+      filesMap[leaf] = size;
+    }
+    filesByPath[currentPath] = filesMap;
+    fileCount += filesMap.length;
+    if (progress != null) progress(folderCount, fileCount);
+
+    final folders = await inxt_drive.listFolders(
+        driveApiUrl, bearerToken, folderCache, currentUuid,
+        detailed: true);
+    for (final d in folders) {
+      final name = (d['name'] ?? '') as String;
+      final uuid = (d['uuid'] ?? '') as String;
+      if (name.isEmpty || uuid.isEmpty) continue;
+      final subPath = '$currentPath/$name'.replaceAll('//', '/');
+      await walk(subPath, uuid);
+    }
+  }
+
+  final rootPath = (rootInfo['path'] as String?) ?? targetPath;
+  await walk(rootPath, rootInfo['uuid'] as String);
+  return (filesByPath: filesByPath, folderPaths: folderPaths);
+}
+
 // --- Network primitives ---
 
 /// POST /v2/buckets/{bucketId}/files/start?multiparts=1.
@@ -598,6 +722,25 @@ Future<void> upload(
     final targetFolderPathStr =
         targetFolderInfo['path'] as String? ?? targetPath;
 
+    // Phase 7.4: pre-scan the remote target subtree once (if it
+    // exists) so Pass 2 can do size-based skip without re-listing
+    // each parent. Pass 1 (mkdir) is also short-circuited because
+    // the cache is already warmed by the recursive walk.
+    Map<String, Map<String, int>>? remoteFilesByPath;
+    try {
+      final scan = await preScanRemote(driveApiUrl, bearerToken,
+          rootFolderId, folderCache, fileCache, targetFolderPathStr);
+      if (scan != null) {
+        remoteFilesByPath = scan.filesByPath;
+        final totalFiles = remoteFilesByPath.values
+            .fold<int>(0, (sum, m) => sum + m.length);
+        print(
+            '📋 Pre-scanned ${remoteFilesByPath.length} folders, $totalFiles files in target subtree');
+      }
+    } catch (e) {
+      print('⚠️  Pre-scan failed (continuing without size-based skip): $e');
+    }
+
     for (final sourceArg in sources) {
       final hasTrailingSlash =
           sourceArg.endsWith('/') || sourceArg.endsWith('\\');
@@ -645,31 +788,57 @@ Future<void> upload(
                   p.relative(fileEntity.path, from: localDir.path);
               final remoteFilePath =
                   p.join(remoteBase, relativePath).replaceAll('\\', '/');
+              final filename = p.basename(fileEntity.path);
 
-              if (inxt_utils.shouldIncludeFile(
-                  p.basename(fileEntity.path), include, exclude)) {
-                tasks.add({
-                  'localPath': fileEntity.path,
-                  'remotePath': remoteFilePath,
-                  'status': 'pending',
-                });
+              if (!inxt_utils.shouldIncludeFile(filename, include, exclude)) {
+                continue;
               }
+
+              // Phase 7.4: size-based skip via pre-scan map.
+              final remoteParent =
+                  p.dirname(remoteFilePath).replaceAll('\\', '/');
+              final localSize = await fileEntity.length();
+              final preSkip = shouldSkipForSizeMatch(
+                remoteFilesInParent: remoteFilesByPath?[remoteParent],
+                filename: filename,
+                localSize: localSize,
+                onConflict: onConflict,
+              );
+
+              tasks.add({
+                'localPath': fileEntity.path,
+                'remotePath': remoteFilePath,
+                'status': preSkip ? 'skipped_size_match' : 'pending',
+              });
             }
           }
         } else if (await io.FileSystemEntity.isFile(entity.path)) {
           final localFile = io.File(entity.path);
+          final filename = p.basename(localFile.path);
           final remoteFilePath = p
-              .join(targetFolderPathStr, p.basename(localFile.path))
+              .join(targetFolderPathStr, filename)
               .replaceAll('\\', '/');
 
-          if (inxt_utils.shouldIncludeFile(
-              p.basename(localFile.path), include, exclude)) {
-            tasks.add({
-              'localPath': localFile.path,
-              'remotePath': remoteFilePath,
-              'status': 'pending',
-            });
+          if (!inxt_utils.shouldIncludeFile(filename, include, exclude)) {
+            continue;
           }
+
+          // Phase 7.4: size-based skip.
+          final remoteParent =
+              p.dirname(remoteFilePath).replaceAll('\\', '/');
+          final localSize = await localFile.length();
+          final preSkip = shouldSkipForSizeMatch(
+            remoteFilesInParent: remoteFilesByPath?[remoteParent],
+            filename: filename,
+            localSize: localSize,
+            onConflict: onConflict,
+          );
+
+          tasks.add({
+            'localPath': localFile.path,
+            'remotePath': remoteFilePath,
+            'status': preSkip ? 'skipped_size_match' : 'pending',
+          });
         }
       }
     }

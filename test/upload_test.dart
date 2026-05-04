@@ -130,6 +130,69 @@ void main() {
     });
   });
 
+  group('shouldSkipForSizeMatch (Phase 7.4)', () {
+    test('returns true: matching size, onConflict=skip', () {
+      final r = shouldSkipForSizeMatch(
+        remoteFilesInParent: {'a.txt': 1024},
+        filename: 'a.txt',
+        localSize: 1024,
+        onConflict: 'skip',
+      );
+      expect(r, isTrue);
+    });
+
+    test('returns false: size mismatch (re-upload needed)', () {
+      final r = shouldSkipForSizeMatch(
+        remoteFilesInParent: {'a.txt': 1024},
+        filename: 'a.txt',
+        localSize: 2048,
+        onConflict: 'skip',
+      );
+      expect(r, isFalse);
+    });
+
+    test('returns false: file not in remote (new upload)', () {
+      final r = shouldSkipForSizeMatch(
+        remoteFilesInParent: {'other.txt': 1024},
+        filename: 'a.txt',
+        localSize: 1024,
+        onConflict: 'skip',
+      );
+      expect(r, isFalse);
+    });
+
+    test('returns false: onConflict != skip (overwrite forces re-upload)',
+        () {
+      final r = shouldSkipForSizeMatch(
+        remoteFilesInParent: {'a.txt': 1024},
+        filename: 'a.txt',
+        localSize: 1024,
+        onConflict: 'overwrite',
+      );
+      expect(r, isFalse);
+    });
+
+    test('returns false: parent not in pre-scan (no remote map)', () {
+      final r = shouldSkipForSizeMatch(
+        remoteFilesInParent: null,
+        filename: 'a.txt',
+        localSize: 1024,
+        onConflict: 'skip',
+      );
+      expect(r, isFalse);
+    });
+
+    test('returns false: remote size 0 is never a confident match', () {
+      final r = shouldSkipForSizeMatch(
+        remoteFilesInParent: {'a.txt': 0},
+        filename: 'a.txt',
+        localSize: 0,
+        onConflict: 'skip',
+      );
+      expect(r, isFalse);
+    });
+  });
+
   group('runBoundedPool (Phase 7.2)', () {
     test('runs all tasks exactly once', () async {
       final ran = <int>[];
