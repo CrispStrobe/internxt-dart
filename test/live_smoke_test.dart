@@ -1599,7 +1599,7 @@ void main() {
 
   liveTest('storage usage endpoint returns a Map', () async {
     final usage = await getStorageUsage(
-      InternxtClient.driveApiUrl,
+      client.driveApiUrl,
       client.newToken,
     );
     expect(usage, isA<Map<String, dynamic>>());
@@ -1611,7 +1611,7 @@ void main() {
     // starts passing the call without throwing, the endpoint has come
     // online and we should wire real callers.
     expect(
-      () => getUserInfo(InternxtClient.driveApiUrl, client.newToken),
+      () => getUserInfo(client.driveApiUrl, client.newToken),
       throwsA(predicate((e) =>
           e.toString().contains('404') ||
           e.toString().contains('Not Found') ||
@@ -1634,7 +1634,7 @@ void main() {
     );
 
     final listing = await listFolderWithPaths(
-      InternxtClient.driveApiUrl,
+      client.driveApiUrl,
       client.newToken,
       client.rootFolderId,
       // Tests don't have direct access to the private cache maps; pass

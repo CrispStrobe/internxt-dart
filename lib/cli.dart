@@ -540,8 +540,8 @@ class InternxtCLI {
     if (debugMode) {
       print('🔍 Debug mode enabled\n');
       print('📋 API Configuration:');
-      print('   NETWORK_URL (data): ${InternxtClient.networkUrl}');
-      print('   DRIVE_API_URL (auth/meta): ${InternxtClient.driveApiUrl}');
+      print('   NETWORK_URL (data): ${client.networkUrl}');
+      print('   DRIVE_API_URL (auth/meta): ${client.driveApiUrl}');
       print('   APP_CRYPTO_SECRET: ${InternxtClient.appCryptoSecret}');
       print('');
     }
@@ -1847,9 +1847,9 @@ class InternxtCLI {
     print('🔄 Batch states dir: ${config.batchStateDir}');
     print('');
     print('🌐 API Endpoints (from Python blueprint):');
-    print('   NETWORK_URL: ${InternxtClient.networkUrl}');
+    print('   NETWORK_URL: ${client.networkUrl}');
     print('     └─ Data: /buckets/{bucketId}/files/...');
-    print('   DRIVE_API_URL: ${InternxtClient.driveApiUrl}');
+    print('   DRIVE_API_URL: ${client.driveApiUrl}');
     print('     └─ Auth: /auth/login, /auth/security, /users/refresh');
     print('     └─ Meta: /folders/..., /files/..., /fuzzy/...');
     print('');
@@ -1866,7 +1866,7 @@ class InternxtCLI {
     client.setAuth(creds);
 
     final usage = await inxt_api.getStorageUsage(
-        InternxtClient.driveApiUrl, client.newToken);
+        client.driveApiUrl, client.newToken);
 
     // Internxt has historically returned a few different shapes
     // (`{usage, limit}` is the current one; older versions used
@@ -1905,12 +1905,16 @@ class InternxtCLI {
     print('   ✅ PASS\n');
 
     print('Test 2: API URLs validation');
-    print('   NETWORK_URL: ${InternxtClient.networkUrl}');
-    assert(InternxtClient.networkUrl == 'https://gateway.internxt.com/network',
-        'NETWORK_URL mismatch! Expected gateway.internxt.com/network');
-    print('   DRIVE_API_URL: ${InternxtClient.driveApiUrl}');
-    assert(InternxtClient.driveApiUrl == 'https://gateway.internxt.com/drive',
-        'DRIVE_API_URL mismatch! Expected gateway.internxt.com/drive');
+    print('   NETWORK_URL: ${client.networkUrl}');
+    assert(
+        InternxtClient.defaultNetworkUrl ==
+            'https://gateway.internxt.com/network',
+        'NETWORK_URL default mismatch! Expected gateway.internxt.com/network');
+    print('   DRIVE_API_URL: ${client.driveApiUrl}');
+    assert(
+        InternxtClient.defaultDriveApiUrl ==
+            'https://gateway.internxt.com/drive',
+        'DRIVE_API_URL default mismatch! Expected gateway.internxt.com/drive');
     print('   ✅ PASS\n');
 
     print('Test 3: Encryption/Decryption (OpenSSL compat)');
@@ -2104,9 +2108,17 @@ class InternxtCLI {
 // ============================================================================
 
 class InternxtClient {
-  static const String networkUrl = 'https://gateway.internxt.com/network';
-  static const String driveApiUrl = 'https://gateway.internxt.com/drive';
+  // Defaults for the production gateway. Constructor-overridable so
+  // Flutter consumers (cloud-dart's Web build) can route through a
+  // proxy — e.g., `/api/internxt-network` served by Vercel — without
+  // hitting the gateway directly from the browser.
+  static const String defaultNetworkUrl =
+      'https://gateway.internxt.com/network';
+  static const String defaultDriveApiUrl = 'https://gateway.internxt.com/drive';
   static const String appCryptoSecret = '6KYQBP847D4ATSFA';
+
+  final String networkUrl;
+  final String driveApiUrl;
 
   bool debugMode = false;
   final ConfigService config;
@@ -2127,7 +2139,12 @@ class InternxtClient {
   // Token refresh lock
   bool _isRefreshingToken = false;
 
-  InternxtClient({required this.config});
+  InternxtClient({
+    required this.config,
+    String? networkUrl,
+    String? driveApiUrl,
+  })  : networkUrl = networkUrl ?? defaultNetworkUrl,
+        driveApiUrl = driveApiUrl ?? defaultDriveApiUrl;
 
   void log(String message) {
     if (debugMode) {

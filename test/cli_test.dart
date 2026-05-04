@@ -177,4 +177,33 @@ void main() {
       expect(r.skips.first['reason'], contains('already in target'));
     });
   });
+
+  group('InternxtClient URL overrides (Phase 6.a B4)', () {
+    test('defaults to the production gateway URLs when not overridden', () {
+      final c = InternxtClient(config: ConfigService());
+      expect(c.networkUrl, equals(InternxtClient.defaultNetworkUrl));
+      expect(c.driveApiUrl, equals(InternxtClient.defaultDriveApiUrl));
+      expect(c.networkUrl, equals('https://gateway.internxt.com/network'));
+      expect(c.driveApiUrl, equals('https://gateway.internxt.com/drive'));
+    });
+
+    test('constructor overrides take effect (Web/proxy scenario)', () {
+      final c = InternxtClient(
+        config: ConfigService(),
+        networkUrl: '/api/internxt-network',
+        driveApiUrl: '/api/internxt-drive',
+      );
+      expect(c.networkUrl, equals('/api/internxt-network'));
+      expect(c.driveApiUrl, equals('/api/internxt-drive'));
+    });
+
+    test('partial override: only one URL replaced', () {
+      final c = InternxtClient(
+        config: ConfigService(),
+        driveApiUrl: 'https://staging.internxt.com/drive',
+      );
+      expect(c.networkUrl, equals(InternxtClient.defaultNetworkUrl));
+      expect(c.driveApiUrl, equals('https://staging.internxt.com/drive'));
+    });
+  });
 }
