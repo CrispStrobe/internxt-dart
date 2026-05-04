@@ -28,7 +28,14 @@ import 'crypto.dart' as inxt_crypto;
 /// and surface a real error if it actually fails. This matches the
 /// monolith behavior — a 2FA check failure should not block the whole
 /// login flow.
-Future<bool> is2faNeeded(String driveApiUrl, String email) async {
+///
+/// [client] is optional and only used by tests; production callers
+/// pass null and the standard top-level `http` functions are used.
+Future<bool> is2faNeeded(
+  String driveApiUrl,
+  String email, {
+  http.Client? client,
+}) async {
   final cleanEmail = email.toLowerCase().trim();
   try {
     final response = await inxt_api.makeRequest(
@@ -36,6 +43,7 @@ Future<bool> is2faNeeded(String driveApiUrl, String email) async {
       Uri.parse('$driveApiUrl/auth/login'),
       body: json.encode({'email': cleanEmail}),
       useAuth: false,
+      client: client,
     );
     final data = json.decode(response.body);
     return data['tfa'] == true;
@@ -70,6 +78,7 @@ Future<Map<String, dynamic>> login(
   String email,
   String password, {
   String? tfaCode,
+  http.Client? client,
 }) async {
   final cleanEmail = email.toLowerCase().trim();
 
@@ -78,6 +87,7 @@ Future<Map<String, dynamic>> login(
     Uri.parse('$driveApiUrl/auth/login'),
     body: json.encode({'email': cleanEmail}),
     useAuth: false,
+    client: client,
   );
   final sKey = json.decode(secRes.body)['sKey'] as String?;
   if (sKey == null) throw Exception('Login failed: Salt (sKey) missing.');
@@ -105,17 +115,19 @@ Future<Map<String, dynamic>> login(
       'publicKey': keysPayload['publicKey'],
     }),
     useAuth: false,
+    client: client,
   );
   final tempToken = json.decode(accessRes.body)['newToken'];
 
-  final hydrationRes = await http.get(
-    Uri.parse('$driveApiUrl/users/refresh'),
-    headers: {
-      'Authorization': 'Bearer $tempToken',
-      'internxt-client': 'cli',
-      'Content-Type': 'application/json',
-    },
-  );
+  final hydrationUri = Uri.parse('$driveApiUrl/users/refresh');
+  final hydrationHeaders = {
+    'Authorization': 'Bearer $tempToken',
+    'internxt-client': 'cli',
+    'Content-Type': 'application/json',
+  };
+  final hydrationRes = client != null
+      ? await client.get(hydrationUri, headers: hydrationHeaders)
+      : await http.get(hydrationUri, headers: hydrationHeaders);
   if (hydrationRes.statusCode != 200) {
     throw Exception('Hydration failed: ${hydrationRes.statusCode}');
   }
@@ -148,16 +160,18 @@ Future<Map<String, dynamic>> login(
 /// lock.
 Future<Map<String, dynamic>> apiRefreshToken(
   String driveApiUrl,
-  String currentNewToken,
-) async {
+  String currentNewToken, {
+  http.Client? client,
+}) async {
+  final url = Uri.parse('$driveApiUrl/users/refresh');
+  final headers = {
+    'Authorization': 'Bearer $currentNewToken',
+    'Content-Type': 'application/json',
+  };
   try {
-    final response = await http.get(
-      Uri.parse('$driveApiUrl/users/refresh'),
-      headers: {
-        'Authorization': 'Bearer $currentNewToken',
-        'Content-Type': 'application/json',
-      },
-    );
+    final response = client != null
+        ? await client.get(url, headers: headers)
+        : await http.get(url, headers: headers);
     if (response.statusCode != 200) {
       throw Exception('Token refresh failed: ${response.statusCode}');
     }

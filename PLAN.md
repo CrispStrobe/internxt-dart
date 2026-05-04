@@ -18,7 +18,8 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - Phase 9 — doc sweep, GitHub Actions CI, `strict-casts: true` everywhere, publish-prep (pubspec / bin / CHANGELOG)
 - Phase 9.5 — coverage gate in CI (per-file thresholds: `crypto.dart` 100%, `utils.dart` 100%, `config.dart` 90%; gate script at `tool/check_coverage.dart`)
 - Phase 9.6 — stale-cache audit + cache-invalidation fixes for `set{File,Folder}Timestamp`; pinned a gateway-side gap (Internxt silently overwrites `modificationTime` on PUT-meta) as a known-broken regression marker
-- Phase 9.7 — extend coverage gate to `cache.dart` at 90%; add `test/auth_test.dart` pinning `computeBridgePass` (auth.dart still excluded from gate until the http-injectable refactor lands — `computeBridgePass` is the only currently-testable surface without that)
+- Phase 9.7 — extend coverage gate to `cache.dart` at 90%; add `test/auth_test.dart` pinning `computeBridgePass`
+- Phase 9.7.1 — http-injectable refactor: `makeRequest` and auth.dart's three http-bound functions now accept an optional `http.Client`, defaulting to the top-level `http.get/post/...` helpers in production. Tests use `MockClient` from `package:http/testing.dart`. New `test/api_test.dart` (13 tests) + expanded `test/auth_test.dart` (11 tests). `api.dart` and `auth.dart` added to coverage gate at 30% each (testable-without-live-creds slice; remaining surface is 5xx-retry-with-backoff and login's crypto path)
 
 **Open — load-bearing (next session candidates):**
 1. **Phase 6.a continuation — full lib/ restructure.** Move modules to `lib/internxt_client/` + barrel + update test imports. ~1 hour. Gated on cloud-dart being ready to consume — disruption only pays off when there's a concrete consumer.
@@ -26,7 +27,7 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 3. **Phase 6.c — rewire cloud-dart.** Remove embedded copy, add `internxt_client` dependency, update imports. ~3 hours. Closes the multi-repo divergence permanently.
 
 **Open — independently shippable:**
-- **Auth/api/drive unit coverage.** Most of the codebase is exercised only via the live integration suite, so the per-file coverage gate (Phase 9.5) only protects `crypto.dart` / `utils.dart` / `config.dart`. Adding a mocked `http.Client` harness would make `auth.dart`, `api.dart`, and the pure helpers in `drive.dart` unit-testable. ~3 hours; expands the gate from 3 modules to 6+.
+- **Drive unit coverage.** With `auth.dart` and `api.dart` done in Phase 9.7.1, the next logical expansion is `drive.dart`. Each function takes `(driveApiUrl, bearerToken, ...)` plus the cache maps; refactoring `makeRequest`-style optional `http.Client` plumbing through every drive function would make most of them unit-testable. ~2 hours; would expand the gate from 6 modules to 7. Note: this overlaps with the Phase 6.a lib/ restructure — the right move may be to wait until cloud-dart consumes the package, then refactor drive.dart's surface once cleanly.
 
 **Open — small follow-ons (notes, not session-sized work):**
 - **Trash-listing eventual-consistency.** The `trash lifecycle` live test uses a best-effort 4-attempt retry (~6s) to surface a just-trashed file in `getTrashContent`. The retry is correct but the underlying lag is a backend characteristic — worth understanding precisely (and tightening the test) if Internxt fixes it.

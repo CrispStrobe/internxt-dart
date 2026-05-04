@@ -1,16 +1,21 @@
-// Unit tests for auth.dart's pure helpers.
+// Unit tests for auth.dart.
 //
-// The HTTP-bound functions (is2faNeeded, login, apiRefreshToken)
-// are exercised via the live smoke suite — they need a real
-// `http.Client` to test, which would mean refactoring the auth
-// surface to accept an injectable client. Tracked under
-// "Auth/api/drive unit coverage" in PLAN.md.
+// HTTP-bound functions are exercised here via `MockClient` from
+// `package:http/testing.dart` — auth.dart's three http-bound
+// functions all accept an optional `http.Client` parameter, so we
+// can intercept requests and assert on shape without hitting the
+// network. Production callers continue to pass null and use the
+// top-level `http.get/post/...` helpers.
 //
-// What we *can* test cheaply is computeBridgePass: pure SHA-256
-// over a stringified userId. Pinning it locks in the bridge-auth
-// derivation so a future refactor can't quietly change the
-// algorithm and silently break every authenticated network call.
+// `computeBridgePass` is a pure SHA-256 derivation pinned as a
+// regression marker — every authenticated network call depends on
+// this hash matching what the gateway computes, so locking in the
+// algorithm here protects against silent breakage.
 
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
 import '../auth.dart';
@@ -49,6 +54,111 @@ void main() {
       expect(h.length, equals(64));
       expect(RegExp(r'^[0-9a-f]+$').hasMatch(h), isTrue,
           reason: 'must be lowercase hex');
+    });
+  });
+
+  group('is2faNeeded (mocked http)', () {
+    test('returns true when gateway responds {tfa: true}', () async {
+      final client = MockClient((req) async {
+        // Pin the contract: lowercased + trimmed email goes in the body.
+        expect(req.method, equals('POST'));
+        expect(req.url.path, endsWith('/auth/login'));
+        final body = json.decode(req.body) as Map<String, dynamic>;
+        expect(body['email'], equals('alice@example.com'));
+        return http.Response(json.encode({'tfa': true, 'sKey': 'unused'}), 200);
+      });
+      expect(
+        await is2faNeeded('https://api.test', '  Alice@Example.com ',
+            client: client),
+        isTrue,
+      );
+    });
+
+    test('returns false when gateway responds {tfa: false}', () async {
+      final client = MockClient((_) async =>
+          http.Response(json.encode({'tfa': false, 'sKey': 'unused'}), 200));
+      expect(
+        await is2faNeeded('https://api.test', 'bob@example.com',
+            client: client),
+        isFalse,
+      );
+    });
+
+    test('returns false on transport errors (silent degrade)', () async {
+      // Auth contract: a transient 2FA-check failure should NOT block
+      // login. The caller proceeds and the actual login call surfaces
+      // any real auth failure with its own error.
+      final client =
+          MockClient((_) async => throw http.ClientException('flaky network'));
+      expect(
+        await is2faNeeded('https://api.test', 'carol@example.com',
+            client: client),
+        isFalse,
+      );
+    });
+
+    test('returns false on 4xx responses (silent degrade)', () async {
+      // A 400/500 here would normally throw via makeRequest's error
+      // path; is2faNeeded swallows so login can proceed.
+      final client =
+          MockClient((_) async => http.Response('{"error":"bad"}', 400));
+      expect(
+        await is2faNeeded('https://api.test', 'dave@example.com',
+            client: client),
+        isFalse,
+      );
+    });
+  });
+
+  group('apiRefreshToken (mocked http)', () {
+    test('200 response returns parsed JSON map', () async {
+      final client = MockClient((req) async {
+        // Pin the contract: GET /users/refresh with bearer token.
+        expect(req.method, equals('GET'));
+        expect(req.url.path, endsWith('/users/refresh'));
+        expect(req.headers['Authorization'], equals('Bearer tok-abc'));
+        return http.Response(
+          json.encode({
+            'token': 'new-legacy-token',
+            'newToken': 'new-bearer-token',
+            'user': {'userId': 'u-1'},
+          }),
+          200,
+        );
+      });
+      final result =
+          await apiRefreshToken('https://api.test', 'tok-abc', client: client);
+      expect(result['newToken'], equals('new-bearer-token'));
+      expect((result['user'] as Map)['userId'], equals('u-1'));
+    });
+
+    test('non-200 response throws double-wrapped Exception', () async {
+      // The double-wrapping is intentional — preserves the monolith's
+      // error-message shape so any callers doing string-matching keep
+      // working. Pinning this ensures a future "cleanup" doesn't
+      // unintentionally flatten the message.
+      final client = MockClient((_) async => http.Response('forbidden', 403));
+      await expectLater(
+        () => apiRefreshToken('https://api.test', 'tok-stale', client: client),
+        throwsA(isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          contains('Token refresh failed'),
+        )),
+      );
+    });
+
+    test('transport error is rewrapped as "Token refresh failed"', () async {
+      final client = MockClient(
+          (_) async => throw http.ClientException('connection reset'));
+      await expectLater(
+        () => apiRefreshToken('https://api.test', 'tok', client: client),
+        throwsA(isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          allOf(contains('Token refresh failed'), contains('connection reset')),
+        )),
+      );
     });
   });
 }

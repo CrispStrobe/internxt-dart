@@ -56,7 +56,8 @@ jobs:
             test/cache_test.dart \
             test/upload_test.dart \
             test/cli_test.dart \
-            test/auth_test.dart
+            test/auth_test.dart \
+            test/api_test.dart
 
       - name: Format coverage to lcov
         run: |

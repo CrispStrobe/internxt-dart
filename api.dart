@@ -32,6 +32,12 @@ import 'package:http/http.dart' as http;
 /// the original behavior since refresh is not driven from inside this
 /// function. If [isNetworkAuth] is set, [networkUser]/[networkPass]
 /// are used for HTTP Basic auth instead and [bearerToken] is ignored.
+///
+/// [client] is an optional `http.Client` for testability — pass a
+/// `MockClient` from `package:http/testing.dart` to intercept requests.
+/// When null (the default), the top-level `http.get/post/...` helpers
+/// are used, which spin up a one-shot client per call. The same
+/// [client] is reused across retries so a mock can sequence responses.
 Future<http.Response> makeRequest(
   String method,
   Uri url, {
@@ -43,6 +49,7 @@ Future<http.Response> makeRequest(
   String? networkUser,
   String? networkPass,
   int retryCount = 0,
+  http.Client? client,
 }) async {
   const maxRetries = 3;
   final requestHeaders = {
@@ -64,19 +71,29 @@ Future<http.Response> makeRequest(
     http.Response response;
     switch (method.toUpperCase()) {
       case 'GET':
-        response = await http.get(url, headers: requestHeaders);
+        response = client != null
+            ? await client.get(url, headers: requestHeaders)
+            : await http.get(url, headers: requestHeaders);
         break;
       case 'POST':
-        response = await http.post(url, headers: requestHeaders, body: body);
+        response = client != null
+            ? await client.post(url, headers: requestHeaders, body: body)
+            : await http.post(url, headers: requestHeaders, body: body);
         break;
       case 'PUT':
-        response = await http.put(url, headers: requestHeaders, body: body);
+        response = client != null
+            ? await client.put(url, headers: requestHeaders, body: body)
+            : await http.put(url, headers: requestHeaders, body: body);
         break;
       case 'PATCH':
-        response = await http.patch(url, headers: requestHeaders, body: body);
+        response = client != null
+            ? await client.patch(url, headers: requestHeaders, body: body)
+            : await http.patch(url, headers: requestHeaders, body: body);
         break;
       case 'DELETE':
-        response = await http.delete(url, headers: requestHeaders, body: body);
+        response = client != null
+            ? await client.delete(url, headers: requestHeaders, body: body)
+            : await http.delete(url, headers: requestHeaders, body: body);
         break;
       default:
         throw Exception('Unsupported method');
@@ -96,6 +113,7 @@ Future<http.Response> makeRequest(
         networkUser: networkUser,
         networkPass: networkPass,
         retryCount: retryCount + 1,
+        client: client,
       );
     }
 
@@ -114,6 +132,7 @@ Future<http.Response> makeRequest(
         body: body,
         useAuth: useAuth,
         retryCount: retryCount + 1,
+        client: client,
       );
     }
     rethrow;

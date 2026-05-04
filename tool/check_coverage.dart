@@ -29,6 +29,14 @@ const _thresholds = <String, double>{
   'utils.dart': 100.0,
   'config.dart': 90.0,
   'cache.dart': 90.0,
+  // api.dart + auth.dart cover the testable surface (request shape,
+  // headers, error mapping for api.dart; computeBridgePass +
+  // is2faNeeded + apiRefreshToken for auth.dart). The untested
+  // remainder is mostly the 5xx-retry-with-backoff paths (skipped to
+  // avoid 7s+ delays in unit tests) and login's crypto-heavy
+  // happy-path. 30% reflects the testable-without-live-creds slice.
+  'api.dart': 30.0,
+  'auth.dart': 30.0,
 };
 
 void main() {
