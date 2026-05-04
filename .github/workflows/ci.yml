@@ -57,7 +57,9 @@ jobs:
             test/upload_test.dart \
             test/cli_test.dart \
             test/auth_test.dart \
-            test/api_test.dart
+            test/api_test.dart \
+            test/download_test.dart \
+            test/paths_test.dart
 
       - name: Format coverage to lcov
         run: |
@@ -66,12 +68,12 @@ jobs:
             --in=coverage \
             --out=coverage/lcov.info \
             --packages=.dart_tool/package_config.json \
-            --report-on=.
+            --report-on=lib
 
       - name: Coverage gate (per-file thresholds)
         run: dart run tool/check_coverage.dart
 
       - name: Compile binary smoke check
         run: |
-          dart compile exe cli.dart -o /tmp/inxt
+          dart compile exe bin/inxt.dart -o /tmp/inxt
           /tmp/inxt help | head -5
