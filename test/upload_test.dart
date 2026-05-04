@@ -130,6 +130,57 @@ void main() {
     });
   });
 
+  group('CancellationToken (Phase 7.7)', () {
+    test('starts uncancelled', () {
+      final t = CancellationToken();
+      expect(t.isCancelled, isFalse);
+    });
+
+    test('cancel() flips the flag', () {
+      final t = CancellationToken();
+      t.cancel();
+      expect(t.isCancelled, isTrue);
+    });
+
+    test('cancel() is idempotent', () {
+      final t = CancellationToken();
+      t.cancel();
+      t.cancel();
+      t.cancel();
+      expect(t.isCancelled, isTrue);
+    });
+
+    test('integrates with runBoundedPool: cancelled work returns early',
+        () async {
+      // Pattern that mirrors how upload()'s runOne uses the token:
+      // each task checks the flag at the top and returns early if
+      // cancelled.
+      final t = CancellationToken();
+      final completed = <int>[];
+      final cancelled = <int>[];
+
+      // Cancel after the first task completes. Subsequent tasks see
+      // the flag and return early.
+      await runBoundedPool<int>(
+        List.generate(10, (i) => i),
+        2, // small concurrency so cancellation is observable
+        (i) async {
+          if (t.isCancelled) {
+            cancelled.add(i);
+            return;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+          completed.add(i);
+          if (completed.length == 2) t.cancel();
+        },
+      );
+
+      expect(completed.length, lessThan(10));
+      expect(cancelled.length, greaterThan(0));
+      expect(completed.length + cancelled.length, equals(10));
+    });
+  });
+
   group('ProgressLine (Phase 7.6)', () {
     test('first call always writes', () {
       final writes = <String>[];

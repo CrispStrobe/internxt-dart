@@ -1615,6 +1615,22 @@ class InternxtCLI {
             "🔄 DEBUG: Resuming existing batch with ${batchState['tasks'].length} tasks.");
       }
 
+      // Phase 7.7: Ctrl+C cancellation. First Ctrl+C cancels queued
+      // workers (in-flight ones finish their current network call);
+      // a second Ctrl+C does a hard exit. The subscription is
+      // disposed in the finally below.
+      final cancellationToken = inxt_upload.CancellationToken();
+      late final StreamSubscription<io.ProcessSignal> sigintSub;
+      sigintSub = io.ProcessSignal.sigint.watch().listen((_) {
+        if (cancellationToken.isCancelled) {
+          print('\n⚠️  Force-exiting on second Ctrl+C');
+          io.exit(130);
+        }
+        print('\n🛑 Cancelling — finishing in-flight uploads, queued '
+            'ones will be skipped. Press Ctrl+C again to force-exit.');
+        cancellationToken.cancel();
+      });
+
       // Step 1: Optimization - Resolve target once. We compute this for
       // its side effect (creates intermediate folders if needed); the
       // returned uuid is unused here because client.upload below resolves
@@ -1627,24 +1643,39 @@ class InternxtCLI {
         print("🔍 [DEBUG] Pre-scanning target folder for existing items...");
       // (Implementation note: In a full sync, you'd collect source names first and send them to checkFilesExistence)
 
-      await client.upload(
-        sources,
-        targetPath,
-        recursive: recursive,
-        onConflict: onConflict,
-        preserveTimestamps: preserveTimestamps,
-        include: include,
-        exclude: exclude,
-        bridgeUser: bridgeUser,
-        userIdForAuth: userIdForAuth,
-        batchId: batchId,
-        initialBatchState: batchState,
-        saveStateCallback: (state) async {
-          await config.saveBatchState(batchId, state);
-          if (debugMode) print("💾 TRACE: Progress saved for Batch $batchId");
-        },
-        workers: workers,
-      );
+      try {
+        await client.upload(
+          sources,
+          targetPath,
+          recursive: recursive,
+          onConflict: onConflict,
+          preserveTimestamps: preserveTimestamps,
+          include: include,
+          exclude: exclude,
+          bridgeUser: bridgeUser,
+          userIdForAuth: userIdForAuth,
+          batchId: batchId,
+          initialBatchState: batchState,
+          saveStateCallback: (state) async {
+            await config.saveBatchState(batchId, state);
+            if (debugMode) {
+              print("💾 TRACE: Progress saved for Batch $batchId");
+            }
+          },
+          workers: workers,
+          cancellationToken: cancellationToken,
+        );
+      } finally {
+        await sigintSub.cancel();
+      }
+
+      if (cancellationToken.isCancelled) {
+        // State file is preserved so the user can resume with the
+        // same arguments. Exit 130 (POSIX SIGINT convention).
+        print('🛑 Aborted; state preserved for resume. Run the same '
+            'command to continue.');
+        io.exit(130);
+      }
 
       await config.deleteBatchState(batchId);
       print("\n✅ Batch completed successfully.");
@@ -2320,6 +2351,7 @@ class InternxtClient {
     Map<String, dynamic>? initialBatchState,
     required Future<void> Function(Map<String, dynamic>) saveStateCallback,
     int workers = 4,
+    inxt_upload.CancellationToken? cancellationToken,
   }) =>
       inxt_upload.upload(
         networkUrl,
@@ -2343,6 +2375,7 @@ class InternxtClient {
         initialBatchState: initialBatchState,
         saveStateCallback: saveStateCallback,
         workers: workers,
+        cancellationToken: cancellationToken,
       );
 
   Future<Map<String, dynamic>> _resolveOrCreateRemoteFolder(

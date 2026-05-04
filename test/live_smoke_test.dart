@@ -1285,6 +1285,62 @@ void main() {
         reason: 'second run should not duplicate files');
   });
 
+  liveTest('upload() cancellation: pre-cancelled token uploads nothing',
+      () async {
+    final localDir =
+        Directory('${tmpRoot.path}/${_uniqueName('cancel-tree')}');
+    localDir.createSync();
+    for (var i = 0; i < 4; i++) {
+      _writePayload(localDir, '${_uniqueName('c$i')}.txt', sizeBytes: 64);
+    }
+
+    final remoteRoot = _uniqueSubpath('cancel-target');
+    final batchId = config.generateBatchId(
+        'cancel', [localDir.path], remoteRoot);
+
+    // Pre-cancel the token: every task should hit the early-return
+    // branch in runOne and never actually upload.
+    final token = CancellationToken();
+    token.cancel();
+
+    await client.upload(
+      [localDir.path],
+      remoteRoot,
+      recursive: true,
+      onConflict: 'overwrite',
+      preserveTimestamps: false,
+      include: const [],
+      exclude: const [],
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      batchId: batchId,
+      initialBatchState: null,
+      saveStateCallback: (state) async {
+        await config.saveBatchState(batchId, state);
+      },
+      workers: 4,
+      cancellationToken: token,
+    );
+    await config.deleteBatchState(batchId);
+
+    // The remote target subtree may have been created (parent
+    // pre-create runs before tasks fire), but no files should have
+    // been uploaded.
+    final dirBase = localDir.path.split(Platform.pathSeparator).last;
+    final remoteSubdir = '$remoteRoot/$dirBase';
+    Map<String, dynamic>? resolved;
+    try {
+      resolved = await client.resolvePath(remoteSubdir);
+    } on Exception catch (e) {
+      if (!e.toString().contains('Path not found')) rethrow;
+    }
+    if (resolved != null) {
+      final files = await client.listFolderFiles(resolved['uuid'] as String);
+      expect(files, isEmpty,
+          reason: 'pre-cancelled upload should not have uploaded anything');
+    }
+  });
+
   liveTest('client.upload() parallelism uploads all files', timeout: const Timeout(Duration(minutes: 3)), () async {
     // Drives the high-level batch driver (`client.upload(...)`) end
     // to end so the Phase 7.2 parallel pool + Phase 7.1 memory gate +

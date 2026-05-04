@@ -206,6 +206,33 @@ Future<void> runBoundedPool<T>(
 }
 
 // =============================================================================
+// CANCELLATION TOKEN (Phase 7.7)
+// =============================================================================
+//
+// Signal-driven abort for long-running batch operations. cli.dart
+// subscribes to SIGINT (Ctrl+C) and calls `cancel()` on the token.
+// Workers check `isCancelled` at the top of each per-task callback
+// and return early with status 'cancelled' instead of doing work.
+//
+// In-flight network calls can't be cancelled mid-stream (Dart's
+// http.Client doesn't expose abort), so a single Ctrl+C lets
+// already-started uploads finish but prevents queued workers from
+// starting new ones. A second Ctrl+C does a hard exit.
+
+class CancellationToken {
+  bool _cancelled = false;
+
+  /// True once [cancel] has been invoked. Idempotent; once set,
+  /// stays set.
+  bool get isCancelled => _cancelled;
+
+  /// Mark cancelled. Subsequent calls are no-ops.
+  void cancel() {
+    _cancelled = true;
+  }
+}
+
+// =============================================================================
 // THROTTLED PROGRESS LINE (Phase 7.6)
 // =============================================================================
 //
@@ -756,6 +783,7 @@ Future<void> upload(
   Map<String, dynamic>? initialBatchState,
   required Future<void> Function(Map<String, dynamic>) saveStateCallback,
   int workers = 4,
+  CancellationToken? cancellationToken,
 }) async {
   print('🎯 Preparing upload to remote path: $targetPath');
 
@@ -966,7 +994,18 @@ Future<void> upload(
     );
   }
 
+  var cancelledCount = 0;
+
   Future<void> runOne(Map<String, dynamic> task) async {
+    // Phase 7.7: queued workers see the cancellation flag at the
+    // top and return early. In-flight tasks past this point run to
+    // completion (network calls can't be cancelled mid-stream).
+    if (cancellationToken?.isCancelled ?? false) {
+      cancelledCount++;
+      task['status'] = 'cancelled';
+      await serializedSave();
+      return;
+    }
     try {
       final localPath = task['localPath'] as String;
       final remotePath = task['remotePath'] as String;
@@ -1060,12 +1099,18 @@ Future<void> upload(
   await saveTail;
 
   print('=' * 40);
+  if (cancellationToken?.isCancelled ?? false) {
+    print('🛑 ABORTED by user (Ctrl+C)');
+  }
   print('📊 Batch Upload Summary:');
   if (completedPreviously > 0) {
     print('  ✅ Completed (previous run): $completedPreviously');
   }
   print('  ✅ Uploaded (this run): $successCount');
   print('  ⏭️  Skipped:  $skippedCount');
+  if (cancelledCount > 0) {
+    print('  🛑 Cancelled: $cancelledCount');
+  }
   print('  ❌ Errors:   $errorCount');
   print('=' * 40);
 
