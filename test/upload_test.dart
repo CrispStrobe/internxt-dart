@@ -130,6 +130,59 @@ void main() {
     });
   });
 
+  group('ProgressLine (Phase 7.6)', () {
+    test('first call always writes', () {
+      final writes = <String>[];
+      final pl = ProgressLine(writer: writes.add);
+      pl.update('hello');
+      expect(writes, equals(['\rhello']));
+    });
+
+    test('throttles subsequent calls within the interval', () {
+      final writes = <String>[];
+      final pl = ProgressLine(writer: writes.add);
+      pl.update('one');
+      // Synchronous follow-up: well within 200 ms — should be dropped.
+      pl.update('two');
+      pl.update('three');
+      expect(writes, equals(['\rone']));
+    });
+
+    test('force=true bypasses the throttle', () {
+      final writes = <String>[];
+      final pl = ProgressLine(writer: writes.add);
+      pl.update('one');
+      pl.update('two', force: true);
+      expect(writes, equals(['\rone', '\rtwo']));
+    });
+
+    test('finish writes the final line + newline', () {
+      final writes = <String>[];
+      final pl = ProgressLine(writer: writes.add);
+      pl.update('mid');
+      pl.finish('done');
+      expect(writes, equals(['\rmid', '\rdone', '\n']));
+    });
+
+    test('finish with no final line just writes newline', () {
+      final writes = <String>[];
+      final pl = ProgressLine(writer: writes.add);
+      pl.update('mid');
+      pl.finish();
+      expect(writes, equals(['\rmid', '\n']));
+    });
+
+    test('writes again after the interval elapses', () async {
+      final writes = <String>[];
+      final pl = ProgressLine(writer: writes.add);
+      pl.update('one');
+      // Wait past the 200 ms interval.
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      pl.update('two');
+      expect(writes, equals(['\rone', '\rtwo']));
+    });
+  });
+
   group('shouldSkipForSizeMatch (Phase 7.4)', () {
     test('returns true: matching size, onConflict=skip', () {
       final r = shouldSkipForSizeMatch(

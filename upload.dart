@@ -206,6 +206,58 @@ Future<void> runBoundedPool<T>(
 }
 
 // =============================================================================
+// THROTTLED PROGRESS LINE (Phase 7.6)
+// =============================================================================
+//
+// In-place stdout progress counter throttled to ~5/sec, modeled
+// after the Python sibling's _scan_tick / _plan_tick / _upload_tick
+// (cli.py). Provides a single line that gets overwritten via \r so
+// big batches don't flood the terminal but the user still sees the
+// CLI is alive.
+//
+// Usage:
+//   final tick = ProgressLine();
+//   tick.update('Scanning: 1234 folders, 5678 files');
+//   ...
+//   tick.update('Scanning: 1235 folders, ...');  // throttled
+//   tick.finish();  // flush + newline so next log line starts clean
+
+class ProgressLine {
+  /// Minimum gap between stdout writes. ~5/sec to avoid flicker
+  /// without burning the terminal scrollback.
+  static const Duration interval = Duration(milliseconds: 200);
+
+  final void Function(String) _writer;
+  Stopwatch? _clock;
+
+  ProgressLine({void Function(String)? writer})
+      : _writer = writer ?? io.stdout.write;
+
+  /// Maybe write [line] to stdout, prefixed with \r so it overwrites
+  /// the previous progress line. The first call always writes; later
+  /// calls are throttled — calls within [interval] of the last write
+  /// are dropped unless [force] is set.
+  void update(String line, {bool force = false}) {
+    if (_clock == null) {
+      _writer('\r$line');
+      _clock = Stopwatch()..start();
+      return;
+    }
+    if (!force && _clock!.elapsed < interval) return;
+    _writer('\r$line');
+    _clock = Stopwatch()..start();
+  }
+
+  /// Force a final write + newline so the next stdout line starts
+  /// cleanly. Idempotent.
+  void finish([String? finalLine]) {
+    if (finalLine != null) _writer('\r$finalLine');
+    _writer('\n');
+    _clock = null;
+  }
+}
+
+// =============================================================================
 // PRE-SCAN + SIZE-BASED SKIP (Phase 7.4)
 // =============================================================================
 //
@@ -726,16 +778,25 @@ Future<void> upload(
     // exists) so Pass 2 can do size-based skip without re-listing
     // each parent. Pass 1 (mkdir) is also short-circuited because
     // the cache is already warmed by the recursive walk.
+    //
+    // Phase 7.6: render a throttled in-place counter during the
+    // recursive walk so big subtrees don't show a long silence.
     Map<String, Map<String, int>>? remoteFilesByPath;
     try {
+      final scanProgress = ProgressLine();
       final scan = await preScanRemote(driveApiUrl, bearerToken,
-          rootFolderId, folderCache, fileCache, targetFolderPathStr);
+          rootFolderId, folderCache, fileCache, targetFolderPathStr,
+          progress: (folders, files) {
+        scanProgress.update('  -> 📋 Scanning remote: $folders folders, '
+            '$files files');
+      });
       if (scan != null) {
         remoteFilesByPath = scan.filesByPath;
         final totalFiles = remoteFilesByPath.values
             .fold<int>(0, (sum, m) => sum + m.length);
-        print(
-            '📋 Pre-scanned ${remoteFilesByPath.length} folders, $totalFiles files in target subtree');
+        scanProgress.finish(
+            '  -> 📋 Pre-scanned ${remoteFilesByPath.length} folders, '
+            '$totalFiles files in target subtree');
       }
     } catch (e) {
       print('⚠️  Pre-scan failed (continuing without size-based skip): $e');
@@ -891,6 +952,20 @@ Future<void> upload(
     return saveTail;
   }
 
+  // Phase 7.6: throttled progress for the upload pass. Updates ~5/sec
+  // while workers complete tasks; force-finishes with a final summary.
+  final uploadProgress = ProgressLine();
+  void renderUploadProgress({bool force = false}) {
+    final done = successCount + skippedCount + errorCount + completedPreviously;
+    final total = tasks.length;
+    final pct = total > 0 ? (done / total * 100).toStringAsFixed(1) : '0.0';
+    uploadProgress.update(
+      '  -> 📤 Uploaded $done/$total ($pct%) ok=$successCount '
+      'err=$errorCount skip=$skippedCount',
+      force: force,
+    );
+  }
+
   Future<void> runOne(Map<String, dynamic> task) async {
     try {
       final localPath = task['localPath'] as String;
@@ -954,11 +1029,13 @@ Future<void> upload(
         task['status'] = 'error_upload';
       }
       await serializedSave();
+      renderUploadProgress();
     } catch (e) {
       print('  -> ❌ Worker exception for ${task['localPath']}: $e');
       errorCount++;
       task['status'] = 'error_worker';
       await serializedSave();
+      renderUploadProgress();
     }
   }
 
@@ -972,6 +1049,12 @@ Future<void> upload(
     maxWorkers,
     runOne,
   );
+
+  // Final progress flush + newline so the summary lines start clean.
+  if (tasks.isNotEmpty) {
+    renderUploadProgress(force: true);
+    uploadProgress.finish();
+  }
 
   // Wait for any tail saves (the chain may still have queued saves).
   await saveTail;
