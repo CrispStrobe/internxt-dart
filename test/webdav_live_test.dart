@@ -229,6 +229,51 @@ void main() {
         reason: 'GET after DELETE should be 404');
   }, timeout: const Timeout(Duration(minutes: 2)));
 
+  test('PUT-on-existing preserves UUID (Phase 8.5: updateFile path)',
+      () async {
+    final filename = '${_uniqueName('webdav-update')}.txt';
+    final remotePath = '$sentinelPath/$filename';
+    final url = Uri.parse('$baseUrl$remotePath');
+
+    // First PUT — creates the file.
+    final v1 =
+        Uint8List.fromList(utf8.encode('first version ${DateTime.now()}'));
+    final put1 = await _sendOnce(http.Request('PUT', url)
+      ..headers['Authorization'] = _basicAuth()
+      ..bodyBytes = v1);
+    expect(put1.statusCode, anyOf(equals(200), equals(201), equals(204)),
+        reason: 'first PUT should succeed (got ${put1.statusCode})');
+
+    // Capture v1's UUID via the existing client (the WebDAV layer
+    // doesn't expose UUIDs directly; resolvePath does).
+    final v1Resolved = await client.resolvePath(remotePath);
+    final v1Uuid = v1Resolved['uuid'] as String;
+
+    // Second PUT — should hit the updateFile path. Same URL, new
+    // bytes.
+    final v2 =
+        Uint8List.fromList(utf8.encode('second version ${DateTime.now()}'));
+    final put2 = await _sendOnce(http.Request('PUT', url)
+      ..headers['Authorization'] = _basicAuth()
+      ..bodyBytes = v2);
+    expect(put2.statusCode, anyOf(equals(200), equals(201), equals(204)),
+        reason: 'second PUT should succeed (got ${put2.statusCode})');
+
+    // UUID must be preserved.
+    final v2Resolved = await client.resolvePath(remotePath);
+    final v2Uuid = v2Resolved['uuid'] as String;
+    expect(v2Uuid, equals(v1Uuid),
+        reason:
+            'PUT-on-existing should preserve UUID via updateFile path');
+
+    // Bytes should be the new content.
+    final getResp = await _sendOnce(http.Request('GET', url)
+      ..headers['Authorization'] = _basicAuth());
+    expect(getResp.statusCode, equals(200));
+    expect(getResp.bodyBytes, equals(v2),
+        reason: 'GET after replace-PUT should return v2 bytes');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   test('PROPFIND on sentinel folder returns its children', () async {
     // First PUT a couple of probe files so the listing has known
     // entries.

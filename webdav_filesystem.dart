@@ -153,19 +153,52 @@ class InternxtFileSink implements io.IOSink {
             'Credentials missing bridgeUser or userId — please log in again',
             remotePath);
       }
-      final result = await client.uploadSingleItem(
-        localFileToUpload!,
-        remoteParentPath,
-        parentResolved['uuid'],
-        'overwrite',
-        bridgeUser: bridgeUser,
-        userIdForAuth: userIdForAuth,
-        preserveTimestamps: preserveTimestamps,
-        remoteFileName: remoteFilename,
-      );
 
-      if (result == "error") {
-        throw io.FileSystemException('Upload failed', remotePath);
+      // Phase 8.5: PUT-on-existing should preserve the UUID. Probe
+      // for an existing file at the target path; if found, use
+      // updateFile (PATCH /files/{uuid} with the new shard pointer).
+      // If absent, fall through to uploadSingleItem to create a new
+      // file. This matches the Python sibling's WebDAV PUT semantics
+      // and prevents UUID churn that breaks external clients caching
+      // the URL→UUID mapping.
+      String? existingUuid;
+      try {
+        final existing = await client.resolvePath(remotePath);
+        if (existing['type'] == 'file') {
+          existingUuid = existing['uuid'] as String;
+        }
+      } on Exception catch (e) {
+        if (!e.toString().contains('Path not found')) {
+          // Real error (auth, network) — surface it.
+          rethrow;
+        }
+        // Path not found → create-new path below.
+      }
+
+      if (existingUuid != null) {
+        // Replace-in-place — same UUID preserved.
+        client.log('WebDAV: PUT-on-existing → updateFile($existingUuid)');
+        await client.updateFile(
+          existingUuid,
+          localFileToUpload!,
+          bridgeUser: bridgeUser,
+          userIdForAuth: userIdForAuth,
+        );
+      } else {
+        // Create new.
+        final result = await client.uploadSingleItem(
+          localFileToUpload!,
+          remoteParentPath,
+          parentResolved['uuid'],
+          'overwrite',
+          bridgeUser: bridgeUser,
+          userIdForAuth: userIdForAuth,
+          preserveTimestamps: preserveTimestamps,
+          remoteFileName: remoteFilename,
+        );
+        if (result == 'error') {
+          throw io.FileSystemException('Upload failed', remotePath);
+        }
       }
 
       _doneCompleter.complete();
