@@ -18,6 +18,7 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - Phase 9 — doc sweep, GitHub Actions CI, `strict-casts: true` everywhere, publish-prep (pubspec / bin / CHANGELOG)
 - Phase 9.5 — coverage gate in CI (per-file thresholds: `crypto.dart` 100%, `utils.dart` 100%, `config.dart` 90%; gate script at `tool/check_coverage.dart`)
 - Phase 9.6 — stale-cache audit + cache-invalidation fixes for `set{File,Folder}Timestamp`; pinned a gateway-side gap (Internxt silently overwrites `modificationTime` on PUT-meta) as a known-broken regression marker
+- Phase 9.7 — extend coverage gate to `cache.dart` at 90%; add `test/auth_test.dart` pinning `computeBridgePass` (auth.dart still excluded from gate until the http-injectable refactor lands — `computeBridgePass` is the only currently-testable surface without that)
 
 **Open — load-bearing (next session candidates):**
 1. **Phase 6.a continuation — full lib/ restructure.** Move modules to `lib/internxt_client/` + barrel + update test imports. ~1 hour. Gated on cloud-dart being ready to consume — disruption only pays off when there's a concrete consumer.

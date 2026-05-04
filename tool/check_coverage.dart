@@ -28,6 +28,7 @@ const _thresholds = <String, double>{
   'crypto.dart': 100.0,
   'utils.dart': 100.0,
   'config.dart': 90.0,
+  'cache.dart': 90.0,
 };
 
 void main() {
