@@ -44,4 +44,99 @@ void main() {
       expect(fileCache, isEmpty);
     });
   });
+
+  group('clearParentCache (Phase 3 regression marker)', () {
+    // The Phase 3 bug: clearParentCache used `folderId` (legacy
+    // integer) when the cache is keyed by `folderUuid` (string).
+    // Mutating ops therefore failed to invalidate, and the next
+    // `ls` returned a stale listing. These tests pin the
+    // string-UUID keying so a future edit can't quietly regress.
+    test('file: prefers folderUuid over folderId, drops parent', () async {
+      final folderCache = <String, CacheEntry>{
+        'parent-uuid':
+            CacheEntry(items: const ['stale'], timestamp: DateTime.now()),
+      };
+      final fileCache = <String, CacheEntry>{
+        'parent-uuid':
+            CacheEntry(items: const ['stale'], timestamp: DateTime.now()),
+      };
+      await clearParentCache(
+        folderCache,
+        fileCache,
+        'item-uuid',
+        'file',
+        (uuid) async => {
+          'folderUuid': 'parent-uuid',
+          // folderId is the legacy integer field. Must be ignored.
+          'folderId': 12345,
+        },
+        (_) async =>
+            throw StateError('folder fetcher must not be called for files'),
+      );
+      expect(folderCache.containsKey('parent-uuid'), isFalse,
+          reason: 'parent listing should be dropped');
+      expect(fileCache.containsKey('parent-uuid'), isFalse,
+          reason: 'parent file listing should be dropped');
+    });
+
+    test('file: falls back to folderId when folderUuid is absent', () async {
+      // Defensive — older API responses might omit folderUuid. The
+      // toString() coercion is what saves us; without it we'd hit
+      // the type cast and silently no-op.
+      final folderCache = <String, CacheEntry>{
+        '99': CacheEntry(items: const ['x'], timestamp: DateTime.now()),
+      };
+      final fileCache = <String, CacheEntry>{};
+      await clearParentCache(
+        folderCache,
+        fileCache,
+        'item-uuid',
+        'file',
+        (_) async => {'folderId': 99},
+        (_) async => throw StateError('unused'),
+      );
+      expect(folderCache.containsKey('99'), isFalse);
+    });
+
+    test('folder: prefers parentUuid over parentId', () async {
+      final folderCache = <String, CacheEntry>{
+        'gp-uuid':
+            CacheEntry(items: const ['stale'], timestamp: DateTime.now()),
+      };
+      final fileCache = <String, CacheEntry>{};
+      await clearParentCache(
+        folderCache,
+        fileCache,
+        'folder-uuid',
+        'folder',
+        (_) async =>
+            throw StateError('file fetcher must not be called for folders'),
+        (_) async => {
+          'parentUuid': 'gp-uuid',
+          'parentId': 42,
+        },
+      );
+      expect(folderCache.containsKey('gp-uuid'), isFalse);
+    });
+
+    test('swallows fetcher errors (best-effort invalidation)', () async {
+      // The contract: a transient metadata-fetch failure shouldn't
+      // crash the user-facing op; cache will expire on its own.
+      final folderCache = <String, CacheEntry>{
+        'parent-uuid':
+            CacheEntry(items: const ['x'], timestamp: DateTime.now()),
+      };
+      final fileCache = <String, CacheEntry>{};
+      await clearParentCache(
+        folderCache,
+        fileCache,
+        'item-uuid',
+        'file',
+        (_) async => throw Exception('network down'),
+        (_) async => throw StateError('unused'),
+      );
+      // Cache untouched, but no rethrow.
+      expect(folderCache.containsKey('parent-uuid'), isTrue);
+    });
+  });
 }

@@ -132,30 +132,74 @@ Future<void> renameFolder(
   });
 }
 
-/// Set the modification time on a file. No cache invalidation —
-/// listing content (names, UUIDs) is unchanged; only the timestamp
-/// metadata changes, and the cache doesn't store it in a way the
-/// CLI consumes.
+/// Set the modification time on a file.
+///
+/// **KNOWN GATEWAY LIMITATION (Phase 9.6):** the live Internxt
+/// gateway silently ignores the `modificationTime` field on
+/// `PUT /files/{uuid}/meta` and overwrites the field with `now()`
+/// on every PUT regardless. Confirmed via direct GET-PUT-GET
+/// inspection: requesting `2021-06-01` reflects back a "now-ish"
+/// timestamp on the next read. The Python sibling has the same
+/// issue (its `set_folder_timestamps` is only mock-tested, never
+/// run live). So this function is currently a no-op end-to-end
+/// against the live API; the regression marker live tests assert
+/// that the gateway *did not* honor the value, and will fire if
+/// Internxt fixes the endpoint.
+///
+/// We still implement it correctly (with [_clearParent] cache
+/// invalidation + the gateway-required `plainName`/`type` echo)
+/// because:
+///   1. The day Internxt fixes the gateway, this code path is
+///      already correct — no second migration needed.
+///   2. WebDAV's PROPPATCH calls this. Even if the value is
+///      ignored server-side, the Dart side shouldn't crash with
+///      400 "Missing update file metadata" on a partial body.
+///
+/// Cache rationale: cached entries from [listFolderFiles] carry
+/// `modificationTime` (drive.dart:489) and the `ls --long`
+/// formatter renders it (cli.dart's `Modified` column). The cache
+/// invalidation pattern matches every other mutating op in this
+/// module and protects the day-the-gateway-is-fixed case.
 Future<void> setFileTimestamp(
   String driveApiUrl,
   String? bearerToken,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
   String fileUuid,
   DateTime mTime,
 ) async {
+  final meta =
+      await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
+  await _clearParent(
+      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file');
   await inxt_api.updateFileMetadata(driveApiUrl, bearerToken, fileUuid, {
+    'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
+    'type': (meta['type'] ?? '') as String,
     'modificationTime': mTime.toUtc().toIso8601String(),
   });
 }
 
-/// Set the modification time on a folder. Same no-invalidation
-/// reasoning as [setFileTimestamp].
+/// Set the modification time on a folder. Same gateway limitation
+/// as [setFileTimestamp] — the live API silently overwrites
+/// `modificationTime` with `now()` on every PUT. Same payload
+/// constraint (gateway requires `plainName`) and same cache
+/// rationale (folder listings cache `modificationTime`,
+/// drive.dart:407, so the grandparent's listing must be dropped if
+/// the gateway ever starts honoring the value).
 Future<void> setFolderTimestamp(
   String driveApiUrl,
   String? bearerToken,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
   String folderUuid,
   DateTime mTime,
 ) async {
+  final meta =
+      await inxt_api.getFolderMetadata(driveApiUrl, bearerToken, folderUuid);
+  await _clearParent(
+      driveApiUrl, bearerToken, folderCache, fileCache, folderUuid, 'folder');
   await inxt_api.updateFolderMetadata(driveApiUrl, bearerToken, folderUuid, {
+    'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
     'modificationTime': mTime.toUtc().toIso8601String(),
   });
 }

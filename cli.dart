@@ -2497,10 +2497,12 @@ class InternxtClient {
           driveApiUrl, newToken, _folderCache, _fileCache, folderUuid, newName);
 
   Future<void> setFileTimestamp(String fileUuid, DateTime mTime) =>
-      inxt_drive.setFileTimestamp(driveApiUrl, newToken, fileUuid, mTime);
+      inxt_drive.setFileTimestamp(
+          driveApiUrl, newToken, _folderCache, _fileCache, fileUuid, mTime);
 
   Future<void> setFolderTimestamp(String folderUuid, DateTime mTime) =>
-      inxt_drive.setFolderTimestamp(driveApiUrl, newToken, folderUuid, mTime);
+      inxt_drive.setFolderTimestamp(
+          driveApiUrl, newToken, _folderCache, _fileCache, folderUuid, mTime);
 
   Future<void> trashItems(String uuid, String type) => inxt_drive.trashItems(
       driveApiUrl, newToken, _folderCache, _fileCache, uuid, type);

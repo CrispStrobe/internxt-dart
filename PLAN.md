@@ -17,6 +17,7 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - Phase 8 — 5 functional gaps closed (trash lifecycle, quota CLI, safety_pattern, WebDAV PUT preserves UUID)
 - Phase 9 — doc sweep, GitHub Actions CI, `strict-casts: true` everywhere, publish-prep (pubspec / bin / CHANGELOG)
 - Phase 9.5 — coverage gate in CI (per-file thresholds: `crypto.dart` 100%, `utils.dart` 100%, `config.dart` 90%; gate script at `tool/check_coverage.dart`)
+- Phase 9.6 — stale-cache audit + cache-invalidation fixes for `set{File,Folder}Timestamp`; pinned a gateway-side gap (Internxt silently overwrites `modificationTime` on PUT-meta) as a known-broken regression marker
 
 **Open — load-bearing (next session candidates):**
 1. **Phase 6.a continuation — full lib/ restructure.** Move modules to `lib/internxt_client/` + barrel + update test imports. ~1 hour. Gated on cloud-dart being ready to consume — disruption only pays off when there's a concrete consumer.
@@ -24,7 +25,6 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 3. **Phase 6.c — rewire cloud-dart.** Remove embedded copy, add `internxt_client` dependency, update imports. ~3 hours. Closes the multi-repo divergence permanently.
 
 **Open — independently shippable:**
-- **Stale-cache audit.** Phase 3's folderId/folderUuid bug suggests the same shape may exist elsewhere. Audit every mutating method (mv, rename, copy, update, setFolderTimestamps) to confirm cache invalidation. ~2 hours + 5 live tests.
 - **Auth/api/drive unit coverage.** Most of the codebase is exercised only via the live integration suite, so the per-file coverage gate (Phase 9.5) only protects `crypto.dart` / `utils.dart` / `config.dart`. Adding a mocked `http.Client` harness would make `auth.dart`, `api.dart`, and the pure helpers in `drive.dart` unit-testable. ~3 hours; expands the gate from 3 modules to 6+.
 
 **Open — small follow-ons (notes, not session-sized work):**
@@ -288,28 +288,44 @@ Possible follow-on tests if a future use case justifies them:
 `MKCOL`, `MOVE`, `COPY`, `PROPPATCH`, the macOS-Finder-specific
 quirks (`If: <token>` conditional headers, `Depth: infinity`).
 
-### Stale-cache audit
+### Stale-cache audit — done (Phase 9.6)
 
-The `folderId`-vs-`folderUuid` cache bug we found in `_clearParentCache`
-suggests the same shape may exist elsewhere. Audit every mutating
-method to confirm cache invalidation:
+Walked every mutating call site in `drive.dart` + `upload.dart`.
+Findings:
 
-- `moveFile`, `moveFolder` — do they invalidate **both** old and new
-  parent caches?
-- `renameFile`, `renameFolder` — same parent, but does the cache
-  store names?
-- `copyItem` — does the destination parent get the new entry?
-- `updateFile` (after replace) — does the parent listing show the
-  new metadata?
-- `setFolderTimestamps` — does the parent show the updated mtime?
+- **Correct**: `moveFile`/`moveFolder` (clear src parent + invalidate
+  dest), `renameFile`/`renameFolder` (clear src parent),
+  `trashItems` (clear src parent), `restoreFromTrash` (invalidate
+  dest, or fall through to `moveFile`/`moveFolder` which already
+  invalidate), `createFolder` (invalidate parent),
+  `createFileEntry` (invalidate dest folder, used by upload paths),
+  `copyItem` (delegates to `uploadFile`), `updateFile` (invalidates
+  current parent — UUID is preserved so source = dest).
+- **Gap**: `setFileTimestamp` and `setFolderTimestamp` previously
+  claimed "no cache invalidation needed" but cached listings
+  *do* carry `modificationTime` (drive.dart:489 for files, 407
+  for folders) and `ls --long` reads it (cli.dart:1514). Fixed
+  both to call `_clearParent` before the PUT.
 
-Each should be paired with a live test that does the mutation, then
-re-resolves a path through the cache, then verifies the cached value
-reflects the mutation. The path-cache layer is the trust root for
-correctness from the user's perspective; one stale entry produces
-"file not found" errors that are infuriating to debug.
+While adding a live test for the fix, two follow-on issues
+surfaced on the live gateway:
 
-Estimated work: ~2 hours of audit + ~5 live tests.
+1. `PUT /{files,folders}/{uuid}/meta` rejects partial bodies
+   without `plainName` — returns 400 "Missing update file
+   metadata". The Python sibling has the same bug (mock-tested
+   only). Fixed by fetching current metadata and echoing
+   `plainName`/`type` back unchanged in the payload.
+
+2. Even with a valid payload, the gateway silently overwrites
+   `modificationTime` with `now()` on every PUT — confirmed via
+   direct GET-PUT-GET inspection. So the feature is end-to-end
+   broken at the gateway level. Pinned as a known-broken live
+   regression marker (`setFolderTimestamp known-broken marker`)
+   that fires if Internxt fixes the endpoint.
+
+Coverage: 4 new unit tests in `test/cache_test.dart` pinning
+`clearParentCache`'s string-UUID keying as a Phase 3 regression
+marker. Live regression marker for the gateway gap.
 
 ---
 

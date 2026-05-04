@@ -1766,4 +1766,48 @@ void main() {
     expect(downloaded, isNot(equals(wV1.payload)),
         reason: 'updateFile did not actually replace the content');
   });
+
+  liveTest('setFolderTimestamp known-broken marker (Phase 9.6)', () async {
+    // Regression pin for the gateway-side gap discovered during
+    // the Phase 9.6 stale-cache audit. Sequence:
+    //   1. Audit found setFileTimestamp/setFolderTimestamp had no
+    //      cache invalidation while the listing cache *does* store
+    //      modificationTime → in theory a stale-read bug.
+    //   2. Adding a live test for the fix surfaced that
+    //      PUT /folders/{uuid}/meta requires plainName too (400 on
+    //      partial body). Fix: include plainName in payload.
+    //   3. With both fixes in place, the gateway *still* doesn't
+    //      honor the requested mtime — direct GET-PUT-GET shows it
+    //      always reflects back "now()", regardless of the body.
+    //
+    // So this test asserts the *current broken behavior*: requesting
+    // a 2021 mtime should NOT actually land. If Internxt fixes the
+    // gateway, this fires and the cache-invalidation code we added
+    // becomes load-bearing instead of defensive.
+    final subInfo = await client.createFolderRecursive(_uniqueSubpath('mtime'));
+    final folderUuid = subInfo['uuid'] as String;
+
+    final before = await client.getFolderMetadata(folderUuid);
+    final targetMtime = DateTime.utc(2021, 6, 1, 8, 15, 30);
+
+    await client.setFolderTimestamp(folderUuid, targetMtime);
+
+    final after = await client.getFolderMetadata(folderUuid);
+    final rawAfter =
+        (after['modificationTime'] ?? after['updatedAt']) as String?;
+    expect(rawAfter, isNotNull);
+    final actualMtime = DateTime.parse(rawAfter!).toUtc();
+
+    // Known broken: gateway should ignore our value and return ~now.
+    final secondsSinceTarget =
+        actualMtime.difference(targetMtime).inSeconds.abs();
+    expect(
+      secondsSinceTarget,
+      greaterThan(
+          60), // generous; if it ever lands within a minute, the gateway accepted
+      reason: 'gateway honored the requested mtime — '
+          'remove this known-broken marker, the feature now works end-to-end. '
+          'before=${before['modificationTime']} after=$rawAfter target=$targetMtime',
+    );
+  });
 }
