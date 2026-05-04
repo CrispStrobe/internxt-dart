@@ -8,18 +8,28 @@ for everything below.
 For what's been done already, see [`HISTORY.md`](HISTORY.md).
 For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 
-## Status snapshot (after Phase 8)
+## Status snapshot (after Phase 9)
 
 **Done:**
 - Phase 4 — module split (10 modules at root)
 - Phase 5 — 5 PINNED GAP feature ports (search, copy, update, listing, usage)
 - Phase 7 — 10 perf/UX parity items (memory gate, parallel upload, batch mv, pre-scan + size-skip, cache TTL, progress, Ctrl+C, mtime column, size limit, WebDAV test rig)
 - Phase 8 — 5 functional gaps closed (trash lifecycle, quota CLI, safety_pattern, WebDAV PUT preserves UUID)
+- Phase 9 — doc sweep, GitHub Actions CI, `strict-casts: true` everywhere, publish-prep (pubspec / bin / CHANGELOG)
 
-**Open (ordered by next-up priority):**
-1. CI workflow (GitHub Actions)
-2. Re-enable `strict-casts` / `strict-inference` now that JSON parsing is contained
-3. Phase 6 — publish as a Dart package + reunify with cloud-dart
+**Open — load-bearing (next session candidates):**
+1. **Phase 6.a continuation — full lib/ restructure.** Move modules to `lib/internxt_client/` + barrel + update test imports. ~1 hour. Gated on cloud-dart being ready to consume — disruption only pays off when there's a concrete consumer.
+2. **Phase 6.b — audit cloud-dart's divergence.** Walk `~/code/cloud-dart/lib/services/internxt_client.dart` (~2700 lines), classify every block as backport / Flutter-only / drift. Read-and-classify, no code changes. ~2 hours.
+3. **Phase 6.c — rewire cloud-dart.** Remove embedded copy, add `internxt_client` dependency, update imports. ~3 hours. Closes the multi-repo divergence permanently.
+
+**Open — independently shippable:**
+- **Coverage threshold gate.** Wire `package:coverage` into the CI workflow. Per-module gate: `crypto.dart` and `auth.dart` must be 100%, total ≥ 80%. ~1 hour.
+- **Stale-cache audit.** Phase 3's folderId/folderUuid bug suggests the same shape may exist elsewhere. Audit every mutating method (mv, rename, copy, update, setFolderTimestamps) to confirm cache invalidation. ~2 hours + 5 live tests.
+
+**Open — small follow-ons (notes, not session-sized work):**
+- **Trash-listing eventual-consistency.** The `trash lifecycle` live test uses a best-effort 4-attempt retry (~6s) to surface a just-trashed file in `getTrashContent`. The retry is correct but the underlying lag is a backend characteristic — worth understanding precisely (and tightening the test) if Internxt fixes it.
+- **`/users/me` regression marker.** Already pinned as a live test (`auth.dart`'s `getUserInfo` is expected to throw with 404 against the live gateway). No action needed unless the endpoint comes online.
+- **Re-enable `strict-inference` / `strict-raw-types`.** Currently off in `analysis_options.yaml`. Phase 9.3 turned on `strict-casts` but the other two were producing too much signal-from-noise on dynamic JSON. Worth revisiting once the lib/ restructure (Phase 6.a) decides what's typed vs. dynamic in the public surface.
 
 ---
 

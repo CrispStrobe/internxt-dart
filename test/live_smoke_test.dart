@@ -1125,6 +1125,8 @@ void main() {
     // the few-seconds range after trash. Best-effort retry up to ~6s
     // and then move on — the restore-then-verify step is the real
     // assertion that the lifecycle works end-to-end.
+    //
+    // PLAN.md tracks tightening this if Internxt fixes the lag.
     var foundInTrash = false;
     for (var attempt = 0; attempt < 4; attempt++) {
       final trashItems = await client.getTrashContent(limit: 200);
