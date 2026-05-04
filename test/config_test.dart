@@ -19,7 +19,7 @@ import 'package:test/test.dart';
 
 import 'package:internxt_client/cli.dart';
 
-ConfigService _newConfig(Directory tmp) => ConfigService(dataDir: tmp.path);
+ConfigService _newConfig(Directory tmp) => ConfigService(configPath: tmp.path);
 
 void main() {
   late Directory tmp;

@@ -19,14 +19,16 @@ class ConfigService {
   late final String batchStateDir;
   late final String webdavPidFile;
 
-  /// [dataDir] override is for tests; production code uses the default
-  /// `~/.internxt-cli` location.
-  ConfigService({String? dataDir}) {
-    final home = dataDir ??
+  /// [configPath] override is for tests and Flutter consumers that
+  /// supply their own data directory (e.g., `path_provider`'s app
+  /// support dir on mobile). Production CLI use defaults to
+  /// `~/.internxt-cli`.
+  ConfigService({String? configPath}) {
+    final home = configPath ??
         io.Platform.environment['HOME'] ??
         io.Platform.environment['USERPROFILE'] ??
         '.';
-    internxtCliDataDir = dataDir ?? p.join(home, '.internxt-cli');
+    internxtCliDataDir = configPath ?? p.join(home, '.internxt-cli');
     internxtCliLogsDir = p.join(internxtCliDataDir, 'logs');
     batchStateDir = p.join(internxtCliDataDir, 'batch_states');
     credentialsFile = p.join(internxtCliDataDir, '.inxtcli-dart-creds.json');

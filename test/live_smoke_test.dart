@@ -153,7 +153,7 @@ void main() {
     print('\n🔑 LIVE: Logging in as $email...');
     // Use a fresh isolated config dir so we don't trample real creds
     final cfgDir = Directory.systemTemp.createTempSync('inxt-dart-livecfg-');
-    config = ConfigService(dataDir: cfgDir.path);
+    config = ConfigService(configPath: cfgDir.path);
     client = InternxtClient(config: config);
 
     final loginResult = await client.login(email!, password!);

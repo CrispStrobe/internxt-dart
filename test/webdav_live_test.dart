@@ -123,7 +123,7 @@ void main() {
     print('\n🔑 LIVE-WEBDAV: Logging in as $email...');
     final cfgDir =
         Directory.systemTemp.createTempSync('inxt-dart-livewebdavcfg-');
-    config = ConfigService(dataDir: cfgDir.path);
+    config = ConfigService(configPath: cfgDir.path);
     client = InternxtClient(config: config);
     final loginResult = await client.login(email!, password!);
     await config.saveCredentials(loginResult);
