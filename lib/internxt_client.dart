@@ -15,6 +15,7 @@ export 'auth.dart';
 export 'cache.dart';
 export 'config.dart';
 export 'config_storage.dart';
+export 'paths.dart';
 export 'crypto.dart';
 export 'download.dart';
 export 'drive.dart';

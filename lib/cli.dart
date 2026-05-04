@@ -31,6 +31,7 @@ import 'upload.dart' as inxt_upload;
 import 'download.dart' as inxt_download;
 export 'config.dart' show ConfigService;
 export 'config_storage.dart';
+export 'paths.dart';
 export 'crypto.dart';
 export 'utils.dart';
 export 'cache.dart';
@@ -2131,6 +2132,14 @@ class InternxtClient {
   String? userId;
   String? rootFolderId;
   String? bucketId;
+  // Bridge auth pair, populated from credentials by setAuth.
+  // bridgeUser is the network-API basic-auth username; userIdForAuth
+  // is the userId variant the bridge expects (Phase 7.10: fresh
+  // login lacks the explicit userIdForAuth field, so setAuth falls
+  // back to userId — required for the path facade and any other
+  // session-driven caller).
+  String? bridgeUser;
+  String? userIdForAuth;
 
   // Caching variables — see cache.dart for the entry shape, the TTL
   // constant (`cacheDuration`), and the invalidation helpers.
@@ -2162,6 +2171,13 @@ class InternxtClient {
     userId = creds['userId']?.toString(); // Hydrated field
     rootFolderId = creds['rootFolderId']?.toString();
     bucketId = creds['bucketId']?.toString(); // Hydrated field
+    bridgeUser = creds['bridgeUser']?.toString();
+    // Phase 7.10: fresh-login responses don't include userIdForAuth
+    // (only refresh responses do). Fall back to userId so callers
+    // that depend on this field — including the path facade —
+    // don't NPE on a fresh session.
+    userIdForAuth =
+        (creds['userIdForAuth'] ?? creds['userId'])?.toString();
 
     log("📊 TRACE: Session loaded for $userEmail (Bucket: $bucketId)");
   }
