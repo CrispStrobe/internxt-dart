@@ -26,7 +26,15 @@ class CacheEntry {
 
 /// How long a [CacheEntry] is considered fresh before it must be
 /// refetched from the backend.
-const Duration cacheDuration = Duration(minutes: 10);
+///
+/// Phase 7.5 bumped this from 10 minutes to 1 hour to match the
+/// Python sibling. The trade-off: longer batch operations don't
+/// hit cache misses mid-run, at the cost of a stale read window if
+/// the user (or another client) mutates the same folder externally.
+/// Mutating ops within this client invalidate the cache eagerly via
+/// `clearParentCache` / `invalidateCache`, so the staleness only
+/// affects external mutations.
+const Duration cacheDuration = Duration(hours: 1);
 
 /// Drops both the folder-listing and the file-listing entry for
 /// [folderUuid]. Cheap and idempotent — calling it on a UUID that
