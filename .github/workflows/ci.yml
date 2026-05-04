@@ -45,17 +45,29 @@ jobs:
       - name: dart format (no changes expected)
         run: dart format --output=none --set-exit-if-changed .
 
-      - name: Unit tests
+      - name: Unit tests (with coverage)
         env:
           DART_TEST_SKIP_LIVE: "1"
         run: |
-          dart test \
+          dart test --coverage=coverage \
             test/crypto_test.dart \
             test/config_test.dart \
             test/utils_test.dart \
             test/cache_test.dart \
             test/upload_test.dart \
             test/cli_test.dart
+
+      - name: Format coverage to lcov
+        run: |
+          dart run coverage:format_coverage \
+            --lcov \
+            --in=coverage \
+            --out=coverage/lcov.info \
+            --packages=.dart_tool/package_config.json \
+            --report-on=.
+
+      - name: Coverage gate (per-file thresholds)
+        run: dart run tool/check_coverage.dart
 
       - name: Compile binary smoke check
         run: |

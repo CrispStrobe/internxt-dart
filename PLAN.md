@@ -16,6 +16,7 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 - Phase 7 — 10 perf/UX parity items (memory gate, parallel upload, batch mv, pre-scan + size-skip, cache TTL, progress, Ctrl+C, mtime column, size limit, WebDAV test rig)
 - Phase 8 — 5 functional gaps closed (trash lifecycle, quota CLI, safety_pattern, WebDAV PUT preserves UUID)
 - Phase 9 — doc sweep, GitHub Actions CI, `strict-casts: true` everywhere, publish-prep (pubspec / bin / CHANGELOG)
+- Phase 9.5 — coverage gate in CI (per-file thresholds: `crypto.dart` 100%, `utils.dart` 100%, `config.dart` 90%; gate script at `tool/check_coverage.dart`)
 
 **Open — load-bearing (next session candidates):**
 1. **Phase 6.a continuation — full lib/ restructure.** Move modules to `lib/internxt_client/` + barrel + update test imports. ~1 hour. Gated on cloud-dart being ready to consume — disruption only pays off when there's a concrete consumer.
@@ -23,8 +24,8 @@ For lessons from the audit, see [`LEARNINGS.md`](LEARNINGS.md).
 3. **Phase 6.c — rewire cloud-dart.** Remove embedded copy, add `internxt_client` dependency, update imports. ~3 hours. Closes the multi-repo divergence permanently.
 
 **Open — independently shippable:**
-- **Coverage threshold gate.** Wire `package:coverage` into the CI workflow. Per-module gate: `crypto.dart` and `auth.dart` must be 100%, total ≥ 80%. ~1 hour.
 - **Stale-cache audit.** Phase 3's folderId/folderUuid bug suggests the same shape may exist elsewhere. Audit every mutating method (mv, rename, copy, update, setFolderTimestamps) to confirm cache invalidation. ~2 hours + 5 live tests.
+- **Auth/api/drive unit coverage.** Most of the codebase is exercised only via the live integration suite, so the per-file coverage gate (Phase 9.5) only protects `crypto.dart` / `utils.dart` / `config.dart`. Adding a mocked `http.Client` harness would make `auth.dart`, `api.dart`, and the pure helpers in `drive.dart` unit-testable. ~3 hours; expands the gate from 3 modules to 6+.
 
 **Open — small follow-ons (notes, not session-sized work):**
 - **Trash-listing eventual-consistency.** The `trash lifecycle` live test uses a best-effort 4-attempt retry (~6s) to surface a just-trashed file in `getTrashContent`. The retry is correct but the underlying lag is a backend characteristic — worth understanding precisely (and tightening the test) if Internxt fixes it.
@@ -349,11 +350,21 @@ the codebase that we can fix incrementally.
 
 Estimated work: 2 hours (turn on the flags, fix what surfaces).
 
-### Coverage threshold — open
+### Coverage threshold — done (Phase 9.5)
 
-Set a CI gate: `crypto.dart` and `auth.dart` must be 100%, total
-≥ 80%. Per-module coverage is now meaningful since Phase 4
-extracted the modules.
+Per-file gate now in CI. Thresholds: `crypto.dart` 100%,
+`utils.dart` 100%, `config.dart` 90%. Gate script at
+`tool/check_coverage.dart`; CI runs `dart test --coverage=`,
+formats with `coverage:format_coverage`, then invokes the gate.
+
+The gate is intentionally per-file (not global). Most modules
+(`auth.dart`, `api.dart`, `drive.dart`, `download.dart`,
+`webdav_filesystem.dart`, large parts of `upload.dart` and
+`cli.dart`) are exercised only via live tests and would zero
+out a global average. Per-file thresholds protect the modules
+that *are* unit-tested without forcing throwaway tests for the
+rest. Expanding the gate is tracked under the "Auth/api/drive
+unit coverage" follow-on above.
 
 ---
 
