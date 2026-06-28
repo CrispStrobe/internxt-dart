@@ -1,8 +1,7 @@
 // Internxt crypto primitives — the trust root.
 //
 // All functions here are pure (no I/O, no auth state). Extracted from
-// cli.dart in Phase 4. Coverage is anchored by test/crypto_test.dart
-// (22 tests).
+// cli.dart in Phase 4. Coverage is anchored by test/crypto_test.dart.
 //
 // IMPORTANT: any change here is a wire-protocol change. Encrypted
 // data already in production has to remain decryptable. The
@@ -22,8 +21,18 @@ import 'dart:typed_data';
 
 import 'package:bip39/bip39.dart' as bip39;
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:dart_pg/dart_pg.dart';
 import 'package:hex/hex.dart';
 import 'package:pointycastle/export.dart';
+
+// Fixed IV + salt used to AES-256-GCM encrypt the OpenPGP private key in the
+// login payload. These are public constants from the official Internxt CLI
+// (.env.template -> CryptoUtils.getAesInit()); they MUST match for the server
+// to accept the encrypted key.
+const String appMagicIv = 'd139cb9a2cd17092e79e1861cf9d7023';
+const String appMagicSalt =
+    '38dce0391b49efba88dbc8c39ebf868f0267eb110bb0012ab27dc52a528'
+    'd61b1d1ed9d76f400ff58e3240028442b1eab9bb84e111d9dadd997982dbde9dbd25e';
 
 // --- Password / text crypto (AES-256-CBC + OpenSSL EVP_BytesToKey + MD5) ---
 
@@ -38,23 +47,117 @@ Map<String, String> passToHash(String password, String salt) {
   return {'salt': salt, 'hash': HEX.encode(hashBytes)};
 }
 
+/// Generates a real OpenPGP Ed25519 (legacy) keypair for the login payload.
+///
+/// Internxt's server now validates these keys ("keys.ecc.publicKey is not a
+/// valid OpenPGP public key"), so the old placeholder strings are rejected.
+/// This mirrors the official CLI's KeysService.generateNewKeysWithEncrypted:
+/// an EdDSA/Ed25519 primary key plus an ECDH/Curve25519 encryption subkey, with
+/// the public key sent base64-encoded and the armored private key AES-256-GCM
+/// encrypted under the password (fixed magic IV/salt).
+///
+/// Fresh keys are generated on every login (as the official SDK does); the
+/// server preserves any pre-existing account keys, so this is non-destructive.
 Map<String, dynamic> generateKeys(String password) {
-  final encryptedPk =
-      encryptTextWithKey('placeholder-private-key-for-login', password);
+  // dart_pg requires a passphrase to generate; we immediately decrypt to get
+  // the unencrypted armored private key, matching openpgp.js (no passphrase),
+  // then re-encrypt it ourselves with the Internxt AES-GCM scheme.
+  const tmpPassphrase = 'internxt-cli-ephemeral';
+  final locked = OpenPGP.generateKey(
+    ['inxt@inxt.com'],
+    tmpPassphrase,
+    type: KeyType.ecc,
+    curve: Ecc.ed25519,
+  );
+  final privateKey = locked.decrypt(tmpPassphrase);
+  final privateKeyArmored = privateKey.armor();
+  final publicKeyArmored = privateKey.publicKey.armor();
+
+  final publicKeyB64 = base64.encode(utf8.encode(publicKeyArmored));
+  final privateKeyEncrypted = internxtAesGcmEncrypt(
+      privateKeyArmored, password, appMagicIv, appMagicSalt);
 
   return {
-    'privateKeyEncrypted': encryptedPk,
-    'publicKey': 'placeholder-public-key-for-login',
-    'revocationCertificate': 'placeholder-revocation-cert-for-login',
+    'privateKeyEncrypted': privateKeyEncrypted,
+    'publicKey': publicKeyB64,
+    'revocationCertificate': '',
     'ecc': {
-      'publicKey': 'placeholder-ecc-public-key',
-      'privateKeyEncrypted': encryptedPk,
+      'publicKey': publicKeyB64,
+      'privateKeyEncrypted': privateKeyEncrypted,
     },
     'kyber': {
       'publicKey': null,
       'privateKeyEncrypted': null,
     },
   };
+}
+
+/// Replicates `@internxt/lib` `aes.encrypt(text, password, {iv, salt})`.
+///
+/// AES-256-GCM with a PBKDF2-SHA512 derived key (2145 iterations, 32 bytes).
+/// Output layout (base64-encoded): salt[64] + iv[16] + authTag[16] + ciphertext.
+String internxtAesGcmEncrypt(
+  String text,
+  String password,
+  String ivHex,
+  String saltHex, {
+  int hops = 2145,
+}) {
+  final iv = Uint8List.fromList(HEX.decode(ivHex));
+  final salt = Uint8List.fromList(HEX.decode(saltHex));
+
+  final pbkdf2 = PBKDF2KeyDerivator(HMac(SHA512Digest(), 128))
+    ..init(Pbkdf2Parameters(salt, hops, 32));
+  final key = pbkdf2.process(Uint8List.fromList(utf8.encode(password)));
+
+  final gcm = GCMBlockCipher(AESEngine())
+    ..init(true, AEADParameters(KeyParameter(key), 128, iv, Uint8List(0)));
+  final out = gcm.process(Uint8List.fromList(utf8.encode(text)));
+
+  // pointycastle appends the 16-byte auth tag after the ciphertext; the
+  // Internxt format places the tag before the ciphertext.
+  final ciphertext = out.sublist(0, out.length - 16);
+  final tag = out.sublist(out.length - 16);
+
+  final result =
+      Uint8List(salt.length + iv.length + tag.length + ciphertext.length);
+  var offset = 0;
+  result.setAll(offset, salt);
+  offset += salt.length;
+  result.setAll(offset, iv);
+  offset += iv.length;
+  result.setAll(offset, tag);
+  offset += tag.length;
+  result.setAll(offset, ciphertext);
+
+  return base64.encode(result);
+}
+
+/// Inverse of [internxtAesGcmEncrypt] — replicates `@internxt/lib` `aes.decrypt`.
+/// Input layout (base64): salt[64] + iv[16] + authTag[16] + ciphertext.
+String internxtAesGcmDecrypt(String encData, String password,
+    {int hops = 2145}) {
+  final raw = base64.decode(encData);
+  final salt = raw.sublist(0, 64);
+  final iv = raw.sublist(64, 80);
+  final tag = raw.sublist(80, 96);
+  final ciphertext = raw.sublist(96);
+
+  final pbkdf2 = PBKDF2KeyDerivator(HMac(SHA512Digest(), 128))
+    ..init(Pbkdf2Parameters(Uint8List.fromList(salt), hops, 32));
+  final key = pbkdf2.process(Uint8List.fromList(utf8.encode(password)));
+
+  // pointycastle expects the auth tag appended after the ciphertext.
+  final input = Uint8List(ciphertext.length + tag.length)
+    ..setAll(0, ciphertext)
+    ..setAll(ciphertext.length, tag);
+
+  final gcm = GCMBlockCipher(AESEngine())
+    ..init(
+        false,
+        AEADParameters(
+            KeyParameter(key), 128, Uint8List.fromList(iv), Uint8List(0)));
+  return utf8.decode(gcm.process(input));
 }
 
 String encryptTextWithKey(String textToEncrypt, String secret) {

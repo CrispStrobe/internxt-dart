@@ -21,9 +21,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math';
 
+import 'package:hex/hex.dart';
 import 'package:test/test.dart';
 
 import 'package:internxt_client/cli.dart';
+import 'package:internxt_client/crypto.dart' as inxt_crypto;
 
 const _validMnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
@@ -278,7 +280,7 @@ void main() {
   });
 
   group('generateKeys (login payload)', () {
-    test('returns the expected shape with placeholder PGP keys', () {
+    test('returns the real OpenPGP key shape (ecc + kyber map present)', () {
       final client = _newClient();
       final keys = client.generateKeys('any-password');
       expect(keys['publicKey'], isA<String>());
@@ -290,13 +292,30 @@ void main() {
       expect(keys['kyber'], isA<Map<String, dynamic>>());
     });
 
-    test('privateKeyEncrypted decrypts back to the placeholder', () {
-      final client = _newClient();
+    test('ecc.publicKey is a base64-encoded armored OpenPGP public key', () {
+      final keys = inxt_crypto.generateKeys('pw');
+      final armored =
+          utf8.decode(base64.decode(keys['ecc']['publicKey'] as String));
+      expect(armored, startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----'));
+    });
+
+    test('privateKeyEncrypted uses the Internxt AES-256-GCM envelope', () {
+      final keys = inxt_crypto.generateKeys('pw');
+      final raw = base64.decode(keys['ecc']['privateKeyEncrypted'] as String);
+      // salt[64] + iv[16] + authTag[16] + ciphertext
+      expect(raw.length, greaterThan(96));
+      expect(HEX.encode(raw.sublist(0, 64)), equals(inxt_crypto.appMagicSalt));
+      expect(HEX.encode(raw.sublist(64, 80)), equals(inxt_crypto.appMagicIv));
+    });
+
+    test('privateKeyEncrypted round-trips to an armored private key', () {
       const password = 'test-pass';
-      final keys = client.generateKeys(password);
-      final encryptedPk = keys['privateKeyEncrypted'] as String;
-      final decrypted = client.decryptTextWithKey(encryptedPk, password);
-      expect(decrypted, equals('placeholder-private-key-for-login'));
+      final keys = inxt_crypto.generateKeys(password);
+      final decrypted = inxt_crypto.internxtAesGcmDecrypt(
+        keys['ecc']['privateKeyEncrypted'] as String,
+        password,
+      );
+      expect(decrypted, startsWith('-----BEGIN PGP PRIVATE KEY BLOCK-----'));
     });
   });
 }

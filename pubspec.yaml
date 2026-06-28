@@ -37,6 +37,7 @@ dependencies:
   shelf_router: ^1.1.0 # Good for adding other handlers
   shelf_dav: ^1.0.0  # The server
   file: ^7.0.0       # The virtual filesystem interface
+  dart_pg: ^2.0.0
 
 dev_dependencies:
   test: ^1.24.0
