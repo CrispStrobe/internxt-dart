@@ -176,6 +176,51 @@ void main() {
       }
     });
 
+    // Step B — seekable AES-CTR decrypt at a 16-byte-aligned offset.
+    test('decryptStreamAt reproduces plaintext at arbitrary aligned offsets',
+        () {
+      final rng = Random.secure();
+      final plaintext =
+          Uint8List.fromList(List.generate(200000, (_) => rng.nextInt(256)));
+      final enc =
+          inxt_crypto.encryptStream(plaintext, _validMnemonic, _bucketId);
+      final ciphertext = enc['data'] as Uint8List;
+      final indexHex = enc['index'] as String;
+      for (final offset in [0, 16, 4096, 65536, 128000, 199984]) {
+        final length = (1000 < plaintext.length - offset)
+            ? 1000
+            : plaintext.length - offset;
+        final slice =
+            Uint8List.sublistView(ciphertext, offset, offset + length);
+        final plain = inxt_crypto.decryptStreamAt(
+            slice, _validMnemonic, _bucketId, indexHex, offset);
+        expect(plain, equals(plaintext.sublist(offset, offset + length)),
+            reason: 'seekable decrypt mismatch at offset $offset');
+      }
+    });
+
+    test('decryptStreamAt rejects a non-16-aligned offset', () {
+      final enc =
+          inxt_crypto.encryptStream(Uint8List(64), _validMnemonic, _bucketId);
+      expect(
+        () => inxt_crypto.decryptStreamAt(enc['data'] as Uint8List,
+            _validMnemonic, _bucketId, enc['index'] as String, 17),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('advanceCtrIv increments the big-endian counter with wraparound', () {
+      // +0 is a no-op.
+      final iv = Uint8List.fromList(List<int>.filled(16, 0)..[15] = 5);
+      expect(inxt_crypto.advanceCtrIv(iv, 0), equals(iv));
+      // +1 bumps the low byte.
+      expect(inxt_crypto.advanceCtrIv(iv, 1).last, equals(6));
+      // all-0xFF + 1 wraps to all-0x00 (128-bit wraparound).
+      final maxIv = Uint8List.fromList(List<int>.filled(16, 0xff));
+      expect(inxt_crypto.advanceCtrIv(maxIv, 1),
+          equals(Uint8List(16))); // all zeros
+    });
+
     test('produces different ciphertext on re-encrypt (random index)', () {
       final client = _newClient();
       final plaintext = Uint8List.fromList(utf8.encode('same input bytes'));

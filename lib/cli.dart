@@ -80,9 +80,13 @@ class InternxtCLI {
           help: 'Number of parallel upload/move workers (default: 4)',
           defaultsTo: '4')
       ..addOption('chunk-workers',
-          help: 'Parallel multipart part PUTs within a single large file '
-              '(default: 4)',
+          help: 'Parallel multipart part PUTs / ranged-download GETs within a '
+              'single large file (default: 4)',
           defaultsTo: '4')
+      ..addFlag('ranged',
+          help: 'Download large files (>=100 MiB) as parallel byte ranges '
+              '(falls back to a single GET if the server ignores Range)',
+          defaultsTo: false)
       ..addFlag('dry-run',
           abbr: 'n', help: 'Show what would be done without making changes')
       ..addFlag('force',
@@ -125,6 +129,10 @@ class InternxtCLI {
           await handleList(argResults);
           break;
         case 'download':
+          inxt_download.rangedDownload = argResults['ranged'] as bool;
+          inxt_download.downloadChunkWorkers =
+              (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
+                  .clamp(1, 1 << 30);
           await handleDownload(argResults.rest.sublist(1));
           break;
         case 'download-path':
@@ -1767,6 +1775,11 @@ class InternxtCLI {
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;
       final include = argResults['include'] as List<String>;
       final exclude = argResults['exclude'] as List<String>;
+      // Step B — parallel ranged downloads for large files (opt-in).
+      inxt_download.rangedDownload = argResults['ranged'] as bool;
+      inxt_download.downloadChunkWorkers =
+          (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
+              .clamp(1, 1 << 30);
 
       final bridgeUser = creds['bridgeUser']?.toString();
       final userIdForAuth = creds['userId']?.toString();

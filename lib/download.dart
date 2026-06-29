@@ -33,7 +33,98 @@ import 'auth.dart' as inxt_auth;
 import 'cache.dart' as inxt_cache;
 import 'crypto.dart' as inxt_crypto;
 import 'drive.dart' as inxt_drive;
+import 'upload.dart' as inxt_upload; // runBoundedPool + MemoryGate (Step B)
 import 'utils.dart' as inxt_utils;
+
+// =============================================================================
+// STEP B — PARALLEL RANGED DOWNLOADS (opt-in)
+// =============================================================================
+//
+// A single presigned S3 GET is split into N 16-byte-aligned ranges fetched
+// concurrently (S3 honours HTTP Range) and CTR-decrypted at their offsets
+// (AES-CTR is seekable — see crypto.decryptStreamAt). This parallelises the
+// network transfer for large files. Falls back to a single GET if the server
+// ignores Range (200 not 206) or the file is small. Toggled by the CLI
+// `download --ranged` flag, which sets [rangedDownload].
+
+/// 30 MB ranges (a multiple of the 16-byte AES block).
+const int downloadPartSize = 30 * 1024 * 1024;
+
+/// Only parallelise downloads at or above this size (the probe round-trip
+/// isn't worth it for small files).
+const int rangedDownloadMinSize = 100 * 1024 * 1024;
+
+const int defaultDownloadChunkWorkers = 4;
+
+/// How many ranges may be in flight at once for a single file. Set by the CLI.
+int downloadChunkWorkers = defaultDownloadChunkWorkers;
+
+/// Whether large in-memory downloads use the parallel ranged path. Set by the
+/// CLI `download --ranged` flag.
+bool rangedDownload = false;
+
+class _RangeNotSupported implements Exception {}
+
+/// Sequential single-GET + one-shot CTR decrypt (the original download body).
+Future<Uint8List> _sequentialDownloadAndDecrypt(
+  String url,
+  String mnemonic,
+  String bucketId,
+  String fileIndexHex,
+) async {
+  final resp = await http.get(Uri.parse(url));
+  if (resp.statusCode != 200) {
+    throw Exception('Failed to download file: ${resp.statusCode}');
+  }
+  return inxt_crypto.decryptStream(
+      resp.bodyBytes, mnemonic, bucketId, fileIndexHex);
+}
+
+/// Fetch the file as N 16-byte-aligned ranges concurrently, CTR-decrypt each at
+/// its offset, and assemble the plaintext. Returns null if the endpoint ignores
+/// Range on the 1-byte probe (caller falls back to a single GET). Ranges finish
+/// out of order but are placed at their byte offset, so the result is identical
+/// to the sequential decrypt. Bounded by the worker pool and the memory gate.
+Future<Uint8List?> downloadRangedToMemory(
+  String url,
+  int fileSize,
+  String mnemonic,
+  String bucketId,
+  String fileIndexHex, {
+  int? chunkWorkers,
+  int? partSize,
+}) async {
+  final pSize = partSize ?? downloadPartSize;
+  final nParts = (fileSize / pSize).ceil();
+
+  // Cheap 1-byte probe: bail to the sequential path before any real work.
+  final probe = await http.get(Uri.parse(url), headers: {'Range': 'bytes=0-0'});
+  if (probe.statusCode != 206) return null;
+
+  final out = Uint8List(fileSize);
+  final workers = (chunkWorkers ?? downloadChunkWorkers).clamp(1, nParts);
+  await inxt_upload.runBoundedPool<int>(
+    List<int>.generate(nParts, (i) => i),
+    workers,
+    (i) async {
+      final start = i * pSize;
+      final end = (start + pSize < fileSize) ? start + pSize : fileSize;
+      final length = end - start;
+      await inxt_upload.MemoryGate.acquire(length);
+      try {
+        final resp = await http
+            .get(Uri.parse(url), headers: {'Range': 'bytes=$start-${end - 1}'});
+        if (resp.statusCode != 206) throw _RangeNotSupported();
+        final plain = inxt_crypto.decryptStreamAt(
+            resp.bodyBytes, mnemonic, bucketId, fileIndexHex, start);
+        out.setRange(start, end, plain);
+      } finally {
+        inxt_upload.MemoryGate.release(length);
+      }
+    },
+  );
+  return out;
+}
 
 /// GET /buckets/{bucketId}/files/{fileId}/info with network basic
 /// auth. Returns `{shards: [{url, ...}], index, ...}` — the caller
@@ -108,19 +199,29 @@ Future<Map<String, dynamic>> downloadFile(
   final fileIndexHex = linksResponse['index'] as String;
 
   print('   ☁️  Downloading encrypted data...');
-  final downloadResponse = await http.get(Uri.parse(downloadUrl));
-  if (downloadResponse.statusCode != 200) {
-    throw Exception('Failed to download file: ${downloadResponse.statusCode}');
+  Uint8List decryptedData;
+  if (rangedDownload && fileSize >= rangedDownloadMinSize) {
+    print('   ⛓️  Ranged download: '
+        '${(fileSize / downloadPartSize).ceil()} range(s)');
+    Uint8List? ranged;
+    try {
+      ranged = await downloadRangedToMemory(
+          downloadUrl, fileSize, mnemonic, bucketId, fileIndexHex);
+    } on _RangeNotSupported {
+      ranged = null;
+    }
+    if (ranged != null) {
+      decryptedData = ranged;
+    } else {
+      print('   ↩️  Server ignored Range (HTTP 200) — single sequential GET');
+      decryptedData = await _sequentialDownloadAndDecrypt(
+          downloadUrl, mnemonic, bucketId, fileIndexHex);
+    }
+  } else {
+    print('   🔐 Decrypting...');
+    decryptedData = await _sequentialDownloadAndDecrypt(
+        downloadUrl, mnemonic, bucketId, fileIndexHex);
   }
-  final encryptedData = downloadResponse.bodyBytes;
-
-  print('   🔐 Decrypting...');
-  final decryptedData = inxt_crypto.decryptStream(
-    encryptedData,
-    mnemonic,
-    bucketId,
-    fileIndexHex,
-  );
 
   return {
     'data': decryptedData.sublist(0, fileSize),

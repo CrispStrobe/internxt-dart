@@ -320,6 +320,49 @@ Uint8List decryptStream(
   return cipher.process(encryptedData);
 }
 
+/// Advance a 16-byte AES-CTR counter (big-endian 128-bit integer) by [blocks],
+/// with 128-bit wraparound. Used to position the keystream for a ranged read.
+Uint8List advanceCtrIv(Uint8List iv, int blocks) {
+  var counter = BigInt.zero;
+  for (final b in iv) {
+    counter = (counter << 8) | BigInt.from(b);
+  }
+  counter =
+      (counter + BigInt.from(blocks)) & ((BigInt.one << 128) - BigInt.one);
+  final out = Uint8List(16);
+  for (var i = 15; i >= 0; i--) {
+    out[i] = (counter & BigInt.from(0xff)).toInt();
+    counter = counter >> 8;
+  }
+  return out;
+}
+
+/// Decrypt [encryptedData] that begins at a 16-byte-aligned byte [offset] into
+/// the file. AES-CTR is seekable: the counter block for byte offset O is
+/// `IV + O ~/ 16` (the 16-byte IV as a big-endian 128-bit integer). This lets
+/// each ranged-download worker decrypt its slice independently. [offset] MUST
+/// be a multiple of 16 (the AES block size).
+Uint8List decryptStreamAt(
+  Uint8List encryptedData,
+  String mnemonic,
+  String bucketId,
+  String fileIndexHex,
+  int offset,
+) {
+  if (offset % 16 != 0) {
+    throw ArgumentError('CTR seek offset must be 16-byte aligned, got $offset');
+  }
+  final index = Uint8List.fromList(HEX.decode(fileIndexHex));
+  final fileKey = generateFileKey(mnemonic, bucketId, index);
+  final iv = index.sublist(0, 16);
+  final seekedIv = advanceCtrIv(iv, offset ~/ 16);
+
+  final cipher = CTRStreamCipher(AESEngine())
+    ..init(false, ParametersWithIV(KeyParameter(fileKey), seekedIv));
+
+  return cipher.process(encryptedData);
+}
+
 Map<String, dynamic> encryptStream(
   Uint8List data,
   String mnemonic,

@@ -477,7 +477,26 @@ concurrency:
    multipart shard (UploadId + parts), mirroring internxt-cli.
 Keep < 100 MiB files on the current single-PUT path.
 
-## Step B — parallel ranged downloads ⬜ TODO (riskier; gate behind a flag)
+## Step B — parallel ranged downloads ✅ DONE (opt-in via `--ranged`)
+**Implemented.** `lib/download.dart` `downloadFile` (the in-memory path the CLI
+`download` command uses) now dispatches to `downloadRangedToMemory` when
+`rangedDownload` is on (CLI `download --ranged [--chunk-workers N]`) and the file
+is ≥ `rangedDownloadMinSize` (100 MiB). It does a 1-byte probe (returns null →
+single-GET fallback on a 200), then fetches N `downloadPartSize` (30 MB,
+16-aligned) ranges through the existing `runBoundedPool` (+ `MemoryGate` per
+range — safe here, no outer gate to nest against), decrypting each independently
+with `crypto.decryptStreamAt(...)` and placing it at its byte offset in a
+pre-sized buffer (ranges finish out of order, result is byte-identical). A
+mid-flight 200 raises `_RangeNotSupported` → fallback. Seekable AES-CTR:
+`crypto.advanceCtrIv` advances the 16-byte counter (big-endian 128-bit, with
+wraparound) by `offset~/16`. The old single-GET path is factored into
+`_sequentialDownloadAndDecrypt`. Unit tests: `test/crypto_test.dart`
+(seekable-CTR == plaintext at arbitrary aligned offsets, unaligned rejected,
+counter wraparound) + `test/ranged_download_test.dart` (MockClient: byte-exact
+reassembly, peak in-flight ≤ N, out-of-order, 200→null fallback, mid-flight 200
+throws). `crypto.dart` stays at the 100% coverage gate.
+
+Original plan (kept for reference):
 `lib/download.dart` `downloadFile` (~72) streams one presigned S3 GET. S3 honors
 HTTP `Range`. Split into N 16-B-aligned ranges, fetch concurrently (pool +
 `MemoryGate`), write each at its offset (`RandomAccessFile.setPosition` +
@@ -497,7 +516,8 @@ Unit (MockClient): peak in-flight ≤ N; manifest ordered; seekable-CTR decrypt 
 plaintext; small files stay single-PUT / single-GET. `dart analyze` clean.
 - [x] upload: peak parts in flight ≤ N (`test/multipart_upload_test.dart`)
 - [x] upload: parts manifest ordered by PartNumber under out-of-order completion
-- [x] small files (<100 MiB) stay single-PUT
-- [ ] (Step B) seekable-CTR decrypt of an arbitrary aligned offset == plaintext
+- [x] small files (<100 MiB) stay single-PUT; non-Range downloads stay single-GET
+- [x] seekable-CTR decrypt of an arbitrary aligned offset == plaintext (`crypto_test.dart`)
+- [x] ranged download byte-exact + peak ranges in flight ≤ N + 200→fallback (`ranged_download_test.dart`)
 Live (`--tags live`): ≥100 MB upload byte-exact + faster than baseline; ranged
 download byte-exact + faster; interrupted multipart resumes.

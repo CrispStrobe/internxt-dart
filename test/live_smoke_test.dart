@@ -36,6 +36,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 
 import 'package:internxt_client/cli.dart';
+import 'package:internxt_client/download.dart' as inxt_download;
 
 // ---------- credential loading ----------
 
@@ -664,6 +665,22 @@ void main() {
     expect(downloaded, equals(payload),
         reason: 'multipart round-trip mismatch');
     print('✅ LIVE: multipart round-trip integrity OK (110 MB)');
+
+    // Step B — re-download the SAME object with parallel ranged GETs and verify
+    // byte-exact (no extra upload quota). Falls back internally on a 200.
+    inxt_download.rangedDownload = true;
+    try {
+      final rangedResult = await client.downloadFile(
+        fileUuid,
+        _creds!['bridgeUser'] as String,
+        _creds!['userId'].toString(),
+      );
+      final rangedBytes = rangedResult['data'] as Uint8List;
+      expect(rangedBytes, equals(payload), reason: 'ranged download mismatch');
+      print('✅ LIVE: ranged-download round-trip integrity OK (110 MB)');
+    } finally {
+      inxt_download.rangedDownload = false;
+    }
   });
 
   // ===========================================================================
