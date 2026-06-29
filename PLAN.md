@@ -419,3 +419,54 @@ shortlist. The detailed "Suggested next session" prose that lived
 here through Phase 4 has been retired — every item it pointed at
 has either been done or is captured in a more specific section
 above.)
+
+---
+
+# Performance: within-file chunk concurrency (added 2026-06-29)
+
+File-level concurrency ALREADY exists: `lib/upload.dart` has a `MemoryGate`
+(~line 113) and a public `runWithConcurrency`-style pool (~172-201, `concurrency`
+param) used for batch uploads (`workers`, default 4 — `uploadFiles`/`upload`,
+~865). What is SEQUENTIAL is a SINGLE file: `start` is always requested with
+`multiparts=1` (`lib/upload.dart` ~450), so every file is ONE streamed PUT
+(`uploadChunkWithProgress` ~475 → `uploadFile` ~589), and downloads are ONE
+streamed GET (`downloadFile` ~72 / `downloadFileStreamed` ~210). Mirror the
+filen-dart "bounded chunk concurrency" work (read filen-dart PLAN.md
+"Performance" + `LEARNINGS.md` first).
+
+Internxt = **AES-CTR single keystream** (sequential, like a running hash) + **S3**.
+
+## Step A — real multipart + parallel part uploads ⬜ TODO (bigger change)
+internxt-dart never does real multipart today. To get within-file upload
+concurrency:
+1. Request multipart: change `files/start?multiparts=1` (~line 450) to
+   `multiparts=N` for files ≥ 100 MiB (N = ceil(size / 30 MB), capped at the server
+   max). Parse the per-part `urls` + `UploadId` from the response — port the exact
+   shape from internxt-cli `_perform_network_upload` (`services/drive.py:185`).
+2. Producer/worker split: a SEQUENTIAL producer reads each 30 MB part, runs the CTR
+   cipher IN ORDER and updates the content hash, then dispatches the part PUT through
+   the existing pool (`runWithConcurrency` + `MemoryGate.acquire(partBytes)`).
+3. Assemble the parts manifest ordered BY INDEX, then finish-upload with the
+   multipart shard (UploadId + parts), mirroring internxt-cli.
+Keep < 100 MiB files on the current single-PUT path.
+
+## Step B — parallel ranged downloads ⬜ TODO (riskier; gate behind a flag)
+`lib/download.dart` `downloadFile` (~72) streams one presigned S3 GET. S3 honors
+HTTP `Range`. Split into N 16-B-aligned ranges, fetch concurrently (pool +
+`MemoryGate`), write each at its offset (`RandomAccessFile.setPosition` +
+`writeFrom` under a 1-permit lock; pre-`truncate`). AES-CTR is SEEKABLE: add a
+decryptor that inits the counter at a 16-B-aligned offset (`counter += offset~/16`).
+
+## CONSTRAINTS (both steps)
+1. CTR encrypt/decrypt + content hash are strictly sequential (keystream/offset
+   order); only the network transfer is parallel. Parts/ranges 16-B-aligned.
+2. Order the parts manifest / range writes BY INDEX regardless of completion order.
+3. Bound BYTES in flight with `MemoryGate` (30 MB parts — count is not enough).
+4. Failures surfaced after join; fall back to sequential if Range unsupported
+   (200 not 206) or the file is small.
+
+## Tests (mirror `test/live_smoke_test.dart`, `@Tags(['live'])`, IXT_ACCOUNT/IXT_PWD)
+Unit (MockClient): peak in-flight ≤ N; manifest ordered; seekable-CTR decrypt ==
+plaintext; small files stay single-PUT / single-GET. `dart analyze` clean.
+Live (`--tags live`): ≥100 MB upload byte-exact + faster than baseline; ranged
+download byte-exact + faster; interrupted multipart resumes.
