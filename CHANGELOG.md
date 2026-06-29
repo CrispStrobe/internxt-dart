@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0 — within-file transfer concurrency
+
+A single large file now transfers with **bounded concurrency** (multi-file
+batch concurrency already existed).
+
+### Added
+- **Real S3 multipart + parallel part uploads (Step A):** files ≥ 100 MiB upload
+  as multiple 30 MB parts in parallel (previously a single streamed PUT), bounded
+  by the existing `MemoryGate`. AES-CTR encryption stays sequential; only the part
+  PUTs overlap, and the parts manifest is ordered by index.
+- **Parallel ranged downloads (Step B, opt-in `--ranged`):** large downloads fetch
+  multiple HTTP byte-ranges concurrently and decrypt each via a seekable AES-CTR
+  decryptor, reassembled by offset. Falls back to the single-stream path when the
+  server doesn't honor `Range` or the file is small.
+
+### Preserved
+- Per-file batch concurrency unchanged; files < 100 MiB keep the single-PUT path
+  and non-ranged downloads keep the single-stream path.
+
 ## 0.1.0 — initial publish-prep release
 
 First version with a `pubspec.yaml` properly configured for
