@@ -436,7 +436,34 @@ filen-dart "bounded chunk concurrency" work (read filen-dart PLAN.md
 
 Internxt = **AES-CTR single keystream** (sequential, like a running hash) + **S3**.
 
-## Step A — real multipart + parallel part uploads ⬜ TODO (bigger change)
+## Step A — real multipart + parallel part uploads ✅ DONE
+**Implemented** (`lib/upload.dart`). `startUpload` now takes `parts:` and
+requests `multiparts=N`; a new `uploadPart` PUTs one part and returns its S3
+ETag. A new `pushEncryptedShard` helper (used by both `uploadFile` and the
+replace-file path) branches: ciphertext < 100 MiB → single PUT (unchanged);
+≥ 100 MiB → true S3 multipart. The continuous-keystream ciphertext (one
+`encryptStream` call, content hash computed once) is sliced into 30 MB parts via
+`Uint8List.sublistView`; part PUTs run through the existing `runBoundedPool`
+(concurrency = `uploadChunkWorkers`, default 4; CLI `upload --chunk-workers N`)
+with `MemoryGate.acquire(partBytes)` per part. The parts manifest is filled BY
+INDEX (`List.filled(parts, null)`), so finish-upload gets PartNumber 1..N in
+order regardless of completion order; `runBoundedPool` surfaces the first part
+failure. Unit tests: `test/multipart_upload_test.dart` (MockClient via
+`runWithClient`): multipart branch + finish shard shape, small-file single-PUT,
+manifest ordered under out-of-order completion, peak in-flight ≤ N, failing part
+surfaced.
+
+NOTE — gate nesting: `uploadFile` / `updateFileContent` already hold an outer
+`MemoryGate.acquire(fileSize * 2)` across the whole upload, and the entire
+ciphertext is RAM-resident (`encryptStream` returns the full buffer). So
+`pushEncryptedShard` does NOT gate per-part: each part is a zero-copy
+`Uint8List.sublistView` into the already-reserved buffer, and a nested per-part
+acquire would deadlock against the outer reservation (the gate is process-wide
+and non-reentrant). Concurrency is bounded by `runBoundedPool`. Verified live:
+110 MB multipart upload round-trips byte-exact. (Also fixed: `generateKeys`
+now retries `dart_pg`'s intermittently-flaky OpenPGP key generation.)
+
+Original plan (kept for reference):
 internxt-dart never does real multipart today. To get within-file upload
 concurrency:
 1. Request multipart: change `files/start?multiparts=1` (~line 450) to
@@ -468,5 +495,9 @@ decryptor that inits the counter at a 16-B-aligned offset (`counter += offset~/1
 ## Tests (mirror `test/live_smoke_test.dart`, `@Tags(['live'])`, IXT_ACCOUNT/IXT_PWD)
 Unit (MockClient): peak in-flight ≤ N; manifest ordered; seekable-CTR decrypt ==
 plaintext; small files stay single-PUT / single-GET. `dart analyze` clean.
+- [x] upload: peak parts in flight ≤ N (`test/multipart_upload_test.dart`)
+- [x] upload: parts manifest ordered by PartNumber under out-of-order completion
+- [x] small files (<100 MiB) stay single-PUT
+- [ ] (Step B) seekable-CTR decrypt of an arbitrary aligned offset == plaintext
 Live (`--tags live`): ≥100 MB upload byte-exact + faster than baseline; ranged
 download byte-exact + faster; interrupted multipart resumes.

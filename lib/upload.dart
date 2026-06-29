@@ -219,6 +219,160 @@ Future<void> runBoundedPool<T>(
 /// are rejected with a clear error before encryption starts.
 const int maxFileSizeBytes = 20 * 1024 * 1024 * 1024; // 20 GB
 
+// =============================================================================
+// WITHIN-FILE MULTIPART CONCURRENCY
+// =============================================================================
+//
+// A SINGLE large file (>= 100 MiB) is uploaded with true S3 multipart:
+// its continuous AES-CTR ciphertext is sliced into 30 MB parts whose
+// PUTs run in parallel through `runBoundedPool` + `MemoryGate`. The
+// crypto stays sequential (one keystream produced by `encryptStream`);
+// only the network transfer is parallel. Mirrors the Python sibling's
+// `_perform_network_upload`.
+
+/// The gateway rejects multipart for files below this size; smaller
+/// files use a single pre-signed PUT. Mirrors `MULTIPART_MIN_SIZE`.
+const int multipartMinSize = 100 * 1024 * 1024; // 100 MiB
+
+/// S3 multipart part size (drive-web uses 30 MB). Mirrors
+/// `UPLOAD_PART_SIZE`.
+const int uploadPartSize = 30 * 1024 * 1024; // 30 MB
+
+/// Server part-count ceiling. Mirrors `MAX_MULTIPARTS`.
+const int maxMultiparts = 10000;
+
+/// Default number of part PUTs in flight at once for a single large
+/// file. Overridable per-run via the CLI `--chunk-workers` option,
+/// which assigns [uploadChunkWorkers].
+const int defaultChunkWorkers = 4;
+
+/// How many multipart part PUTs may be in flight at once for a SINGLE
+/// large file. Bytes in flight are additionally bounded by the memory
+/// gate. Set by the CLI; defaults to [defaultChunkWorkers].
+int uploadChunkWorkers = defaultChunkWorkers;
+
+/// Push already-encrypted [encryptedData] to the network and return the
+/// network file id: start → transfer → finish. Files whose ciphertext
+/// is >= [multipartMinSize] use true S3 multipart with parallel part
+/// PUTs (the CTR keystream is already continuous across [encryptedData],
+/// so slicing it into parts is correct); smaller files use a single
+/// PUT. The parts manifest is assembled BY INDEX regardless of
+/// completion order. Mirrors the Python sibling's `_perform_network_upload`.
+Future<String> pushEncryptedShard(
+  String networkUrl,
+  String bucketId,
+  Uint8List encryptedData,
+  String fileIndexHex,
+  String bridgeUser,
+  String bridgePass,
+  String progressLabel, {
+  Duration? timeout,
+  int? chunkWorkers,
+  int? partSize,
+  int? multipartMin,
+}) async {
+  final size = encryptedData.length;
+  // partSize/multipartMin are test seams (mirroring the Python sibling's
+  // patchable UPLOAD_PART_SIZE / MULTIPART_MIN_SIZE); production passes
+  // neither and gets the protocol defaults.
+  final minSize = multipartMin ?? multipartMinSize;
+  final useMultipart = size >= minSize;
+  // The shard content hash is over the WHOLE ciphertext (one keystream),
+  // computed once — identical whether or not we split into parts.
+  final encryptedHash = crypto.sha256.convert(encryptedData).toString();
+
+  if (!useMultipart) {
+    final startResponse =
+        await startUpload(networkUrl, bucketId, size, bridgeUser, bridgePass);
+    await uploadChunkWithProgress(startResponse['uploads'][0]['url'] as String,
+        encryptedData, progressLabel,
+        timeout: timeout);
+    final finishResponse = await finishUpload(
+      networkUrl,
+      bucketId,
+      {
+        'index': fileIndexHex,
+        'shards': [
+          {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
+        ]
+      },
+      bridgeUser,
+      bridgePass,
+    );
+    return finishResponse['id'] as String;
+  }
+
+  // --- Multipart ---
+  var pSize = partSize ?? uploadPartSize;
+  var parts = (size / pSize).ceil();
+  if (parts > maxMultiparts) {
+    parts = maxMultiparts;
+    pSize = (size / parts).ceil();
+  }
+
+  final startResponse = await startUpload(
+      networkUrl, bucketId, size, bridgeUser, bridgePass,
+      parts: parts);
+  final upload = (startResponse['uploads'] as List)[0] as Map<String, dynamic>;
+  final urls = (upload['urls'] as List?)?.cast<String>();
+  final uploadId = upload['UploadId'] ?? upload['uploadId'];
+  final uuid = upload['uuid'];
+  if (urls == null || uploadId == null) {
+    throw Exception(
+        'Server did not return multipart URLs/UploadId for a multipart upload');
+  }
+  if (urls.length < parts) {
+    throw Exception(
+        'Server returned ${urls.length} part URL(s), expected $parts');
+  }
+
+  print('     ☁️  [STEP 3/5] Multipart transfer: $parts part(s) of '
+      '${inxt_utils.formatSize(pSize)} — $progressLabel');
+
+  // Pre-sized manifest filled BY INDEX (parts finish out of order).
+  final manifest = List<Map<String, dynamic>?>.filled(parts, null);
+  final workers = (chunkWorkers ?? uploadChunkWorkers).clamp(1, parts);
+
+  // Bound: at most `workers` part PUTs in flight (runBoundedPool). We do NOT
+  // gate per-part on the MemoryGate here: the entire ciphertext is already
+  // resident (encryptStream returns the whole buffer) and accounted for by
+  // the caller's outer `MemoryGate.acquire(fileSize * 2)` in uploadFile /
+  // updateFileContent. A nested per-part acquire would deadlock against that
+  // outer reservation (the gate is process-wide and non-reentrant). Each part
+  // is a zero-copy view into the already-reserved buffer.
+  // runBoundedPool propagates the first part failure, surfacing it here.
+  await runBoundedPool<int>(
+    List<int>.generate(parts, (i) => i),
+    workers,
+    (i) async {
+      final start = i * pSize;
+      final end = (start + pSize < size) ? start + pSize : size;
+      final partBytes = Uint8List.sublistView(encryptedData, start, end);
+      final etag = await uploadPart(urls[i], partBytes, timeout: timeout);
+      manifest[i] = {'PartNumber': i + 1, 'ETag': etag};
+    },
+  );
+
+  final finishResponse = await finishUpload(
+    networkUrl,
+    bucketId,
+    {
+      'index': fileIndexHex,
+      'shards': [
+        {
+          'hash': encryptedHash,
+          'uuid': uuid,
+          'UploadId': uploadId,
+          'parts': [for (final m in manifest) m!],
+        }
+      ]
+    },
+    bridgeUser,
+    bridgePass,
+  );
+  return finishResponse['id'] as String;
+}
+
 /// Compute a per-file upload timeout based on size. Floor of 5 min
 /// (for tiny files where setup latency dominates), then scale up
 /// at 100 KB/s + 60s headroom. Mirrors Python's formula
@@ -435,19 +589,27 @@ Future<
 
 // --- Network primitives ---
 
-/// POST /v2/buckets/{bucketId}/files/start?multiparts=1.
-/// Returns the gateway response with a single-element `uploads`
-/// array containing the shard upload URL and UUID.
+/// POST /v2/buckets/{bucketId}/files/start?multiparts=N.
+///
+/// With [parts] == 1 the gateway returns a single-element `uploads`
+/// array containing one pre-signed PUT `url` plus the shard `uuid`.
+/// With [parts] > 1 (true S3 multipart, file must be >= 100 MiB) it
+/// returns one pre-signed URL per part in `uploads[0].urls` plus an S3
+/// `UploadId`. The request body always carries a single entry with the
+/// whole file size; the split is signalled only by `multiparts`.
+/// Mirrors the Python sibling's `api.start_upload`.
 Future<Map<String, dynamic>> startUpload(
   String networkUrl,
   String bucketId,
   int fileSize,
   String user,
-  String pass,
-) async {
+  String pass, {
+  int parts = 1,
+}) async {
+  if (parts < 1) parts = 1;
   final response = await inxt_api.makeRequest(
     'POST',
-    Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=1'),
+    Uri.parse('$networkUrl/v2/buckets/$bucketId/files/start?multiparts=$parts'),
     useAuth: false,
     isNetworkAuth: true,
     networkUser: user,
@@ -459,6 +621,29 @@ Future<Map<String, dynamic>> startUpload(
     }),
   );
   return json.decode(response.body) as Map<String, dynamic>;
+}
+
+/// PUT a single multipart part to its pre-signed S3 [uploadUrl] and
+/// return the S3 ETag from the response headers. No auth is needed for
+/// a pre-signed URL. Mirrors the Python sibling's `api.upload_part`.
+Future<String> uploadPart(
+  String uploadUrl,
+  Uint8List data, {
+  Duration? timeout,
+}) async {
+  final request = http.Request('PUT', Uri.parse(uploadUrl));
+  request.headers['Content-Type'] = 'application/octet-stream';
+  request.bodyBytes = data;
+  final sendFuture = request.send();
+  final streamed =
+      timeout != null ? await sendFuture.timeout(timeout) : await sendFuture;
+  final response = await http.Response.fromStream(streamed);
+  if (response.statusCode != 200 && response.statusCode != 201) {
+    throw Exception(
+        'Part upload failed: ${response.statusCode} - ${response.body}');
+  }
+  final etag = response.headers['etag'] ?? response.headers['ETag'] ?? '';
+  return etag.replaceAll('"', '');
 }
 
 /// PUT [chunkData] to [uploadUrl] in 128 KB sub-chunks, rendering a
@@ -636,26 +821,17 @@ Future<Map<String, dynamic>> uploadFile(
         '     ✅ Encryption complete! (${encryptSeconds}s, ${inxt_utils.formatSize(fileSize / (encryptSeconds + 0.001))}/s)');
 
     final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
-    final startResponse = await startUpload(
-        networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
-
-    await uploadChunkWithProgress(startResponse['uploads'][0]['url'] as String,
-        encryptedData, remoteFileName,
-        timeout: perFileTimeout);
-
-    print('     ✅ [STEP 4/5] Finalizing network storage...');
-    final encryptedHash = crypto.sha256.convert(encryptedData).toString();
-    final finishResponse = await finishUpload(
+    // Push the shard: single PUT for small files, true S3 multipart with
+    // parallel part PUTs for files >= 100 MiB.
+    final networkFileId = await pushEncryptedShard(
       networkUrl,
       bucketId,
-      {
-        'index': fileIndexHex,
-        'shards': [
-          {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
-        ]
-      },
+      encryptedData,
+      fileIndexHex,
       bridgeUser,
       bridgePass,
+      remoteFileName,
+      timeout: perFileTimeout,
     );
 
     print('     📋 [STEP 5/5] Creating Drive file entry...');
@@ -665,7 +841,7 @@ Future<Map<String, dynamic>> uploadFile(
       'type': p.extension(remoteFileName).replaceAll('.', ''),
       'size': fileSize,
       'bucket': bucketId,
-      'fileId': finishResponse['id'],
+      'fileId': networkFileId,
       'encryptVersion': 'Aes03',
       'name': '',
       'creationTime': creationTime,
@@ -1257,26 +1433,17 @@ Future<Map<String, dynamic>> updateFile(
     final encryptedData = encryptedResult['data']! as Uint8List;
     final fileIndexHex = encryptedResult['index']! as String;
 
-    // 2. Network upload of the new shard.
+    // 2. Network upload of the new shard (multipart for >= 100 MiB).
     final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
-    final startResponse = await startUpload(
-        networkUrl, bucketId, encryptedData.length, bridgeUser, bridgePass);
-    await uploadChunkWithProgress(startResponse['uploads'][0]['url'] as String,
-        encryptedData, 'update-$fileUuid',
-        timeout: perFileTimeout);
-
-    final encryptedHash = crypto.sha256.convert(encryptedData).toString();
-    final finishResponse = await finishUpload(
+    final networkFileId = await pushEncryptedShard(
       networkUrl,
       bucketId,
-      {
-        'index': fileIndexHex,
-        'shards': [
-          {'hash': encryptedHash, 'uuid': startResponse['uploads'][0]['uuid']}
-        ]
-      },
+      encryptedData,
+      fileIndexHex,
       bridgeUser,
       bridgePass,
+      'update-$fileUuid',
+      timeout: perFileTimeout,
     );
 
     // 3. Repoint the drive entry.
@@ -1284,7 +1451,7 @@ Future<Map<String, dynamic>> updateFile(
       driveApiUrl,
       bearerToken,
       fileUuid,
-      {'fileId': finishResponse['id'], 'size': fileSize},
+      {'fileId': networkFileId, 'size': fileSize},
     );
 
     // 4. Invalidate parent listing so the new size shows up.

@@ -79,6 +79,10 @@ class InternxtCLI {
           abbr: 'w',
           help: 'Number of parallel upload/move workers (default: 4)',
           defaultsTo: '4')
+      ..addOption('chunk-workers',
+          help: 'Parallel multipart part PUTs within a single large file '
+              '(default: 4)',
+          defaultsTo: '4')
       ..addFlag('dry-run',
           abbr: 'n', help: 'Show what would be done without making changes')
       ..addFlag('force',
@@ -1655,6 +1659,10 @@ class InternxtCLI {
       final exclude = argResults['exclude'] as List<String>;
       final workers =
           int.tryParse(argResults['workers'] as String? ?? '4') ?? 4;
+      // Within-file multipart concurrency for single large files (>= 100 MiB).
+      inxt_upload.uploadChunkWorkers =
+          (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
+              .clamp(1, 1 << 30);
 
       // Generate Batch ID for resumability (Go/Python style)
       final batchId = config.generateBatchId('upload', sources, targetPath);

@@ -21,6 +21,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math';
 
+import 'package:dart_pg/dart_pg.dart';
 import 'package:hex/hex.dart';
 import 'package:test/test.dart';
 
@@ -316,6 +317,34 @@ void main() {
         password,
       );
       expect(decrypted, startsWith('-----BEGIN PGP PRIVATE KEY BLOCK-----'));
+    });
+
+    // dart_pg's OpenPGP.generateKey occasionally throws a RangeError from its
+    // own MPI parsing for some random Ed25519 keys; generateKeys retries.
+    test('retries flaky key generation, then succeeds', () {
+      var calls = 0;
+      final keys = inxt_crypto.generateKeys('pw', keyGenerator: (passphrase) {
+        calls++;
+        if (calls < 3) {
+          throw StateError('simulated dart_pg readMPI flakiness');
+        }
+        return OpenPGP.generateKey(['inxt@inxt.com'], passphrase,
+            type: KeyType.ecc, curve: Ecc.ed25519);
+      });
+      expect(calls, equals(3)); // failed twice, succeeded on the third
+      expect(keys['ecc']['publicKey'], isA<String>());
+    });
+
+    test('throws after exhausting key-generation retries', () {
+      var calls = 0;
+      expect(
+        () => inxt_crypto.generateKeys('pw', keyGenerator: (_) {
+          calls++;
+          throw StateError('always fails');
+        }),
+        throwsA(isA<Exception>()),
+      );
+      expect(calls, equals(8)); // bounded retry count
     });
   });
 }

@@ -607,6 +607,65 @@ void main() {
     expect(downloaded, equals(w.payload), reason: '2 MB round-trip mismatch');
   });
 
+  liveTest('upload >= 100 MiB file (true S3 multipart + parallel part PUTs)',
+      timeout: const Timeout(Duration(minutes: 10)), () async {
+    // REAL multipart: a file above the 100 MiB floor uses the new
+    // pushEncryptedShard multipart path — one continuous AES-CTR keystream
+    // sliced into 30 MB parts, each PUT concurrently (uploadChunkWorkers),
+    // finished with the UploadId + ETag parts manifest. This is the headline
+    // validation for Step A on the live backend; ~110 MB of quota, cleaned up
+    // to trash with the sentinel folder. Skippable via IXT_SKIP_MULTIPART=1
+    // (it moves real bytes over the network — the only test above the 1 MB
+    // convention, deliberately gated).
+    if (_env('IXT_SKIP_MULTIPART') == '1') {
+      markTestSkipped('IXT_SKIP_MULTIPART=1 set');
+      return;
+    }
+    // 110 MB > 100 MiB floor -> ceil(110/30) = 4 parts (30+30+30+20).
+    const size = 110 * 1024 * 1024;
+    final name = _uniqueName('multipart');
+    // Build the payload directly into a Uint8List with a cheap deterministic
+    // pattern + a unique tag prefix. (The shared _writePayload helper uses
+    // List.generate + spread, which is fine for the <= 2 MB tests but at
+    // 110 MB would allocate a ~1 GB boxed List<int> and thrash for minutes.)
+    final payload = Uint8List(size);
+    for (var i = 0; i < size; i++) {
+      payload[i] = i & 0xff;
+    }
+    final tag = utf8.encode('inxt-dart-multipart-$name-');
+    payload.setRange(0, tag.length, tag);
+    final file = File('${tmpRoot.path}/$name.bin')..writeAsBytesSync(payload);
+    print('📝 LIVE: wrote ${size ~/ (1024 * 1024)} MB for multipart test');
+
+    final t0 = DateTime.now();
+    final result = await client.uploadSingleItem(
+      file,
+      _sentinelPath,
+      _sentinelUuid!,
+      'overwrite',
+      bridgeUser: _creds!['bridgeUser'] as String,
+      userIdForAuth: _creds!['userId'].toString(),
+      preserveTimestamps: false,
+      remoteFileName: '$name.bin',
+    );
+    expect(result, equals('uploaded'));
+    final elapsed = DateTime.now().difference(t0).inSeconds;
+    print('✅ LIVE: multipart-uploaded 110 MB in ${elapsed}s');
+
+    final resolved = await client.resolvePath('$_sentinelPath/$name.bin');
+    final fileUuid = resolved['uuid'] as String;
+    final downloadResult = await client.downloadFile(
+      fileUuid,
+      _creds!['bridgeUser'] as String,
+      _creds!['userId'].toString(),
+    );
+    final downloaded = downloadResult['data'] as Uint8List;
+    expect(downloaded.length, equals(size));
+    expect(downloaded, equals(payload),
+        reason: 'multipart round-trip mismatch');
+    print('✅ LIVE: multipart round-trip integrity OK (110 MB)');
+  });
+
   // ===========================================================================
   // SEARCH (server-side fuzzy)
   // ===========================================================================

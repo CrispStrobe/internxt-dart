@@ -58,38 +58,69 @@ Map<String, String> passToHash(String password, String salt) {
 ///
 /// Fresh keys are generated on every login (as the official SDK does); the
 /// server preserves any pre-existing account keys, so this is non-destructive.
-Map<String, dynamic> generateKeys(String password) {
+/// Generates a fresh locked dart_pg Ed25519 private key. The default
+/// production implementation; overridable in tests via [generateKeys]'s
+/// `keyGenerator` seam.
+// Returns a freshly generated *locked* dart_pg Ed25519 private key. Typed
+// `dynamic` because dart_pg's key interface type isn't exported from its
+// public library; the only member we call is `.decrypt(passphrase)`.
+dynamic _generateLockedPgpKey(String passphrase) => OpenPGP.generateKey(
+      ['inxt@inxt.com'],
+      passphrase,
+      type: KeyType.ecc,
+      curve: Ecc.ed25519,
+    );
+
+Map<String, dynamic> generateKeys(String password,
+    {dynamic Function(String passphrase)? keyGenerator}) {
   // dart_pg requires a passphrase to generate; we immediately decrypt to get
   // the unencrypted armored private key, matching openpgp.js (no passphrase),
   // then re-encrypt it ourselves with the Internxt AES-GCM scheme.
   const tmpPassphrase = 'internxt-cli-ephemeral';
-  final locked = OpenPGP.generateKey(
-    ['inxt@inxt.com'],
-    tmpPassphrase,
-    type: KeyType.ecc,
-    curve: Ecc.ed25519,
-  );
-  final privateKey = locked.decrypt(tmpPassphrase);
-  final privateKeyArmored = privateKey.armor();
-  final publicKeyArmored = privateKey.publicKey.armor();
+  final genKey = keyGenerator ?? _generateLockedPgpKey;
 
-  final publicKeyB64 = base64.encode(utf8.encode(publicKeyArmored));
-  final privateKeyEncrypted = internxtAesGcmEncrypt(
-      privateKeyArmored, password, appMagicIv, appMagicSalt);
+  // dart_pg's OpenPGP.generateKey is intermittently flaky: for some random
+  // Ed25519 keys its own subkey-binding-signature verification (run during
+  // generation) trips a RangeError in Helper.readMPI — an MPI whose declared
+  // bit-length doesn't match its byte length. Generation is nondeterministic,
+  // so a freshly generated key almost always succeeds. Retry a bounded number
+  // of times before surfacing the failure, rather than failing the whole login
+  // on a transient library quirk.
+  Object? lastError;
+  for (var attempt = 0; attempt < 8; attempt++) {
+    try {
+      final locked = genKey(tmpPassphrase);
+      final privateKey = locked.decrypt(tmpPassphrase);
+      // `privateKey` is dynamic (dart_pg's key interface isn't exported);
+      // .armor() returns the armored text — cast to String for the gate.
+      final privateKeyArmored = privateKey.armor() as String;
+      final publicKeyArmored = privateKey.publicKey.armor() as String;
 
-  return {
-    'privateKeyEncrypted': privateKeyEncrypted,
-    'publicKey': publicKeyB64,
-    'revocationCertificate': '',
-    'ecc': {
-      'publicKey': publicKeyB64,
-      'privateKeyEncrypted': privateKeyEncrypted,
-    },
-    'kyber': {
-      'publicKey': null,
-      'privateKeyEncrypted': null,
-    },
-  };
+      final publicKeyB64 = base64.encode(utf8.encode(publicKeyArmored));
+      final privateKeyEncrypted = internxtAesGcmEncrypt(
+          privateKeyArmored, password, appMagicIv, appMagicSalt);
+
+      return {
+        'privateKeyEncrypted': privateKeyEncrypted,
+        'publicKey': publicKeyB64,
+        'revocationCertificate': '',
+        'ecc': {
+          'publicKey': publicKeyB64,
+          'privateKeyEncrypted': privateKeyEncrypted,
+        },
+        'kyber': {
+          'publicKey': null,
+          'privateKeyEncrypted': null,
+        },
+      };
+    } catch (e) {
+      lastError = e;
+      // fall through and regenerate a fresh key
+    }
+  }
+  throw Exception(
+      'OpenPGP key generation failed after 8 attempts (dart_pg flakiness): '
+      '$lastError');
 }
 
 /// Replicates `@internxt/lib` `aes.encrypt(text, password, {iv, salt})`.
