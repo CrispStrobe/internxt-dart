@@ -19,6 +19,19 @@ batch concurrency already existed).
 - Per-file batch concurrency unchanged; files < 100 MiB keep the single-PUT path
   and non-ranged downloads keep the single-stream path.
 
+### Notes
+- **Multipart upload is automatic** for files ≥ 100 MiB (the server's multipart
+  floor); its part PUTs run in parallel by default (`--chunk-workers`, default 4).
+  **Ranged download stays opt-in** (`--ranged`, default off).
+- Ranged download is feature-on-parity with the Python CLI (same 30 MB
+  16-byte-aligned ranges, 1-byte `Range` probe → single-GET fallback on non-206,
+  per-range CTR-seek decrypt, offset-ordered reassembly, worker + `MemoryGate`
+  bounding; available on both `download` and recursive `download-path`). One
+  intentional architectural difference: this library's download path assembles
+  the file **in memory** (so peak RAM ≈ file size — same as its sequential path),
+  whereas the Python CLI streams ranges to disk (RAM bounded by in-flight ranges).
+  The `MemoryGate` bounds concurrent in-flight ranges, not the output buffer.
+
 ## 0.1.0 — initial publish-prep release
 
 First version with a `pubspec.yaml` properly configured for
