@@ -206,4 +206,41 @@ void main() {
       expect(c.driveApiUrl, equals('https://staging.internxt.com/drive'));
     });
   });
+
+  group('InternxtCLI.parseRcatRemotePath (rcat)', () {
+    test('splits a nested path into parent + filename', () {
+      final r = InternxtCLI.parseRcatRemotePath('/backups/db.xz');
+      expect(r, isNotNull);
+      expect(r!.parent, equals('/backups'));
+      expect(r.filename, equals('db.xz'));
+    });
+
+    test('deep path keeps the full parent', () {
+      final r = InternxtCLI.parseRcatRemotePath('/a/b/c/file.tar.gz');
+      expect(r!.parent, equals('/a/b/c'));
+      expect(r.filename, equals('file.tar.gz'));
+    });
+
+    test('bare filename lands at root', () {
+      final r = InternxtCLI.parseRcatRemotePath('dump.sql');
+      expect(r!.parent, equals('/'));
+      expect(r.filename, equals('dump.sql'));
+    });
+
+    test('leading slashes are normalized', () {
+      final r = InternxtCLI.parseRcatRemotePath('///x/y.bin');
+      expect(r!.parent, equals('/x'));
+      expect(r.filename, equals('y.bin'));
+    });
+
+    test('folder path (trailing slash) is rejected', () {
+      expect(InternxtCLI.parseRcatRemotePath('/backups/'), isNull);
+    });
+
+    test('empty / root is rejected (no filename)', () {
+      expect(InternxtCLI.parseRcatRemotePath(''), isNull);
+      expect(InternxtCLI.parseRcatRemotePath('   '), isNull);
+      expect(InternxtCLI.parseRcatRemotePath('/'), isNull);
+    });
+  });
 }

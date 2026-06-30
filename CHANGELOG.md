@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **`rcat` — stream stdin to a Drive file** (parity with the Python CLI):
+  `inxt rcat <remote_path>` reads stdin and uploads it to a single named Drive
+  file (`mariadb-dump | xz | inxt rcat /backups/db.xz`). The parent folder is
+  created if missing. Internxt needs the exact size up front, so the stream is
+  spooled to a temp file (`--temp-dir` to relocate) to measure its size, then
+  encrypted+uploaded in one pass via the existing single-item upload path. Empty
+  stdin aborts non-zero; a TTY with no pipe is rejected.
 - **Bounded-memory disk-streaming download** for the CLI (`download` /
   `download-path`): the decrypted file is now written straight to disk with peak
   RAM bounded by the in-flight range/chunk size, not the whole file — closing the

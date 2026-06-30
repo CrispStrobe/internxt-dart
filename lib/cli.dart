@@ -99,7 +99,10 @@ class InternxtCLI {
       ..addFlag('background',
           abbr: 'b', help: 'Run WebDAV server in background')
       ..addOption('port',
-          help: 'Port for WebDAV server (default: 8080)', defaultsTo: '8080');
+          help: 'Port for WebDAV server (default: 8080)', defaultsTo: '8080')
+      ..addOption('temp-dir',
+          help:
+              'Directory for the rcat stdin spool file (default: system temp)');
 
     final argResults = parser.parse(arguments);
     debugMode = argResults['debug'] as bool;
@@ -140,6 +143,12 @@ class InternxtCLI {
           break;
         case 'upload':
           await handleUpload(argResults);
+          break;
+        case 'rcat':
+          inxt_upload.uploadChunkWorkers =
+              (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
+                  .clamp(1, 1 << 30);
+          await handleRcat(argResults);
           break;
         case 'config':
           await handleConfig();
@@ -242,6 +251,8 @@ class InternxtCLI {
     print('  download <file-uuid> Download a file by its UUID');
     print('  download-path <path> Download a file/folder by its path');
     print('  upload <sources...>  Upload files/folders to Internxt');
+    print('  rcat <remote_path>   Stream stdin to a Drive file '
+        '(e.g. dump | xz | inxt rcat /backups/db.xz)');
 
     print('  mkdir-path <path>  Create a new folder (and subfolders) by path');
     print('  resolve <path>     Show what a path points to (debugging)');
@@ -548,6 +559,126 @@ class InternxtCLI {
     print('   Pass: internxt-webdav');
     print('   Protocol: http (SSL not implemented in this version)');
     print('   Background PID File: ${config.webdavPidFile}');
+  }
+
+  /// Split an rcat REMOTE_PATH into its parent folder path and filename.
+  /// Returns null when the path is a folder (trailing slash) or has no
+  /// filename. Pure + testable (the handler proper touches stdin/network).
+  static ({String parent, String filename})? parseRcatRemotePath(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return null;
+    final normalized = '/${trimmed.replaceAll(RegExp(r'^/+'), '')}';
+    if (normalized.endsWith('/')) return null;
+    final slash = normalized.lastIndexOf('/');
+    final parent = slash <= 0 ? '/' : normalized.substring(0, slash);
+    final filename = normalized.substring(slash + 1);
+    if (filename.isEmpty) return null;
+    return (parent: parent, filename: filename);
+  }
+
+  /// `rcat <remote_path>` — read stdin and upload it to a single Drive file
+  /// (rclone-rcat style). Internxt needs the exact size up front (the gateway
+  /// pre-issues the presigned part URLs at upload start), so the stream is
+  /// spooled to a temp file to measure its size, then encrypted+uploaded in one
+  /// pass. Empty stdin aborts non-zero; a TTY (no pipe) is rejected.
+  Future<void> handleRcat(ArgResults argResults) async {
+    final rest = argResults.rest;
+    if (rest.length < 2) {
+      io.stderr.writeln('❌ Usage: inxt rcat <remote_path>   '
+          '(e.g. inxt rcat /backups/db.xz)');
+      io.exit(1);
+    }
+    final parsed = parseRcatRemotePath(rest[1]);
+    if (parsed == null) {
+      io.stderr.writeln('❌ REMOTE_PATH must include a filename '
+          '(e.g. /backups/db.xz), got: "${rest[1]}"');
+      io.exit(1);
+    }
+    final parentPath = parsed.parent;
+    final filename = parsed.filename;
+    final normalized =
+        parentPath == '/' ? '/$filename' : '$parentPath/$filename';
+
+    if (io.stdin.hasTerminal) {
+      io.stderr
+          .writeln('❌ No data piped to stdin. rcat reads from a pipe, e.g.:');
+      io.stderr
+          .writeln('   mariadb-dump db | xz -6 | inxt rcat /backups/db.xz');
+      io.exit(1);
+    }
+
+    final onConflict = argResults['on-conflict'] as String;
+    final tempDirOpt = argResults['temp-dir'] as String?;
+
+    io.File? spool;
+    try {
+      final creds = await config.readCredentials();
+      if (creds == null) {
+        io.stderr.writeln('❌ Not logged in. Use "inxt login" first.');
+        io.exit(1);
+      }
+      client.setAuth(creds);
+      final bridgeUser = creds['bridgeUser']?.toString();
+      final userIdForAuth = creds['userId']?.toString();
+      if (bridgeUser == null || userIdForAuth == null) {
+        throw Exception(
+            'Credentials missing bridgeUser/userId. Please login again.');
+      }
+
+      print('🎯 Target: $normalized (parent $parentPath)');
+      final parentInfo = await client._resolveOrCreateRemoteFolder(parentPath);
+      final parentUuid = parentInfo['uuid'] as String;
+
+      // Spool stdin to a temp file (size must be known before upload start).
+      final dir = (tempDirOpt != null && tempDirOpt.isNotEmpty)
+          ? io.Directory(tempDirOpt)
+          : io.Directory.systemTemp;
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      spool = io.File(p.join(
+          dir.path, 'inxt-rcat-${DateTime.now().microsecondsSinceEpoch}.tmp'));
+
+      print('📥 Buffering stdin to a temporary file...');
+      final sink = spool.openWrite();
+      var bytes = 0;
+      await for (final chunk in io.stdin) {
+        sink.add(chunk);
+        bytes += chunk.length;
+      }
+      await sink.close();
+      print('✅ Buffered ${formatSize(bytes)} from stdin');
+
+      if (bytes == 0) {
+        io.stderr.writeln('❌ stdin was empty — nothing to upload. (Aborting so '
+            'an unattended backup does not silently succeed with no data.)');
+        io.exit(1);
+      }
+
+      final result = await client.uploadSingleItem(
+        spool,
+        parentPath,
+        parentUuid,
+        onConflict,
+        bridgeUser: bridgeUser,
+        userIdForAuth: userIdForAuth,
+        preserveTimestamps: false,
+        remoteFileName: filename,
+      );
+      if (result == 'uploaded') {
+        print('🎉 Streamed ${formatSize(bytes)} to $normalized');
+      } else if (result == 'skipped') {
+        print('⏭️  Skipped $normalized (already exists; --on-conflict=skip)');
+      } else {
+        io.stderr.writeln('❌ Failed to upload to $normalized');
+        io.exit(1);
+      }
+    } catch (e) {
+      io.stderr.writeln('❌ rcat failed: $e');
+      io.exit(1);
+    } finally {
+      try {
+        if (spool != null && spool.existsSync()) spool.deleteSync();
+      } catch (_) {/* best effort */}
+    }
   }
 
   Future<void> handleLogin(List<String> args) async {
