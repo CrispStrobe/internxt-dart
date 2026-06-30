@@ -102,7 +102,11 @@ class InternxtCLI {
           help: 'Port for WebDAV server (default: 8080)', defaultsTo: '8080')
       ..addOption('temp-dir',
           help:
-              'Directory for the rcat stdin spool file (default: system temp)');
+              'Directory for the rcat stdin spool file (default: system temp)')
+      ..addFlag('password-stdin',
+          negatable: false,
+          help: 'login: read the password from stdin '
+              '(printf %s "\$PW" | inxt login --password-stdin)');
 
     final argResults = parser.parse(arguments);
     debugMode = argResults['debug'] as bool;
@@ -120,7 +124,7 @@ class InternxtCLI {
     try {
       switch (command) {
         case 'login':
-          await handleLogin(commandArgs.sublist(1));
+          await handleLogin(argResults);
           break;
         case 'whoami':
           await handleWhoami();
@@ -681,7 +685,7 @@ class InternxtCLI {
     }
   }
 
-  Future<void> handleLogin(List<String> args) async {
+  Future<void> handleLogin(ArgResults argResults) async {
     if (debugMode) {
       print('🔍 Debug mode enabled\n');
       print('📋 API Configuration:');
@@ -691,18 +695,34 @@ class InternxtCLI {
       print('');
     }
 
-    io.stdout.write('What is your email? ');
-    final email = io.stdin.readLineSync()?.trim().toLowerCase() ?? '';
+    // Email: INTERNXT_EMAIL env var, else interactive prompt.
+    var email =
+        (io.Platform.environment['INTERNXT_EMAIL'] ?? '').trim().toLowerCase();
     if (email.isEmpty) {
-      io.stderr.writeln('❌ Email is required');
+      io.stdout.write('What is your email? ');
+      email = io.stdin.readLineSync()?.trim().toLowerCase() ?? '';
+    }
+    if (email.isEmpty) {
+      io.stderr.writeln('❌ Email is required (or set INTERNXT_EMAIL)');
       io.exit(1);
     }
 
-    io.stdout.write('What is your password? ');
-    io.stdin.echoMode = false;
-    final password = io.stdin.readLineSync()?.trim() ?? '';
-    io.stdin.echoMode = true;
-    print('');
+    // Password (most to least secure): --password-stdin, INTERNXT_PASSWORD env,
+    // interactive no-echo prompt.
+    final String password;
+    final envPassword = io.Platform.environment['INTERNXT_PASSWORD'];
+    if (argResults['password-stdin'] as bool) {
+      password =
+          io.stdin.readLineSync()?.replaceAll(RegExp(r'[\r\n]+$'), '') ?? '';
+    } else if (envPassword != null && envPassword.isNotEmpty) {
+      password = envPassword;
+    } else {
+      io.stdout.write('What is your password? ');
+      io.stdin.echoMode = false;
+      password = io.stdin.readLineSync()?.trim() ?? '';
+      io.stdin.echoMode = true;
+      print('');
+    }
 
     if (password.isEmpty) {
       io.stderr.writeln('❌ Password is required');
@@ -715,11 +735,15 @@ class InternxtCLI {
 
       String? tfaCode;
       if (needs2fa) {
-        print('🔐 Two-factor authentication is enabled');
-        io.stdout.write('Enter your 2FA code (6 digits): ');
-        tfaCode = io.stdin.readLineSync()?.trim();
+        // INTERNXT_2FA env var (for automation), else interactive prompt.
+        tfaCode = (io.Platform.environment['INTERNXT_2FA'] ?? '').trim();
+        if (tfaCode.isEmpty) {
+          print('🔐 Two-factor authentication is enabled');
+          io.stdout.write('Enter your 2FA code (6 digits): ');
+          tfaCode = io.stdin.readLineSync()?.trim();
+        }
         if (tfaCode == null || tfaCode.isEmpty) {
-          io.stderr.writeln('❌ 2FA code is required');
+          io.stderr.writeln('❌ 2FA code is required (or set INTERNXT_2FA)');
           io.exit(1);
         }
       }

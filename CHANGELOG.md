@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- **Secure credential input + at-rest encryption** for the CLI (parity with the
+  Python CLI). `login` reads `INTERNXT_EMAIL` / `INTERNXT_PASSWORD` / `INTERNXT_2FA`
+  env vars and supports `--password-stdin` (never enters argv/process list).
+  Credentials are no longer stored as plaintext JSON: the file-backed CLI now
+  writes a `{fmt,src,ct}` envelope encrypted with a wrapping key from
+  `INTERNXT_CREDENTIALS_KEY` (else a static constant), and the file is `chmod 600`
+  / the data dir `700`. Legacy plaintext files are migrated on first read. A
+  custom injected `ConfigStorage` (e.g. CrispCloud's secure storage) is left
+  untouched — it encrypts at its own layer, so this avoids double-encryption.
 - **`rcat` — stream stdin to a Drive file** (parity with the Python CLI):
   `inxt rcat <remote_path>` reads stdin and uploads it to a single named Drive
   file (`mariadb-dump | xz | inxt rcat /backups/db.xz`). The parent folder is

@@ -5,12 +5,11 @@
 // happen inside a per-test temporary directory; nothing touches the
 // real ~/.internxt-cli/.
 //
-// SECURITY NOTE (logged also in LEARNINGS.md): the Dart codebase stores
-// credentials as PLAIN JSON. The Python codebase encrypts the file with
-// AES-256-CBC + a fixed APP_CRYPTO_SECRET. The encryption isn't strong
-// security — anyone who can read the file can also read the secret from
-// the binary — but it's a defence-in-depth layer. Worth aligning with
-// Python in a future pass.
+// SECURITY: the file-backed CLI now encrypts credentials at rest (a
+// {fmt,src,ct} envelope, chmod 600) with a wrapping key from
+// INTERNXT_CREDENTIALS_KEY or the static app constant — matching the Python
+// sibling's env/static tiers + perms + legacy migration. A custom injected
+// ConfigStorage (e.g. CrispCloud) skips this and encrypts at its own layer.
 
 import 'dart:convert';
 import 'dart:io';
@@ -18,6 +17,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 
 import 'package:internxt_client/cli.dart';
+import 'package:internxt_client/config.dart' show credentialsFmt;
 
 ConfigService _newConfig(Directory tmp) => ConfigService(configPath: tmp.path);
 
@@ -98,20 +98,41 @@ void main() {
       await cfg.clearCredentials();
     });
 
-    test('REGRESSION MARKER: credentials are stored as plain JSON', () async {
-      // The Dart impl currently stores credentials unencrypted on disk.
-      // The Python impl encrypts with AES-256-CBC + a fixed app secret.
-      // This test pins the current Dart behaviour so a future encryption
-      // upgrade is intentional.
+    test('credentials are encrypted at rest (file-backed CLI storage)',
+        () async {
       final cfg = _newConfig(tmp);
       const sentinelToken = 'sentinel-token-abcdef-12345';
       await cfg.saveCredentials({'token': sentinelToken});
       final raw = await File(cfg.credentialsFile).readAsString();
-      // The token MUST be plainly readable in the file today.
-      expect(raw.contains(sentinelToken), isTrue,
-          reason: 'credentials file is currently plaintext JSON');
-      // Sanity: it's valid JSON
-      expect(jsonDecode(raw), isA<Map<String, dynamic>>());
+      // The token MUST NOT be readable in the file (it's ciphertext now).
+      expect(raw.contains(sentinelToken), isFalse,
+          reason: 'credentials must be encrypted, not plaintext');
+      // It's a {fmt,src,ct} envelope and round-trips.
+      final env = jsonDecode(raw) as Map<String, dynamic>;
+      expect(env['fmt'], equals(credentialsFmt));
+      expect(env['src'], equals('static')); // no INTERNXT_CREDENTIALS_KEY set
+      final out = await cfg.readCredentials();
+      expect(out!['token'], equals(sentinelToken));
+      if (!Platform.isWindows) {
+        // chmod 600 applied.
+        final mode = (File(cfg.credentialsFile).statSync().mode) & 0x1FF;
+        expect(mode, equals(384),
+            reason:
+                'expected 0600, got ${mode.toRadixString(8)}'); // 0600 == 384
+      }
+    });
+
+    test('legacy plaintext-JSON credentials are read and migrated', () async {
+      final cfg = _newConfig(tmp);
+      // Simulate the old on-disk format: a bare plaintext JSON blob.
+      await File(cfg.credentialsFile)
+          .writeAsString(jsonEncode({'token': 'legacy-tok', 'userId': 'u1'}));
+      final out = await cfg.readCredentials();
+      expect(out!['token'], equals('legacy-tok'));
+      // On read it is upgraded to the encrypted envelope.
+      final raw = await File(cfg.credentialsFile).readAsString();
+      expect(raw.contains('legacy-tok'), isFalse);
+      expect((jsonDecode(raw) as Map)['fmt'], equals(credentialsFmt));
     });
   });
 
