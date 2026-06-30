@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Bounded-memory disk-streaming download** for the CLI (`download` /
+  `download-path`): the decrypted file is now written straight to disk with peak
+  RAM bounded by the in-flight range/chunk size, not the whole file — closing the
+  memory-model gap with the Python CLI. Parallel ranged-to-disk
+  (`downloadRangedToFile`, writes positionally into a `RandomAccessFile`) when
+  `--ranged` is on and the file is large; otherwise a single streaming GET
+  decrypted chunk-by-chunk via an incremental AES-CTR cipher
+  (`crypto.downloadDecryptor`). Cross-platform (Linux/macOS/Windows). The
+  in-memory functions (`downloadFile`, `downloadFileBytes`,
+  `downloadFileStreamed`) are unchanged for consumers (WebDAV, Flutter/Web) that
+  need the bytes in memory.
+
 ## 0.2.0 — within-file transfer concurrency
 
 A single large file now transfers with **bounded concurrency** (multi-file
@@ -26,11 +41,10 @@ batch concurrency already existed).
 - Ranged download is feature-on-parity with the Python CLI (same 30 MB
   16-byte-aligned ranges, 1-byte `Range` probe → single-GET fallback on non-206,
   per-range CTR-seek decrypt, offset-ordered reassembly, worker + `MemoryGate`
-  bounding; available on both `download` and recursive `download-path`). One
-  intentional architectural difference: this library's download path assembles
-  the file **in memory** (so peak RAM ≈ file size — same as its sequential path),
-  whereas the Python CLI streams ranges to disk (RAM bounded by in-flight ranges).
-  The `MemoryGate` bounds concurrent in-flight ranges, not the output buffer.
+  bounding; available on both `download` and recursive `download-path`). The CLI
+  download path now also streams to disk with bounded RAM (see Unreleased),
+  matching the Python CLI; the in-memory `downloadRangedToMemory` remains for
+  consumers that want the bytes in memory.
 
 ## 0.1.0 — initial publish-prep release
 
