@@ -57,6 +57,7 @@ jobs:
             test/upload_test.dart \
             test/multipart_upload_test.dart \
             test/ranged_download_test.dart \
+            test/ranged_download_to_disk_test.dart \
             test/cli_test.dart \
             test/auth_test.dart \
             test/api_test.dart \

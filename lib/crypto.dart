@@ -363,6 +363,32 @@ Uint8List decryptStreamAt(
   return cipher.process(encryptedData);
 }
 
+/// Build an AES-256-CTR stream cipher positioned at a 16-byte-aligned byte
+/// [offset] into the file, for INCREMENTAL decryption: feed successive
+/// ciphertext chunks through `cipher.process(chunk)` and the keystream advances
+/// across calls (so the concatenated output equals a one-shot [decryptStreamAt]
+/// of the whole range). Used by the streaming-to-disk download path so peak
+/// memory stays bounded by the chunk size, not the file size.
+///
+/// [offset] MUST be a multiple of 16 (the AES block size). Returns a configured
+/// pointycastle [StreamCipher].
+StreamCipher downloadDecryptor(
+  String mnemonic,
+  String bucketId,
+  String fileIndexHex, {
+  int offset = 0,
+}) {
+  if (offset % 16 != 0) {
+    throw ArgumentError('CTR seek offset must be 16-byte aligned, got $offset');
+  }
+  final index = Uint8List.fromList(HEX.decode(fileIndexHex));
+  final fileKey = generateFileKey(mnemonic, bucketId, index);
+  final iv = index.sublist(0, 16);
+  final seekedIv = offset == 0 ? iv : advanceCtrIv(iv, offset ~/ 16);
+  return CTRStreamCipher(AESEngine())
+    ..init(false, ParametersWithIV(KeyParameter(fileKey), seekedIv));
+}
+
 Map<String, dynamic> encryptStream(
   Uint8List data,
   String mnemonic,

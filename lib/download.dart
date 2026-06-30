@@ -126,6 +126,199 @@ Future<Uint8List?> downloadRangedToMemory(
   return out;
 }
 
+/// NATIVE disk-streaming ranged download (peak RAM bounded by in-flight ranges,
+/// NOT the file size — unlike [downloadRangedToMemory]). Fetches N
+/// 16-byte-aligned ranges concurrently, CTR-decrypts each at its offset, and
+/// writes positionally into [raf]. Returns false if the endpoint ignores Range
+/// on the 1-byte probe (caller falls back to a sequential stream).
+///
+/// Cross-platform: uses only `dart:io` [io.RandomAccessFile] sync seek+write,
+/// which is atomic on Dart's single-threaded event loop (no `await` between
+/// `setPositionSync` and `writeFromSync`, so concurrent range workers can't
+/// interleave a write). Workers COLLECT errors rather than throwing, so the
+/// pool always drains fully before the caller closes [raf] (no dangling writes
+/// to a closed handle — [inxt_upload.runBoundedPool] does not cancel siblings
+/// on the first error).
+Future<bool> downloadRangedToFile(
+  String url,
+  int fileSize,
+  String mnemonic,
+  String bucketId,
+  String fileIndexHex,
+  io.RandomAccessFile raf, {
+  int? chunkWorkers,
+  int? partSize,
+}) async {
+  final pSize = partSize ?? downloadPartSize;
+  final nParts = (fileSize / pSize).ceil();
+
+  // Cheap 1-byte probe: bail to the sequential path before any real work.
+  final probe = await http.get(Uri.parse(url), headers: {'Range': 'bytes=0-0'});
+  if (probe.statusCode != 206) return false;
+
+  raf.setPositionSync(0);
+  await raf.truncate(fileSize);
+
+  final errors = <Object>[];
+  final workers = (chunkWorkers ?? downloadChunkWorkers).clamp(1, nParts);
+  await inxt_upload.runBoundedPool<int>(
+    List<int>.generate(nParts, (i) => i),
+    workers,
+    (i) async {
+      if (errors.isNotEmpty) return; // stop dispatching once one range failed
+      final start = i * pSize;
+      final end = (start + pSize < fileSize) ? start + pSize : fileSize;
+      final length = end - start;
+      await inxt_upload.MemoryGate.acquire(length);
+      try {
+        final resp = await http
+            .get(Uri.parse(url), headers: {'Range': 'bytes=$start-${end - 1}'});
+        if (resp.statusCode != 206) {
+          errors.add(_RangeNotSupported());
+          return;
+        }
+        final plain = inxt_crypto.decryptStreamAt(
+            resp.bodyBytes, mnemonic, bucketId, fileIndexHex, start);
+        final n = plain.length < length ? plain.length : length;
+        // Atomic seek+write: both sync, no await between → no interleaving.
+        raf.setPositionSync(start);
+        raf.writeFromSync(plain, 0, n);
+      } catch (e) {
+        errors.add(e);
+      } finally {
+        inxt_upload.MemoryGate.release(length);
+      }
+    },
+  );
+
+  if (errors.isNotEmpty) {
+    final first = errors.first;
+    if (first is _RangeNotSupported) return false; // → sequential fallback
+    throw Exception('Ranged download failed: $first');
+  }
+  return true;
+}
+
+/// Single streaming GET decrypted chunk-by-chunk straight to [file] via an
+/// incremental AES-CTR cipher — peak RAM is one network chunk, not the whole
+/// file. The disk-path counterpart of [_sequentialDownloadAndDecrypt].
+Future<void> _sequentialStreamToFile(
+  String url,
+  int fileSize,
+  String mnemonic,
+  String bucketId,
+  String fileIndexHex,
+  io.File file,
+) async {
+  final client = http.Client(); // honors runWithClient zone (testable)
+  try {
+    final response = await client.send(http.Request('GET', Uri.parse(url)));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to download file: ${response.statusCode}');
+    }
+    final cipher =
+        inxt_crypto.downloadDecryptor(mnemonic, bucketId, fileIndexHex);
+    final raf = await file.open(mode: io.FileMode.write);
+    try {
+      await for (final chunk in response.stream) {
+        final bytes = chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
+        final plain = cipher.process(bytes);
+        raf.writeFromSync(plain);
+      }
+      raf.truncateSync(fileSize); // defensive: AES-CTR adds no padding
+    } finally {
+      await raf.close();
+    }
+  } finally {
+    client.close();
+  }
+}
+
+/// NATIVE disk download orchestrator used by the CLI (`download` /
+/// `download-path`). Resolves metadata + links, then writes the decrypted file
+/// to [destinationPath] with peak RAM bounded regardless of file size: parallel
+/// ranged-to-disk when [rangedDownload] is on and the file is large (falling
+/// back to a single streaming GET if the server ignores Range), otherwise a
+/// single streaming GET. Returns metadata (`filename`, `size`,
+/// `modificationTime`) — NOT the bytes; the caller applies timestamps.
+///
+/// [destinationPath] may be a directory (the remote filename is appended), a
+/// full file path (used verbatim), or null (remote filename in the CWD). This
+/// is the bounded-memory analogue of [downloadFile]; the in-memory functions
+/// ([downloadFile] / [downloadFileBytes]) are unchanged for consumers (WebDAV,
+/// Flutter/Web) that need the bytes in memory.
+Future<Map<String, dynamic>> downloadFileToDisk(
+  String driveApiUrl,
+  String networkUrl,
+  String? bearerToken,
+  String mnemonic,
+  String fileUuid,
+  String? destinationPath,
+  String bridgeUser,
+  String userIdForAuth,
+) async {
+  final metadata =
+      await inxt_api.getFileMetadata(driveApiUrl, bearerToken, fileUuid);
+  final bucketId = metadata['bucket'] as String;
+  final networkFileId = metadata['fileId'] as String;
+  final fileSize = metadata['size'] is int
+      ? metadata['size'] as int
+      : int.tryParse(metadata['size'].toString()) ?? 0;
+  final fileName = (metadata['plainName'] ?? 'file') as String;
+  final fileType = (metadata['type'] ?? '') as String;
+  final filename = fileType.isNotEmpty ? '$fileName.$fileType' : fileName;
+  final modificationTime =
+      (metadata['modificationTime'] ?? metadata['updatedAt']) as String?;
+
+  // Resolve the final on-disk path.
+  String finalPath;
+  if (destinationPath == null) {
+    finalPath = filename;
+  } else if (io.FileSystemEntity.typeSync(destinationPath) ==
+      io.FileSystemEntityType.directory) {
+    finalPath = p.join(destinationPath, filename);
+  } else {
+    finalPath = destinationPath;
+  }
+  final file = io.File(finalPath);
+  await file.parent.create(recursive: true);
+
+  final bridgePass = inxt_auth.computeBridgePass(userIdForAuth);
+  final links = await getDownloadLinks(
+      networkUrl, bucketId, networkFileId, bridgeUser, bridgePass);
+  final downloadUrl = links['shards'][0]['url'] as String;
+  final fileIndexHex = links['index'] as String;
+
+  var done = false;
+  if (rangedDownload && fileSize >= rangedDownloadMinSize) {
+    print('   ⛓️  Ranged download: '
+        '${(fileSize / downloadPartSize).ceil()} range(s)');
+    final raf = await file.open(mode: io.FileMode.write);
+    try {
+      done = await downloadRangedToFile(
+          downloadUrl, fileSize, mnemonic, bucketId, fileIndexHex, raf);
+    } on _RangeNotSupported {
+      done = false;
+    } finally {
+      await raf.close();
+    }
+    if (!done) {
+      print(
+          '   ↩️  Server ignored Range (HTTP 200) — single sequential stream');
+    }
+  }
+  if (!done) {
+    await _sequentialStreamToFile(
+        downloadUrl, fileSize, mnemonic, bucketId, fileIndexHex, file);
+  }
+
+  return {
+    'filename': filename,
+    'size': fileSize,
+    'modificationTime': modificationTime,
+  };
+}
+
 /// GET /buckets/{bucketId}/files/{fileId}/info with network basic
 /// auth. Returns `{shards: [{url, ...}], index, ...}` — the caller
 /// uses `shards[0].url` as the download URL and `index` as the
@@ -441,19 +634,19 @@ Future<void> downloadPath(
       return;
     }
 
-    final downloadResult = await downloadFile(
+    // Bounded-memory disk download (parallel ranged when enabled + large,
+    // else a single streaming GET). Writes straight to disk — peak RAM is the
+    // chunk/range size, not the file size.
+    final downloadResult = await downloadFileToDisk(
       driveApiUrl,
       networkUrl,
       bearerToken,
       mnemonic,
       itemInfo['uuid'] as String,
+      localPath,
       bridgeUser,
       userIdForAuth,
-      preserveTimestamps: preserveTimestamps,
     );
-
-    await localFile.parent.create(recursive: true);
-    await localFile.writeAsBytes(downloadResult['data'] as Uint8List);
 
     if (preserveTimestamps && downloadResult['modificationTime'] != null) {
       try {
@@ -582,19 +775,16 @@ Future<void> downloadPath(
 
       try {
         print('   -> Downloading: ${p.basename(localPath)}');
-        final downloadResult = await downloadFile(
+        final downloadResult = await downloadFileToDisk(
           driveApiUrl,
           networkUrl,
           bearerToken,
           mnemonic,
           remoteUuid,
+          localPath,
           bridgeUser,
           userIdForAuth,
-          preserveTimestamps: preserveTimestamps,
         );
-
-        await localFile.parent.create(recursive: true);
-        await localFile.writeAsBytes(downloadResult['data'] as Uint8List);
 
         final modTimeStr =
             (downloadResult['modificationTime'] ?? remoteModTime) as String?;

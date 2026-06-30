@@ -1845,16 +1845,16 @@ class InternxtCLI {
 
       print('⬇️  Downloading file: $fileUuid\n');
 
-      final result =
-          await client.downloadFile(fileUuid, bridgeUser, userIdForAuth);
-      final data = result['data'] as Uint8List;
+      // Bounded-memory disk download: streams straight to the remote filename
+      // in the CWD (parallel ranged when --ranged + large), so peak RAM is the
+      // range/chunk size rather than the whole file.
+      final result = await client.downloadFileToDisk(
+          fileUuid, null, bridgeUser, userIdForAuth);
       final filename = result['filename'] as String;
-
-      final file = io.File(filename); // <-- FIX: Use io.File
-      await file.writeAsBytes(data);
+      final size = result['size'] as int;
 
       print('\n✅ Downloaded successfully: $filename');
-      print('📊 Size: ${formatSize(data.length)}');
+      print('📊 Size: ${formatSize(size)}');
     } catch (e) {
       io.stderr.writeln('❌ Error: $e');
       io.exit(1);
@@ -2362,6 +2362,27 @@ class InternxtClient {
     String userIdForAuth,
   ) =>
       inxt_download.downloadFileStreamed(
+        driveApiUrl,
+        networkUrl,
+        newToken,
+        mnemonic!,
+        fileUuid,
+        destinationPath,
+        bridgeUser,
+        userIdForAuth,
+      );
+
+  /// Bounded-memory disk download (parallel ranged when enabled + large, else a
+  /// single streaming GET). Writes to [destinationPath] (a dir, a file path, or
+  /// null = remote name in CWD) and returns metadata — peak RAM is the
+  /// range/chunk size, not the file size.
+  Future<Map<String, dynamic>> downloadFileToDisk(
+    String fileUuid,
+    String? destinationPath,
+    String bridgeUser,
+    String userIdForAuth,
+  ) =>
+      inxt_download.downloadFileToDisk(
         driveApiUrl,
         networkUrl,
         newToken,
