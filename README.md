@@ -1,6 +1,6 @@
 # Internxt CLI - Dart Edition 🎯
 
-[](https://www.gnu.org/licenses/agpl-3.0)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
 A command-line interface (CLI) for interacting with Internxt cloud storage, implemented in Dart.
 
@@ -343,4 +343,4 @@ The live tests confine all operations to a sentinel folder
 
 ## 📄 License
 
-This project is licensed under the **GNU Affero General Public License v3.0**. See the `LICENSE` file for details.
+This project is licensed under the **Mozilla Public License 2.0 (MPL-2.0)** — weak copyleft: modifications to these files stay open, but you can use it in any app (including proprietary). See the [LICENSE](LICENSE) file for details.

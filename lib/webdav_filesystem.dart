@@ -115,8 +115,9 @@ class InternxtFileSink implements io.IOSink {
       final remoteParentPath = p.dirname(remotePath);
       final remoteFilename = p.basename(remotePath);
       final creds = await client.config.readCredentials();
-      if (creds == null)
+      if (creds == null) {
         throw io.FileSystemException('Not logged in', remotePath);
+      }
 
       final parentResolved = await client.resolvePath(remoteParentPath);
       if (parentResolved['type'] != 'folder') {
@@ -392,6 +393,7 @@ class InternxtFileSystem implements FileSystem {
       throw UnimplementedError('Links are not supported');
 
   String get pathSeparator => '/';
+  @override
   bool get isWatchSupported => false;
   Future<String> symbolicLinkTarget(String path) =>
       throw UnimplementedError('Links not supported');
@@ -584,8 +586,9 @@ class InternxtFile implements File {
     client.log('WebDAV: GET $path'); // <-- FIX
     try {
       final resolved = await client.resolvePath(path);
-      if (resolved['type'] != 'file')
+      if (resolved['type'] != 'file') {
         throw io.FileSystemException('Path is not a file', path);
+      }
 
       final creds = await client.config.readCredentials();
       if (creds == null) throw io.FileSystemException('Not logged in', path);

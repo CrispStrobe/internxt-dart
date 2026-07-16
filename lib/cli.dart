@@ -1027,10 +1027,10 @@ class InternxtCLI {
       final itemUuid = itemToRestore['uuid'] as String;
       final itemType = itemToRestore['type'] as String;
 
-      print("✅ Found unique ${itemType}: $itemNameInTrash ($itemUuid)");
+      print("✅ Found unique $itemType: $itemNameInTrash ($itemUuid)");
 
       final prompt =
-          '❓ Restore ${itemType} "$itemNameInTrash" ($itemUuid) to "$destinationPath"?';
+          '❓ Restore $itemType "$itemNameInTrash" ($itemUuid) to "$destinationPath"?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
         io.exit(0);
@@ -1441,7 +1441,7 @@ class InternxtCLI {
       final itemType = itemInfo['type'] as String;
       final oldName = (itemInfo['metadata'] as Map)['name'] ?? path;
 
-      final prompt = '❓ Rename ${itemType} "$oldName" to "$newName"?';
+      final prompt = '❓ Rename $itemType "$oldName" to "$newName"?';
       if (!_confirmAction(prompt, force)) {
         print("❌ Cancelled");
         io.exit(0);
@@ -1831,7 +1831,7 @@ class InternxtCLI {
       final batchId = config.generateBatchId('upload', sources, targetPath);
       print("🔄 Batch ID: $batchId");
 
-      var batchState = await config.loadBatchState(batchId);
+      final batchState = await config.loadBatchState(batchId);
       if (batchState != null) {
         print(
             "🔄 DEBUG: Resuming existing batch with ${batchState['tasks'].length} tasks.");
@@ -1861,8 +1861,9 @@ class InternxtCLI {
 
       // Step 2: Optimization - Perform batch existence check (Go rclone style)
       // This prevents thousands of individual resolvePath calls
-      if (debugMode)
+      if (debugMode) {
         print("🔍 [DEBUG] Pre-scanning target folder for existing items...");
+      }
       // (Implementation note: In a full sync, you'd collect source names first and send them to checkFilesExistence)
 
       try {
@@ -1947,7 +1948,7 @@ class InternxtCLI {
           'download', [remotePath], localDestination ?? '.');
       print("🔄 Batch ID: $batchId");
 
-      var batchState = await config.loadBatchState(batchId);
+      final batchState = await config.loadBatchState(batchId);
 
       print('⬇️  Downloading from path: $remotePath');
 
@@ -2172,7 +2173,7 @@ class InternxtCLI {
         return;
       }
 
-      print("\n" + "=" * 60);
+      print("\n${"=" * 60}");
       if (folders.isNotEmpty) {
         print("📂 Folders (${folders.length}):");
         for (var folder in folders) {
@@ -2236,7 +2237,7 @@ class InternxtCLI {
         return;
       }
 
-      print("\n" + "=" * 60);
+      print("\n${"=" * 60}");
       print("📄 Found Files (${results.length}):");
       for (var file in results) {
         final size = formatSize(file['size'] ?? 0);
@@ -2269,7 +2270,7 @@ class InternxtCLI {
 
       await client.printTree(
         path,
-        (line) => print(line),
+        print,
         maxDepth: maxDepth,
       );
 

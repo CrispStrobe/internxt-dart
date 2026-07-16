@@ -287,8 +287,9 @@ void main() {
       out.addAll(cipher.process(ciphertext.sublist(i, end)));
       i = end;
     }
-    if (i < ciphertext.length)
+    if (i < ciphertext.length) {
       out.addAll(cipher.process(ciphertext.sublist(i)));
+    }
     expect(Uint8List.fromList(out), equals(plaintext));
   });
 

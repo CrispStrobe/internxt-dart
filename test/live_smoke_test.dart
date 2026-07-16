@@ -147,8 +147,8 @@ void main() {
   late final ConfigService config;
   late final InternxtClient client;
   late final Directory tmpRoot;
-  Map<String, dynamic>? _creds;
-  String? _sentinelUuid;
+  Map<String, dynamic>? creds;
+  String? sentinelUuid;
 
   setUpAll(() async {
     print('\n🔑 LIVE: Logging in as $email...');
@@ -162,7 +162,7 @@ void main() {
         equals(email.toLowerCase()));
     expect(loginResult['token'], isA<String>());
     expect(loginResult['mnemonic'], isA<String>());
-    _creds = loginResult;
+    creds = loginResult;
     await config.saveCredentials(loginResult);
     client.setAuth(loginResult);
     print(
@@ -171,8 +171,8 @@ void main() {
     // Create sentinel folder
     print('📁 LIVE: Creating sentinel folder $_sentinelPath');
     final folderInfo = await client.createFolderRecursive(_sentinelPath);
-    _sentinelUuid = folderInfo['uuid'] as String;
-    print('✅ LIVE: Sentinel uuid=${_sentinelUuid!.substring(0, 8)}...');
+    sentinelUuid = folderInfo['uuid'] as String;
+    print('✅ LIVE: Sentinel uuid=${sentinelUuid!.substring(0, 8)}...');
 
     tmpRoot = Directory.systemTemp.createTempSync('inxt-dart-live-tests-');
   });
@@ -180,9 +180,9 @@ void main() {
   tearDownAll(() async {
     // Trash the sentinel folder
     print('\n🧹 LIVE: Cleaning up sentinel folder $_sentinelPath');
-    if (_sentinelUuid != null) {
+    if (sentinelUuid != null) {
       try {
-        await client.trashItems(_sentinelUuid!, 'folder');
+        await client.trashItems(sentinelUuid!, 'folder');
         print('✅ LIVE: Cleanup successful');
       } catch (e) {
         print(
@@ -200,7 +200,7 @@ void main() {
 
   group('read-only smoke', () {
     liveTest('login + creds shape', () {
-      final c = _creds!;
+      final c = creds!;
       expect(c['email'], isNotNull);
       expect(c['userId'], isA<String>());
       expect(c['rootFolderId'], isA<String>());
@@ -210,7 +210,7 @@ void main() {
     });
 
     liveTest('list root folder', () async {
-      final rootUuid = _creds!['rootFolderId'] as String;
+      final rootUuid = creds!['rootFolderId'] as String;
       final folders = await client.listFolders(rootUuid);
       final files = await client.listFolderFiles(rootUuid);
       expect(folders, isA<List<Map<String, dynamic>>>());
@@ -230,10 +230,10 @@ void main() {
     final result = await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -247,8 +247,8 @@ void main() {
     print('📥 LIVE: Downloading...');
     final downloadResult = await client.downloadFile(
       fileUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
 
     final downloaded = downloadResult['data'] as Uint8List;
@@ -264,7 +264,7 @@ void main() {
   liveTest('resolve sentinel path from cold cache', () async {
     final resolved = await client.resolvePath(_sentinelPath);
     expect(resolved['type'], equals('folder'));
-    expect(resolved['uuid'], equals(_sentinelUuid));
+    expect(resolved['uuid'], equals(sentinelUuid));
   });
 
   liveTest('resolve missing path throws', () async {
@@ -309,10 +309,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$before.txt',
     );
@@ -346,8 +346,8 @@ void main() {
       _sentinelPath,
       srcSub['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -442,10 +442,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -480,8 +480,8 @@ void main() {
         folderPath,
         folderUuid,
         'overwrite',
-        bridgeUser: _creds!['bridgeUser'] as String,
-        userIdForAuth: _creds!['userId'].toString(),
+        bridgeUser: creds!['bridgeUser'] as String,
+        userIdForAuth: creds!['userId'].toString(),
         preserveTimestamps: false,
         remoteFileName: '$name.txt',
       );
@@ -514,17 +514,17 @@ void main() {
     final result = await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$unicodeStem.txt',
     );
     expect(result, equals('uploaded'));
 
     // Listing must surface the unicode name unchanged.
-    final files = await client.listFolderFiles(_sentinelUuid!);
+    final files = await client.listFolderFiles(sentinelUuid!);
     final names = files.map((f) => f['name'] as String?).toList();
     expect(names, contains(unicodeStem),
         reason: 'unicode plainName not preserved on remote: $names');
@@ -536,8 +536,8 @@ void main() {
     final fileUuid = resolved['uuid'] as String;
     final downloadResult = await client.downloadFile(
       fileUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     expect(downloadResult['data'] as Uint8List, equals(w.payload));
   });
@@ -549,10 +549,10 @@ void main() {
     final result = await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: name,
     );
@@ -564,8 +564,8 @@ void main() {
     final fileUuid = resolved['uuid'] as String;
     final downloadResult = await client.downloadFile(
       fileUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     expect(downloadResult['data'] as Uint8List, equals(w.payload));
   });
@@ -585,10 +585,10 @@ void main() {
     final result = await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.bin',
     );
@@ -600,8 +600,8 @@ void main() {
     final fileUuid = resolved['uuid'] as String;
     final downloadResult = await client.downloadFile(
       fileUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     final downloaded = downloadResult['data'] as Uint8List;
     expect(downloaded.length, equals(size));
@@ -642,10 +642,10 @@ void main() {
     final result = await client.uploadSingleItem(
       file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.bin',
     );
@@ -657,8 +657,8 @@ void main() {
     final fileUuid = resolved['uuid'] as String;
     final downloadResult = await client.downloadFile(
       fileUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     final downloaded = downloadResult['data'] as Uint8List;
     expect(downloaded.length, equals(size));
@@ -672,8 +672,8 @@ void main() {
     try {
       final rangedResult = await client.downloadFile(
         fileUuid,
-        _creds!['bridgeUser'] as String,
-        _creds!['userId'].toString(),
+        creds!['bridgeUser'] as String,
+        creds!['userId'].toString(),
       );
       final rangedBytes = rangedResult['data'] as Uint8List;
       expect(rangedBytes, equals(payload), reason: 'ranged download mismatch');
@@ -701,10 +701,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$uniqueToken.txt',
     );
@@ -777,10 +777,10 @@ void main() {
       await client.uploadSingleItem(
         w.file,
         _sentinelPath,
-        _sentinelUuid!,
+        sentinelUuid!,
         'overwrite',
-        bridgeUser: _creds!['bridgeUser'] as String,
-        userIdForAuth: _creds!['userId'].toString(),
+        bridgeUser: creds!['bridgeUser'] as String,
+        userIdForAuth: creds!['userId'].toString(),
         preserveTimestamps: false,
         remoteFileName: '$name.$probeExt',
       );
@@ -794,10 +794,10 @@ void main() {
     await client.uploadSingleItem(
       controlW.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$controlName.unrelated',
     );
@@ -870,8 +870,8 @@ void main() {
         remoteDir,
         folderInfo['uuid'] as String,
         'overwrite',
-        bridgeUser: _creds!['bridgeUser'] as String,
-        userIdForAuth: _creds!['userId'].toString(),
+        bridgeUser: creds!['bridgeUser'] as String,
+        userIdForAuth: creds!['userId'].toString(),
         preserveTimestamps: false,
         remoteFileName: remoteFileName,
       );
@@ -885,8 +885,8 @@ void main() {
       final fileUuid = entry.value;
       final downloadResult = await client.downloadFile(
         fileUuid,
-        _creds!['bridgeUser'] as String,
-        _creds!['userId'].toString(),
+        creds!['bridgeUser'] as String,
+        creds!['userId'].toString(),
       );
       final downloaded = downloadResult['data'] as Uint8List;
       expect(downloaded, equals(treePayloads[relPath]),
@@ -921,8 +921,8 @@ void main() {
         parentPath,
         parentUuid,
         'overwrite',
-        bridgeUser: _creds!['bridgeUser'] as String,
-        userIdForAuth: _creds!['userId'].toString(),
+        bridgeUser: creds!['bridgeUser'] as String,
+        userIdForAuth: creds!['userId'].toString(),
         preserveTimestamps: false,
         remoteFileName: '$unique.txt',
       );
@@ -977,8 +977,8 @@ void main() {
       fooPath,
       fooInfo['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1013,8 +1013,8 @@ void main() {
       testDir,
       dirInfo['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -1028,8 +1028,8 @@ void main() {
       testDir,
       dirInfo['uuid'] as String,
       'skip',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -1042,8 +1042,8 @@ void main() {
         reason: 'uuid changed despite skip');
     final downloadResult = await client.downloadFile(
       initialUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     expect(downloadResult['data'] as Uint8List, equals(wV1.payload),
         reason: 'bytes changed despite skip');
@@ -1060,8 +1060,8 @@ void main() {
       testDir,
       dirInfo['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1076,8 +1076,8 @@ void main() {
       testDir,
       dirInfo['uuid'] as String,
       'safety_pattern',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1099,13 +1099,13 @@ void main() {
     // the original path.
     final newDl = await client.downloadFile(
       after['uuid'] as String,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     final bakDl = await client.downloadFile(
       bak['uuid'] as String,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     expect(newDl['data'] as Uint8List, equals(wV2.payload),
         reason: 'new file should contain v2 bytes');
@@ -1125,8 +1125,8 @@ void main() {
       testDir,
       dirInfo['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -1140,8 +1140,8 @@ void main() {
       testDir,
       dirInfo['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$name.txt',
     );
@@ -1155,8 +1155,8 @@ void main() {
         reason: 'uuid unchanged after overwrite (expected new uuid)');
     final downloadResult = await client.downloadFile(
       newUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     final downloaded = downloadResult['data'] as Uint8List;
     expect(downloaded, equals(wV2.payload),
@@ -1178,10 +1178,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1261,8 +1261,8 @@ void main() {
         folderInfo['path'] as String,
         folderInfo['uuid'] as String,
         'overwrite',
-        bridgeUser: _creds!['bridgeUser'] as String,
-        userIdForAuth: _creds!['userId'].toString(),
+        bridgeUser: creds!['bridgeUser'] as String,
+        userIdForAuth: creds!['userId'].toString(),
         preserveTimestamps: false,
         remoteFileName: '$stem.txt',
       );
@@ -1308,8 +1308,8 @@ void main() {
       src['path'] as String,
       src['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1351,8 +1351,8 @@ void main() {
       dst['path'] as String,
       dst['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1366,8 +1366,8 @@ void main() {
       src['path'] as String,
       src['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1405,8 +1405,8 @@ void main() {
       dst['path'] as String,
       dst['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1420,8 +1420,8 @@ void main() {
       src['path'] as String,
       src['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1478,8 +1478,8 @@ void main() {
         preserveTimestamps: false,
         include: const [],
         exclude: const [],
-        bridgeUser: _creds!['bridgeUser'] as String,
-        userIdForAuth: _creds!['userId'].toString(),
+        bridgeUser: creds!['bridgeUser'] as String,
+        userIdForAuth: creds!['userId'].toString(),
         batchId: batchId,
         initialBatchState: null,
         saveStateCallback: (state) async {
@@ -1531,10 +1531,10 @@ void main() {
     final result = await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1566,8 +1566,8 @@ void main() {
       preserveTimestamps: false,
       include: const [],
       exclude: const [],
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       batchId: batchId,
       initialBatchState: null,
       saveStateCallback: (state) async {
@@ -1623,8 +1623,8 @@ void main() {
       preserveTimestamps: false,
       include: const [],
       exclude: const [],
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       batchId: batchId,
       initialBatchState: null,
       saveStateCallback: (state) async {
@@ -1656,8 +1656,8 @@ void main() {
           reason: '$fileName missing from remote listing $remoteByName');
       final downloadResult = await client.downloadFile(
         fileUuid!,
-        _creds!['bridgeUser'] as String,
-        _creds!['userId'].toString(),
+        creds!['bridgeUser'] as String,
+        creds!['userId'].toString(),
       );
       expect(downloadResult['data'] as Uint8List, equals(original),
           reason: 'bytes mismatch for $fileName');
@@ -1703,10 +1703,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1752,8 +1752,8 @@ void main() {
       srcInfo['path'] as String,
       srcInfo['uuid'] as String,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1767,8 +1767,8 @@ void main() {
     await client.copyItem(
       originalUuid,
       dstInfo['uuid'] as String,
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
     );
 
     // Original still in src.
@@ -1787,13 +1787,13 @@ void main() {
     // Both UUIDs decrypt to the same payload.
     final origDl = await client.downloadFile(
       originalUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     final copyDl = await client.downloadFile(
       copyUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     expect(origDl['data'] as Uint8List, equals(w.payload));
     expect(copyDl['data'] as Uint8List, equals(w.payload));
@@ -1806,10 +1806,10 @@ void main() {
     await client.uploadSingleItem(
       wV1.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1825,8 +1825,8 @@ void main() {
     await client.updateFile(
       fileUuid,
       File(v2Path),
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
     );
 
     // Critical invariant: same uuid resolves to the new bytes.
@@ -1835,8 +1835,8 @@ void main() {
         reason: 'updateFile changed the uuid (expected in-place)');
     final downloadResult = await client.downloadFile(
       fileUuid,
-      _creds!['bridgeUser'] as String,
-      _creds!['userId'].toString(),
+      creds!['bridgeUser'] as String,
+      creds!['userId'].toString(),
     );
     final downloaded = downloadResult['data'] as Uint8List;
     expect(downloaded, equals(v2Bytes),
@@ -1861,10 +1861,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );
@@ -1923,10 +1923,10 @@ void main() {
     await client.uploadSingleItem(
       w.file,
       _sentinelPath,
-      _sentinelUuid!,
+      sentinelUuid!,
       'overwrite',
-      bridgeUser: _creds!['bridgeUser'] as String,
-      userIdForAuth: _creds!['userId'].toString(),
+      bridgeUser: creds!['bridgeUser'] as String,
+      userIdForAuth: creds!['userId'].toString(),
       preserveTimestamps: false,
       remoteFileName: '$stem.txt',
     );

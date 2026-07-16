@@ -44,7 +44,7 @@ void main() {
   });
 
   group('InternxtCLI.buildMovePlan (Phase 7.3)', () {
-    Map<String, dynamic> _src(
+    Map<String, dynamic> src(
         String srcPath, String type, String uuid, String leaf) {
       return {'srcPath': srcPath, 'type': type, 'uuid': uuid, 'leaf': leaf};
     }
@@ -52,8 +52,8 @@ void main() {
     test('plain move: no conflicts, no already-in-target, all queued', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
-          _src('/Docs/b.txt', 'file', 'u2', 'b.txt'),
+          src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
+          src('/Docs/b.txt', 'file', 'u2', 'b.txt'),
         ],
         targetExisting: const {},
         onConflict: 'skip',
@@ -67,8 +67,8 @@ void main() {
     test('skips items whose parent is already the target folder', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/Archive/already.txt', 'file', 'u1', 'already.txt'),
-          _src('/Docs/move-me.txt', 'file', 'u2', 'move-me.txt'),
+          src('/Archive/already.txt', 'file', 'u1', 'already.txt'),
+          src('/Docs/move-me.txt', 'file', 'u2', 'move-me.txt'),
         ],
         targetExisting: const {},
         onConflict: 'skip',
@@ -84,8 +84,8 @@ void main() {
     test('onConflict=skip: target collisions become skips', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
-          _src('/Docs/b.txt', 'file', 'u2', 'b.txt'),
+          src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
+          src('/Docs/b.txt', 'file', 'u2', 'b.txt'),
         ],
         targetExisting: {
           'a.txt': {'type': 'file', 'uuid': 'existing-a'},
@@ -104,7 +104,7 @@ void main() {
         'existingUuid', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
+          src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
         ],
         targetExisting: {
           'a.txt': {'type': 'file', 'uuid': 'existing-a'},
@@ -121,7 +121,7 @@ void main() {
     test('onConflict=overwrite: refuses to overwrite a folder at target', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
+          src('/Docs/a.txt', 'file', 'u1', 'a.txt'),
         ],
         targetExisting: {
           'a.txt': {'type': 'folder', 'uuid': 'existing-folder'},
@@ -140,10 +140,10 @@ void main() {
         'overwrite', () {
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/Archive/in-target.txt', 'file', 'u0', 'in-target.txt'),
-          _src('/Docs/plain.txt', 'file', 'u1', 'plain.txt'),
-          _src('/Docs/conflict.txt', 'file', 'u2', 'conflict.txt'),
-          _src('/Docs/replace.txt', 'file', 'u3', 'replace.txt'),
+          src('/Archive/in-target.txt', 'file', 'u0', 'in-target.txt'),
+          src('/Docs/plain.txt', 'file', 'u1', 'plain.txt'),
+          src('/Docs/conflict.txt', 'file', 'u2', 'conflict.txt'),
+          src('/Docs/replace.txt', 'file', 'u3', 'replace.txt'),
         ],
         targetExisting: {
           'conflict.txt': {'type': 'file', 'uuid': 'old-conflict'},
@@ -166,7 +166,7 @@ void main() {
       // "/" causes the no-op skip.
       final r = InternxtCLI.buildMovePlan(
         expanded: [
-          _src('/foo.txt', 'file', 'u1', 'foo.txt'),
+          src('/foo.txt', 'file', 'u1', 'foo.txt'),
         ],
         targetExisting: const {},
         onConflict: 'skip',
