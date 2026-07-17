@@ -65,6 +65,25 @@ bool rangedDownload = false;
 
 class _RangeNotSupported implements Exception {}
 
+/// Trim decrypted bytes to the server-reported plaintext size.
+///
+/// Decryption yields at least `fileSize` bytes (CTR keeps length, but a
+/// padded/over-read shard can be longer), so the normal case slices off the
+/// tail. If the buffer is *shorter* than `fileSize` — a truncated or corrupt
+/// download, or a server that lied about the size — `sublist(0, fileSize)`
+/// would throw an opaque `RangeError`. Convert that into a clear failure so
+/// callers see "incomplete download" instead of a cryptic range message.
+Uint8List _trimToFileSize(Uint8List data, int fileSize) {
+  if (fileSize < 0) {
+    throw Exception('Invalid file size $fileSize reported by server');
+  }
+  if (data.length < fileSize) {
+    throw Exception(
+        'Incomplete download: got ${data.length} bytes, expected $fileSize');
+  }
+  return data.sublist(0, fileSize);
+}
+
 /// Sequential single-GET + one-shot CTR decrypt (the original download body).
 Future<Uint8List> _sequentialDownloadAndDecrypt(
   String url,
@@ -417,7 +436,7 @@ Future<Map<String, dynamic>> downloadFile(
   }
 
   return {
-    'data': decryptedData.sublist(0, fileSize),
+    'data': _trimToFileSize(decryptedData, fileSize),
     'filename': filename,
     'modificationTime': modificationTime,
     'preserveTimestamps': preserveTimestamps,
@@ -486,7 +505,7 @@ Future<Uint8List> downloadFileBytes(
       bucketId,
       fileIndexHex,
     );
-    return Uint8List.fromList(decryptedData.sublist(0, fileSize));
+    return Uint8List.fromList(_trimToFileSize(decryptedData, fileSize));
   } finally {
     if (ownsClient) client.close();
   }
@@ -550,7 +569,7 @@ Future<Map<String, dynamic>> downloadFileStreamed(
       fileIndexHex);
 
   final file = io.File(destinationPath);
-  await file.writeAsBytes(decryptedData.sublist(0, fileSize));
+  await file.writeAsBytes(_trimToFileSize(decryptedData, fileSize));
 
   return {
     'filename': fullFileName,

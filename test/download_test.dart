@@ -144,5 +144,67 @@ void main() {
         throwsA(predicate((e) => e.toString().contains('503'))),
       );
     });
+
+    test('truncated payload (size > actual bytes) fails cleanly, not RangeError',
+        () async {
+      // Server reports a larger size than the shard actually delivers —
+      // a truncated/corrupt download. `_trimToFileSize` must surface a
+      // clear "Incomplete download" error instead of an opaque RangeError
+      // from `sublist(0, fileSize)`.
+      final mnemonic = bip39.generateMnemonic();
+      const bucketId = '0123456789abcdef01234567';
+      final plaintext = Uint8List.fromList(List.generate(512, (i) => i % 256));
+      final enc = encryptStream(plaintext, mnemonic, bucketId);
+      final ciphertext = enc['data'] as Uint8List;
+      final indexHex = enc['index'] as String;
+      // Lie: claim the file is 4x the bytes we actually hand back.
+      final reportedSize = plaintext.length * 4;
+
+      final mock = MockClient.streaming((req, body) async {
+        if (req.url.path.endsWith('/files/test-uuid/meta')) {
+          return http.StreamedResponse(
+            Stream.value(utf8.encode(jsonEncode({
+              'size': reportedSize,
+              'bucket': bucketId,
+              'fileId': 'fid',
+              'plainName': 'test',
+              'type': 'bin',
+            }))),
+            200,
+          );
+        }
+        if (req.url.path.endsWith('/info')) {
+          return http.StreamedResponse(
+            Stream.value(utf8.encode(jsonEncode({
+              'shards': [
+                {'url': 'https://shards.test/payload'}
+              ],
+              'index': indexHex,
+            }))),
+            200,
+          );
+        }
+        if (req.url.toString() == 'https://shards.test/payload') {
+          return http.StreamedResponse(
+              Stream.value(ciphertext), 200, contentLength: ciphertext.length);
+        }
+        throw StateError('unexpected request: ${req.url}');
+      });
+
+      expect(
+        () => downloadFileBytes(
+          'https://drive.test',
+          'https://network.test',
+          'token',
+          mnemonic,
+          'test-uuid',
+          'bridge-user',
+          'user-id-for-auth',
+          httpClient: mock,
+        ),
+        throwsA(predicate((e) =>
+            e is! RangeError && e.toString().contains('Incomplete download'))),
+      );
+    });
   });
 }
