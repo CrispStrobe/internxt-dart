@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 — CLI secure credentials, rcat, bounded-memory downloads
 
 ### Added
 - **Secure credential input + at-rest encryption** for the CLI (parity with the
