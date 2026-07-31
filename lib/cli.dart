@@ -83,6 +83,10 @@ class InternxtCLI {
           help: 'Parallel multipart part PUTs / ranged-download GETs within a '
               'single large file (multipart default: 1; ranged download default: 4)',
           defaultsTo: '1')
+      ..addFlag('multipart',
+          help: 'Opt in to true S3 multipart for files >= 100 MiB '
+              '(default: one ordinary PUT)',
+          defaultsTo: false)
       ..addFlag('ranged',
           help: 'Download large files (>=100 MiB) as parallel byte ranges '
               '(falls back to a single GET if the server ignores Range)',
@@ -151,6 +155,7 @@ class InternxtCLI {
           await handleUpload(argResults);
           break;
         case 'rcat':
+          inxt_upload.multipartUploads = argResults['multipart'] as bool;
           inxt_upload.uploadChunkWorkers =
               (int.tryParse(argResults['chunk-workers'] as String? ?? '1') ?? 1)
                   .clamp(1, 1 << 30);
@@ -1824,7 +1829,8 @@ class InternxtCLI {
       final exclude = argResults['exclude'] as List<String>;
       final workers =
           int.tryParse(argResults['workers'] as String? ?? '4') ?? 4;
-      // Within-file multipart concurrency for single large files (>= 100 MiB).
+      // Multipart is opt-in; the default upload uses one ordinary PUT.
+      inxt_upload.multipartUploads = argResults['multipart'] as bool;
       inxt_upload.uploadChunkWorkers =
           (int.tryParse(argResults['chunk-workers'] as String? ?? '1') ?? 1)
               .clamp(1, 1 << 30);

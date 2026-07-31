@@ -223,15 +223,16 @@ const int maxFileSizeBytes = 20 * 1024 * 1024 * 1024; // 20 GB
 // WITHIN-FILE MULTIPART CONCURRENCY
 // =============================================================================
 //
-// A SINGLE large file (>= 100 MiB) is uploaded with true S3 multipart:
+// Multipart is an explicit opt-in because the current gateway stalls large
+// multipart sessions. The default path uses one ordinary presigned PUT for
+// every file size; tests and callers can opt in below.
 // its continuous AES-CTR ciphertext is sliced into 30 MB parts whose
 // PUTs run in parallel through `runBoundedPool` + `MemoryGate`. The
 // crypto stays sequential (one keystream produced by `encryptStream`);
 // only the network transfer is parallel. Mirrors the Python sibling's
 // `_perform_network_upload`.
 
-/// The gateway rejects multipart for files below this size; smaller
-/// files use a single pre-signed PUT. Mirrors `MULTIPART_MIN_SIZE`.
+/// Multipart eligibility floor when multipart is explicitly enabled.
 const int multipartMinSize = 100 * 1024 * 1024; // 100 MiB
 
 /// S3 multipart part size (drive-web uses 30 MB). Mirrors
@@ -247,17 +248,20 @@ const int maxMultiparts = 10000;
 /// option, which assigns [uploadChunkWorkers].
 const int defaultChunkWorkers = 1;
 
+/// Whether production uploads may use true S3 multipart. Disabled by default;
+/// the CLI `--multipart` flag enables it for explicit testing.
+bool multipartUploads = false;
+
 /// How many multipart part PUTs may be in flight at once for a SINGLE
 /// large file. Bytes in flight are additionally bounded by the memory
 /// gate. Set by the CLI; defaults to [defaultChunkWorkers].
 int uploadChunkWorkers = defaultChunkWorkers;
 
 /// Push already-encrypted [encryptedData] to the network and return the
-/// network file id: start → transfer → finish. Files whose ciphertext
-/// is >= [multipartMinSize] use true S3 multipart with parallel part
-/// PUTs (the CTR keystream is already continuous across [encryptedData],
-/// so slicing it into parts is correct); smaller files use a single
-/// PUT. The parts manifest is assembled BY INDEX regardless of
+/// network file id: start → transfer → finish. Multipart is disabled by
+/// default; when explicitly enabled, ciphertext >= [multipartMinSize] uses
+/// true S3 multipart with bounded part PUTs. Otherwise every size uses one
+/// ordinary PUT. The parts manifest is assembled BY INDEX regardless of
 /// completion order. Mirrors the Python sibling's `_perform_network_upload`.
 Future<String> pushEncryptedShard(
   String networkUrl,
@@ -271,13 +275,19 @@ Future<String> pushEncryptedShard(
   int? chunkWorkers,
   int? partSize,
   int? multipartMin,
+  bool? multipart,
 }) async {
   final size = encryptedData.length;
   // partSize/multipartMin are test seams (mirroring the Python sibling's
   // patchable UPLOAD_PART_SIZE / MULTIPART_MIN_SIZE); production passes
   // neither and gets the protocol defaults.
   final minSize = multipartMin ?? multipartMinSize;
-  final useMultipart = size >= minSize;
+  // Supplying multipartMin is the existing test seam and therefore explicitly
+  // opts tests into the multipart branch. Production callers use the global
+  // switch or the explicit argument/CLI flag.
+  final multipartEnabled =
+      multipart ?? (multipartUploads || multipartMin != null);
+  final useMultipart = multipartEnabled && size >= minSize;
   // The shard content hash is over the WHOLE ciphertext (one keystream),
   // computed once — identical whether or not we split into parts.
   final encryptedHash = crypto.sha256.convert(encryptedData).toString();
