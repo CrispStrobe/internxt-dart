@@ -81,8 +81,8 @@ class InternxtCLI {
           defaultsTo: '4')
       ..addOption('chunk-workers',
           help: 'Parallel multipart part PUTs / ranged-download GETs within a '
-              'single large file (default: 4)',
-          defaultsTo: '4')
+              'single large file (multipart default: 1; ranged download default: 4)',
+          defaultsTo: '1')
       ..addFlag('ranged',
           help: 'Download large files (>=100 MiB) as parallel byte ranges '
               '(falls back to a single GET if the server ignores Range)',
@@ -137,9 +137,11 @@ class InternxtCLI {
           break;
         case 'download':
           inxt_download.rangedDownload = argResults['ranged'] as bool;
-          inxt_download.downloadChunkWorkers =
-              (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
-                  .clamp(1, 1 << 30);
+          final rangedWorkers = argResults.wasParsed('chunk-workers')
+              ? (int.tryParse(argResults['chunk-workers'] as String? ?? '1') ??
+                  1)
+              : 4;
+          inxt_download.downloadChunkWorkers = rangedWorkers.clamp(1, 1 << 30);
           await handleDownload(argResults.rest.sublist(1));
           break;
         case 'download-path':
@@ -150,7 +152,7 @@ class InternxtCLI {
           break;
         case 'rcat':
           inxt_upload.uploadChunkWorkers =
-              (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
+              (int.tryParse(argResults['chunk-workers'] as String? ?? '1') ?? 1)
                   .clamp(1, 1 << 30);
           await handleRcat(argResults);
           break;
@@ -1824,7 +1826,7 @@ class InternxtCLI {
           int.tryParse(argResults['workers'] as String? ?? '4') ?? 4;
       // Within-file multipart concurrency for single large files (>= 100 MiB).
       inxt_upload.uploadChunkWorkers =
-          (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
+          (int.tryParse(argResults['chunk-workers'] as String? ?? '1') ?? 1)
               .clamp(1, 1 << 30);
 
       // Generate Batch ID for resumability (Go/Python style)
@@ -1933,9 +1935,10 @@ class InternxtCLI {
       final exclude = argResults['exclude'] as List<String>;
       // Step B — parallel ranged downloads for large files (opt-in).
       inxt_download.rangedDownload = argResults['ranged'] as bool;
-      inxt_download.downloadChunkWorkers =
-          (int.tryParse(argResults['chunk-workers'] as String? ?? '4') ?? 4)
-              .clamp(1, 1 << 30);
+      final rangedWorkers = argResults.wasParsed('chunk-workers')
+          ? (int.tryParse(argResults['chunk-workers'] as String? ?? '1') ?? 1)
+          : 4;
+      inxt_download.downloadChunkWorkers = rangedWorkers.clamp(1, 1 << 30);
 
       final bridgeUser = creds['bridgeUser']?.toString();
       final userIdForAuth = creds['userId']?.toString();

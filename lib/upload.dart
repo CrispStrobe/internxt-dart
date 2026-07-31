@@ -242,9 +242,10 @@ const int uploadPartSize = 30 * 1024 * 1024; // 30 MB
 const int maxMultiparts = 10000;
 
 /// Default number of part PUTs in flight at once for a single large
-/// file. Overridable per-run via the CLI `--chunk-workers` option,
-/// which assigns [uploadChunkWorkers].
-const int defaultChunkWorkers = 4;
+/// file. Multipart uploads are serial by default for gateway reliability.
+/// Opt in to concurrency for testing/tuning via the CLI `--chunk-workers`
+/// option, which assigns [uploadChunkWorkers].
+const int defaultChunkWorkers = 1;
 
 /// How many multipart part PUTs may be in flight at once for a SINGLE
 /// large file. Bytes in flight are additionally bounded by the memory

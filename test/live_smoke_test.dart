@@ -612,7 +612,8 @@ void main() {
       timeout: const Timeout(Duration(minutes: 10)), () async {
     // REAL multipart: a file above the 100 MiB floor uses the new
     // pushEncryptedShard multipart path — one continuous AES-CTR keystream
-    // sliced into 30 MB parts, each PUT concurrently (uploadChunkWorkers),
+    // sliced into 30 MB parts, serial by default; concurrent PUTs remain
+    // available through uploadChunkWorkers for explicit testing,
     // finished with the UploadId + ETag parts manifest. This is the headline
     // validation for Step A on the live backend; ~110 MB of quota, cleaned up
     // to trash with the sentinel folder. Skippable via IXT_SKIP_MULTIPART=1
