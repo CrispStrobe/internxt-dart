@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.2 — Truncated-download guard, serial multipart uploads
+
+### Fixed
+- **Truncated downloads now fail with a clear error instead of a `RangeError`.**
+  All three download paths (`downloadFile`, `downloadFileBytes`,
+  `downloadFileStreamed`) trimmed the decrypted buffer to the server-reported
+  plaintext size via `sublist(0, fileSize)`. When a download was truncated or
+  corrupt — or the server reported a size larger than the bytes it delivered —
+  that threw an opaque `RangeError (end): Not in inclusive range`. The paths now
+  share a `_trimToFileSize` helper that rejects negative sizes and under-length
+  buffers with `Incomplete download: got N bytes, expected M`. Behavior is
+  unchanged when the buffer is complete.
+
+### Changed
+- **Multipart uploads default to serial part PUTs** (`--chunk-workers` default
+  `4` → `1`) for gateway reliability on single large files (>= 100 MiB). Pass
+  `--chunk-workers N` to restore parallel part uploads. Ranged *downloads* keep
+  their default of 4 workers — the option now only lowers the download default
+  when explicitly passed.
+
 ## 0.2.1 — CLI secure credentials, rcat, bounded-memory downloads
 
 ### Added
