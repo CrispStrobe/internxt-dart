@@ -145,7 +145,8 @@ void main() {
       );
     });
 
-    test('truncated payload (size > actual bytes) fails cleanly, not RangeError',
+    test(
+        'truncated payload (size > actual bytes) fails cleanly, not RangeError',
         () async {
       // Server reports a larger size than the shard actually delivers —
       // a truncated/corrupt download. `_trimToFileSize` must surface a
@@ -185,8 +186,8 @@ void main() {
           );
         }
         if (req.url.toString() == 'https://shards.test/payload') {
-          return http.StreamedResponse(
-              Stream.value(ciphertext), 200, contentLength: ciphertext.length);
+          return http.StreamedResponse(Stream.value(ciphertext), 200,
+              contentLength: ciphertext.length);
         }
         throw StateError('unexpected request: ${req.url}');
       });
