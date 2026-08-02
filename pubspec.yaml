@@ -6,7 +6,7 @@ description: >-
   resumable batch state, parallel-worker pool, memory-gated
   concurrency, and a WebDAV server bridging Internxt to standard
   file-system clients.
-version: 0.2.2
+version: 0.2.3
 homepage: https://github.com/CrispStrobe/internxt-dart
 repository: https://github.com/CrispStrobe/internxt-dart
 issue_tracker: https://github.com/CrispStrobe/internxt-dart/issues

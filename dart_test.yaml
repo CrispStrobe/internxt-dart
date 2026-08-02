@@ -1,0 +1,11 @@
+# Registers the `live` tag so `dart test --exclude-tags=live` actually
+# excludes the live suites. Without this file the tag is unknown, the
+# flag silently matches nothing, and the live tests run anyway — a slow
+# surprise for anyone with credentials in .env.
+#
+# The tag is deliberately NOT given a `skip:` here. The live tests
+# already self-skip when IXT_ACCOUNT/IXT_PWD are absent or
+# DART_TEST_SKIP_LIVE=1 is set, so a blanket skip would only add a
+# confusing `--run-skipped` requirement to run them at all.
+tags:
+  live:

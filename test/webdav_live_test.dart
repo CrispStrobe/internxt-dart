@@ -1,3 +1,6 @@
+@Tags(['live'])
+library;
+
 // Live WebDAV reliability test rig (Phase 7.10).
 //
 // Spins up the actual WebDAV server (shelf_dav over the

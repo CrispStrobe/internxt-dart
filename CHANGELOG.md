@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.3 — Stop masking real API errors as 401
+
+### Fixed
+- **HTTP error responses no longer come back as a bogus `401 No
+  authentication strategy detected`.** `makeRequest` threw its
+  `API Error: <code> - <body>` exception *inside* its own `try`, so the
+  function's `catch` swallowed it and retried — and that retry did not
+  forward `isNetworkAuth` / `networkUser` / `networkPass`. The retried
+  request therefore went out with no `Authorization` header at all, the
+  gateway answered 401, and after `maxRetries` that 401 was what surfaced.
+  The true error was destroyed.
+
+  Observed symptom: uploading past your storage quota reported
+  `401 No authentication strategy detected` instead of the real
+  `420 Max space used`. This affected **every** network-auth call that
+  received any 4xx — quota, not-found, conflict, rate-limit.
+
+  Error responses are now raised as a typed [`ApiException`] carrying
+  `statusCode` and `body`, and are no longer retried (the doc comment
+  always said 4xx were surfaced, not retried — the code disagreed). Both
+  retry paths now forward every auth argument they were called with.
+  `ApiException.toString()` is still exactly `API Error: <code> - <body>`,
+  so existing callers that string-match the prefix are unaffected.
+
+### Added
+- **`ApiException`** — exported. Prefer branching on `statusCode` over
+  parsing the message string.
+- **`dart_test.yaml` registering the `live` tag.** Previously the tag was
+  unknown, so `dart test --exclude-tags=live` silently matched nothing and
+  ran the live suites anyway — a slow surprise for anyone with credentials
+  in `.env`. `test/live_smoke_test.dart` and `test/webdav_live_test.dart`
+  are now tagged `live`. The tag has no blanket `skip:`; the suites already
+  self-skip without `IXT_ACCOUNT`/`IXT_PWD` or with `DART_TEST_SKIP_LIVE=1`.
+
 ## 0.2.2 — Truncated-download guard, serial multipart uploads
 
 ### Fixed

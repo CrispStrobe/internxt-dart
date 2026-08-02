@@ -1,3 +1,6 @@
+@Tags(['live'])
+library;
+
 // Live integration smoke tests against the real Internxt backend.
 //
 // DESIGN PRINCIPLES (real-account test — be paranoid):

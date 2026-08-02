@@ -205,6 +205,76 @@ void main() {
       );
     });
 
+    test('a 4xx is issued exactly once — no retry', () async {
+      // Regression: the 4xx throw used to happen *inside* the try block,
+      // so makeRequest's own `catch` swallowed it and re-issued the
+      // request up to maxRetries times. A MockClient that returns a
+      // constant response hides that (the message is the same either
+      // way), so assert on the call count.
+      var calls = 0;
+      final client = MockClient((_) async {
+        calls++;
+        return http.Response('{"error":"Max space used"}', 420);
+      });
+      await expectLater(
+        () => makeRequest('POST', Uri.parse('https://api.test/x'),
+            useAuth: false,
+            isNetworkAuth: true,
+            networkUser: 'bridge-user',
+            networkPass: 'bridge-pass',
+            client: client),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'status', 420)),
+      );
+      expect(calls, equals(1), reason: '4xx must not be retried');
+    });
+
+    test('the real status survives — a 420 does not surface as 401', () async {
+      // The end-to-end symptom of the retry bug: the retry dropped the
+      // network-auth arguments, so the *second* (unauthenticated) attempt
+      // returned 401 "No authentication strategy detected" and that
+      // masked the true 420. Reproduce by answering 401 to any request
+      // that arrives without an Authorization header.
+      final client = MockClient((req) async =>
+          req.headers.containsKey('Authorization')
+              ? http.Response('{"error":"Max space used"}', 420)
+              : http.Response(
+                  '{"error":"No authentication strategy detected"}', 401));
+      await expectLater(
+        () => makeRequest('POST', Uri.parse('https://api.test/x'),
+            useAuth: false,
+            isNetworkAuth: true,
+            networkUser: 'bridge-user',
+            networkPass: 'bridge-pass',
+            client: client),
+        throwsA(isA<ApiException>()
+            .having((e) => e.statusCode, 'status', 420)
+            .having((e) => e.body, 'body', contains('Max space used'))),
+      );
+    });
+
+    test('a transport failure retry keeps the network-auth header', () async {
+      // The retry path forwards isNetworkAuth/networkUser/networkPass;
+      // without them the retried request goes out unauthenticated.
+      var calls = 0;
+      final seenAuth = <bool>[];
+      final client = MockClient((req) async {
+        calls++;
+        seenAuth.add(req.headers.containsKey('Authorization'));
+        if (calls == 1) throw Exception('connection closed by peer');
+        return http.Response('{"ok":true}', 200);
+      });
+      final res = await makeRequest('POST', Uri.parse('https://api.test/x'),
+          useAuth: false,
+          isNetworkAuth: true,
+          networkUser: 'bridge-user',
+          networkPass: 'bridge-pass',
+          client: client);
+      expect(res.statusCode, equals(200));
+      expect(calls, equals(2));
+      expect(seenAuth, equals([true, true]),
+          reason: 'the retried request must still carry Basic auth');
+    });
+
     test('200 with empty body returns 200 (no parse attempt)', () async {
       // makeRequest is JSON-agnostic — it returns the raw response;
       // helpers do their own `json.decode`.

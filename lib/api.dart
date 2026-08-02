@@ -20,12 +20,37 @@ import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+/// An HTTP error *response* (status >= 400), as opposed to a transport
+/// failure (socket error, DNS, timeout).
+///
+/// The distinction matters for retries: a transport failure is worth
+/// retrying, an error response generally is not — the server answered,
+/// and re-asking will usually get the same answer.
+///
+/// [toString] is pinned to `API Error: <code> - <body>`; callers
+/// (notably the auth refresh path) string-match on that prefix to
+/// detect 401s. Prefer branching on [statusCode] in new code.
+class ApiException implements Exception {
+  ApiException(this.statusCode, this.body);
+
+  final int statusCode;
+  final String body;
+
+  @override
+  String toString() => 'API Error: $statusCode - $body';
+}
+
 /// Central HTTP request handler.
 ///
 /// Retries 5xx responses with exponential backoff (1s, 2s, 4s) and
-/// network exceptions up to [maxRetries] times. 4xx responses are
-/// surfaced as `Exception('API Error: <code> - <body>')` for the
-/// caller to handle (typically a 401 triggers a refresh).
+/// transport failures up to [maxRetries] times. Error *responses* are
+/// surfaced as an [ApiException] (whose `toString()` is the pinned
+/// `API Error: <code> - <body>`) for the caller to handle — typically a
+/// 401 triggers a refresh. 4xx responses are never retried: the server
+/// answered, and re-asking gets the same answer.
+///
+/// Every retry re-sends the same auth arguments it was called with.
+/// Dropping them silently converts a real error into a misleading 401.
 ///
 /// [bearerToken] is a snapshot captured by the caller: retries reuse
 /// the same token rather than re-reading instance state, which matches
@@ -118,11 +143,20 @@ Future<http.Response> makeRequest(
     }
 
     if (response.statusCode >= 400) {
-      throw Exception('API Error: ${response.statusCode} - ${response.body}');
+      throw ApiException(response.statusCode, response.body);
     }
 
     return response;
+  } on ApiException {
+    // An error *response* — the server answered. Surface it as-is so the
+    // caller sees the real status and body. Retrying here used to swallow
+    // the true error: the retry below dropped the network-auth arguments,
+    // so e.g. a genuine 420 "Max space used" came back as a bogus 401
+    // "No authentication strategy detected". 5xx retries are handled
+    // above, before the throw.
+    rethrow;
   } catch (e) {
+    // Transport failure (socket, DNS, timeout) — worth retrying.
     if (retryCount < maxRetries) {
       return makeRequest(
         method,
@@ -131,6 +165,9 @@ Future<http.Response> makeRequest(
         headers: headers,
         body: body,
         useAuth: useAuth,
+        isNetworkAuth: isNetworkAuth,
+        networkUser: networkUser,
+        networkPass: networkPass,
         retryCount: retryCount + 1,
         client: client,
       );
