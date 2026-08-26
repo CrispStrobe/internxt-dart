@@ -120,7 +120,7 @@ Here's a list of available commands:
 
       * Uploads local files or directories to your Internxt Drive. Supports wildcards via shell expansion (e.g., `images/*.jpg`). Uploads are **resumable**.
       * Options:
-          * `-t, --target <path>`: Remote destination path (default: `/`).
+          * `-t, --target <path>` / `--path <path>`: Remote destination path (default: `/`). Windows-style backslashes are accepted and normalized.
           * `-r, --recursive`: Required to upload directories.
           * `-p, --preserve-timestamps`: Try to keep original file modification times.
           * `--on-conflict <mode>`: `overwrite` or `skip` (default: `skip`).
@@ -128,6 +128,8 @@ Here's a list of available commands:
           * `--exclude <pattern>`: Exclude files matching the glob pattern. Can be used multiple times.
       * Usage:
           * `dart cli.dart upload file.txt -t /Documents -p`
+          * `dart cli.dart upload "D:\alle fotos" --path "\Katharina"`
+          * `dart cli.dart upload "D:\alle fotos" "\Katharina"` (legacy shorthand)
           * `dart cli.dart upload "assets/*.png" -t /Images --on-conflict overwrite`
           * `dart cli.dart upload my_folder/ -t /Backup -r -p --exclude "*.tmp"`
 

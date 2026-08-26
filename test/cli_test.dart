@@ -243,4 +243,34 @@ void main() {
       expect(InternxtCLI.parseRcatRemotePath('/'), isNull);
     });
   });
+
+  group('InternxtCLI.parseUploadSourcesAndTarget', () {
+    test('uses option target and normalizes Windows separators', () {
+      final r = InternxtCLI.parseUploadSourcesAndTarget(
+          ['D:/alle fotos'], r'\Katharina\alle fotos\');
+      expect(r.sources, equals(['D:/alle fotos']));
+      expect(r.targetPath, equals('/Katharina/alle fotos'));
+    });
+
+    test('supports legacy positional remote target', () {
+      final r = InternxtCLI.parseUploadSourcesAndTarget(
+          ['D:/alle fotos', '/Katharina/'], null);
+      expect(r.sources, equals(['D:/alle fotos']));
+      expect(r.targetPath, equals('/Katharina'));
+    });
+
+    test('supports positional Windows-style remote target', () {
+      final r = InternxtCLI.parseUploadSourcesAndTarget(
+          ['D:/alle fotos', r'\Katharina\'], null);
+      expect(r.sources, equals(['D:/alle fotos']));
+      expect(r.targetPath, equals('/Katharina'));
+    });
+
+    test('does not treat a Windows drive path as a remote target', () {
+      final r = InternxtCLI.parseUploadSourcesAndTarget(
+          ['D:/source', r'E:\target'], null);
+      expect(r.sources, equals(['D:/source', r'E:\target']));
+      expect(r.targetPath, equals('/'));
+    });
+  });
 }

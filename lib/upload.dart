@@ -252,6 +252,64 @@ const int defaultChunkWorkers = 1;
 /// gate. Set by the CLI; defaults to [defaultChunkWorkers].
 int uploadChunkWorkers = defaultChunkWorkers;
 
+/// Local disk read granularity. Kept below the network multipart size so flaky
+/// external disks fail with a useful offset and can recover from short-lived
+/// read errors.
+const int localReadChunkSize = 8 * 1024 * 1024;
+const int localReadRetries = 3;
+
+Future<Uint8List> readLocalFileBytesWithRetry(
+  io.File file, {
+  int chunkSize = localReadChunkSize,
+  int maxRetries = localReadRetries,
+}) async {
+  final total = await file.length();
+  final bytes = Uint8List(total);
+  final raf = await file.open();
+  var offset = 0;
+  try {
+    while (offset < total) {
+      final wanted = min(chunkSize, total - offset);
+      Object? lastError;
+      for (var attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          await raf.setPosition(offset);
+          var read = 0;
+          while (read < wanted) {
+            final chunk = await raf.read(wanted - read);
+            if (chunk.isEmpty) {
+              throw io.FileSystemException(
+                  'Unexpected EOF while reading upload source',
+                  file.path,
+                  io.OSError('offset=$offset wanted=$wanted read=$read'));
+            }
+            bytes.setRange(offset + read, offset + read + chunk.length, chunk);
+            read += chunk.length;
+          }
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e;
+          if (attempt == maxRetries) break;
+          await Future<void>.delayed(
+              Duration(milliseconds: 250 * (1 << attempt)));
+        }
+      }
+      if (lastError != null) {
+        throw io.FileSystemException(
+            'Failed to read upload source after ${maxRetries + 1} attempts '
+            'at offset $offset',
+            file.path,
+            io.OSError(lastError.toString()));
+      }
+      offset += wanted;
+    }
+  } finally {
+    await raf.close();
+  }
+  return bytes;
+}
+
 /// Push already-encrypted [encryptedData] to the network and return the
 /// network file id: start → transfer → finish. Files whose ciphertext
 /// is >= [multipartMinSize] use true S3 multipart with parallel part
@@ -746,19 +804,66 @@ Future<Map<String, dynamic>> createFileEntry(
   Map<String, inxt_cache.CacheEntry> fileCache,
   Map<String, dynamic> payload,
 ) async {
-  final response = await inxt_api.makeRequest(
-    'POST',
-    Uri.parse('$driveApiUrl/files'),
-    bearerToken: bearerToken,
-    body: json.encode(payload),
-  );
-
   final folderUuid = payload['folderUuid'];
-  if (folderUuid is String) {
-    inxt_cache.invalidateCache(folderCache, fileCache, folderUuid);
+  final plainName = payload['plainName']?.toString() ?? '';
+  final type = payload['type']?.toString() ?? '';
+  final expectedDisplayName = type.isEmpty ? plainName : '$plainName.$type';
+
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      final response = await inxt_api.makeRequest(
+        'POST',
+        Uri.parse('$driveApiUrl/files'),
+        bearerToken: bearerToken,
+        body: json.encode(payload),
+        retryCount: 3,
+      );
+
+      if (folderUuid is String) {
+        inxt_cache.invalidateCache(folderCache, fileCache, folderUuid);
+      }
+
+      return json.decode(response.body) as Map<String, dynamic>;
+    } on inxt_api.ApiException catch (e) {
+      if (e.statusCode < 500 || folderUuid is! String) rethrow;
+
+      inxt_cache.invalidateCache(folderCache, fileCache, folderUuid);
+      final existing = await _findFileInFolderByDisplayName(
+        driveApiUrl,
+        bearerToken,
+        folderCache,
+        fileCache,
+        folderUuid,
+        expectedDisplayName,
+      );
+      if (existing != null) return existing;
+
+      if (attempt == 2) rethrow;
+      await Future<void>.delayed(Duration(seconds: 1 << attempt));
+    }
   }
 
-  return json.decode(response.body) as Map<String, dynamic>;
+  throw StateError('unreachable createFileEntry retry state');
+}
+
+Future<Map<String, dynamic>?> _findFileInFolderByDisplayName(
+  String driveApiUrl,
+  String? bearerToken,
+  Map<String, inxt_cache.CacheEntry> folderCache,
+  Map<String, inxt_cache.CacheEntry> fileCache,
+  String folderUuid,
+  String displayName,
+) async {
+  final files = await inxt_drive.listFolderFiles(
+      driveApiUrl, bearerToken, fileCache, folderUuid,
+      detailed: true);
+  for (final file in files) {
+    final name = (file['name'] ?? '').toString();
+    final ext = (file['fileType'] ?? '').toString();
+    final candidate = ext.isEmpty ? name : '$name.$ext';
+    if (candidate == displayName) return file;
+  }
+  return null;
 }
 
 // --- Per-file orchestration ---
@@ -808,7 +913,7 @@ Future<Map<String, dynamic>> uploadFile(
   try {
     print(
         '\n     🔐 [STEP 1/5] Starting Encryption for ${inxt_utils.formatSize(fileSize)}...');
-    final fileBytes = await localFile.readAsBytes();
+    final fileBytes = await readLocalFileBytesWithRetry(localFile);
     final encryptClock = Stopwatch()..start();
 
     final encryptedResult =
@@ -1428,7 +1533,7 @@ Future<Map<String, dynamic>> updateFile(
   await MemoryGate.acquire(memNeed);
   try {
     // 1. Read + encrypt.
-    final fileBytes = await localFile.readAsBytes();
+    final fileBytes = await readLocalFileBytesWithRetry(localFile);
     final encryptedResult =
         inxt_crypto.encryptStream(fileBytes, mnemonic, bucketId);
     final encryptedData = encryptedResult['data']! as Uint8List;

@@ -7,6 +7,7 @@
 // whole is exercised by test/live_smoke_test.dart.
 
 import 'dart:async';
+import 'dart:io' as io;
 
 import 'package:test/test.dart';
 
@@ -321,6 +322,23 @@ void main() {
         onConflict: 'skip',
       );
       expect(r, isFalse);
+    });
+  });
+
+  group('readLocalFileBytesWithRetry', () {
+    test('reads a file byte-exact in bounded chunks', () async {
+      final dir = await io.Directory.systemTemp.createTemp('inxt-read-test-');
+      try {
+        final file = io.File('${dir.path}/sample.bin');
+        final data = List<int>.generate(10000, (i) => i % 251);
+        await file.writeAsBytes(data);
+
+        final read =
+            await readLocalFileBytesWithRetry(file, chunkSize: 1024);
+        expect(read, equals(data));
+      } finally {
+        if (await dir.exists()) await dir.delete(recursive: true);
+      }
     });
   });
 

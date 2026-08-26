@@ -6,6 +6,28 @@ retrospective lessons see [`LEARNINGS.md`](LEARNINGS.md).
 
 ---
 
+## Upload target compatibility + local read hardening (2026-08-26)
+
+Ported the low-risk pieces discovered during the Python CLI live SSD recovery:
+
+- `upload` now accepts `--path` as an alias for `--target` and normalizes
+  Windows-style remote paths such as `\Katharina\alle fotos`.
+- The legacy shorthand `upload SOURCE /Remote` remains supported, including
+  Windows spelling (`upload SOURCE \Remote`), while drive-letter paths such as
+  `D:\source` are still treated as local paths.
+- Upload and replace now read local files in bounded 8 MiB chunks with retries
+  and offset-aware errors before encryption.
+- Drive file-entry creation avoids obvious duplicate metadata entries after an
+  ambiguous gateway 5xx by checking the destination folder before retrying.
+
+Remaining gap versus the Python fix: Dart still encrypts from a complete
+`Uint8List`, so multipart protects the network transfer but not peak memory.
+True streaming encryption would need a separate crypto/API refactor.
+
+Focused unit tests: `dart test test/cli_test.dart test/upload_test.dart`.
+
+---
+
 ## Phase 8: remaining functional gaps with the Python sibling
 
 Five user-facing gaps closed after Phase 7. cli.dart's command

@@ -66,7 +66,9 @@ class InternxtCLI {
       ..addFlag('preserve-timestamps',
           abbr: 'p', help: 'Preserve file modification times')
       ..addOption('target',
-          abbr: 't', help: 'Destination path on Internxt Drive')
+          abbr: 't',
+          aliases: ['path'],
+          help: 'Destination path on Internxt Drive')
       ..addOption('on-conflict',
           help: 'Action if target exists '
               '(skip = leave; overwrite = trash old + upload new; '
@@ -565,6 +567,45 @@ class InternxtCLI {
     print('   Pass: internxt-webdav');
     print('   Protocol: http (SSL not implemented in this version)');
     print('   Background PID File: ${config.webdavPidFile}');
+  }
+
+  /// Normalize a remote Internxt path while accepting Windows-style
+  /// backslashes. This is intentionally only for cloud paths, not local source
+  /// paths such as `D:\photos`.
+  static String normalizeRemotePath(String? raw) {
+    final value = (raw == null || raw.trim().isEmpty) ? '/' : raw.trim();
+    var normalized = value.replaceAll('\\', '/');
+    normalized = normalized.replaceAll(RegExp(r'/+'), '/');
+    if (!normalized.startsWith('/')) normalized = '/$normalized';
+    if (normalized.length > 1 && normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized;
+  }
+
+  /// Supports the canonical `--target/-t/--path` target option and the older
+  /// shorthand `upload SOURCE /Remote`, including Windows `\Remote` spelling.
+  static ({List<String> sources, String targetPath}) parseUploadSourcesAndTarget(
+      List<String> rawSources, String? optionTarget) {
+    final sources = List<String>.from(rawSources);
+    var targetPath = normalizeRemotePath(optionTarget);
+
+    if ((optionTarget == null || optionTarget.trim().isEmpty) &&
+        sources.length >= 2) {
+      final candidate = sources.last.trim();
+      final looksRemote = candidate.startsWith('/') ||
+          candidate.startsWith('\\') ||
+          (!RegExp(r'^[A-Za-z]:[\\/]').hasMatch(candidate) &&
+              candidate.contains('/'));
+      final existsLocal = io.FileSystemEntity.typeSync(candidate) !=
+          io.FileSystemEntityType.notFound;
+      if (looksRemote && !existsLocal) {
+        targetPath = normalizeRemotePath(candidate);
+        sources.removeLast();
+      }
+    }
+
+    return (sources: sources, targetPath: targetPath);
   }
 
   /// Split an rcat REMOTE_PATH into its parent folder path and filename.
@@ -1785,15 +1826,20 @@ class InternxtCLI {
   }
 
   Future<void> handleUpload(ArgResults argResults) async {
-    final sources = argResults.rest.sublist(1);
+    final parsedUploadTarget = parseUploadSourcesAndTarget(
+      argResults.rest.sublist(1),
+      argResults['target'] as String?,
+    );
+    final sources = parsedUploadTarget.sources;
     if (sources.isEmpty) {
       io.stderr.writeln('❌ No source files or directories specified.');
       io.exit(1);
     }
+    final targetPath = parsedUploadTarget.targetPath;
 
     if (debugMode) {
       print('🚀 TRACE: Starting high-performance upload batch');
-      print('📋 Target Path: ${argResults['target'] ?? '/'}');
+      print('📋 Target Path: $targetPath');
       print('📋 On-Conflict: ${argResults['on-conflict']}');
     }
 
@@ -1816,7 +1862,6 @@ class InternxtCLI {
             'Credentials file is missing bridgeUser or userId. Please login again to re-hydrate the session.');
       }
 
-      final targetPath = argResults['target'] as String? ?? '/';
       final recursive = argResults['recursive'] as bool;
       final onConflict = argResults['on-conflict'] as String;
       final preserveTimestamps = argResults['preserve-timestamps'] as bool;

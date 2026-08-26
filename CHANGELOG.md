@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.4 — Upload target compatibility and local read hardening
+
+### Added
+- **Upload target parsing now matches the Python CLI compatibility layer.**
+  `upload` accepts `--path` as an alias for `--target`, normalizes Windows-style
+  backslash remote paths, and still supports the legacy shorthand
+  `upload SOURCE /Remote` / `upload SOURCE \Remote`.
+
+### Fixed
+- **Large local upload reads are chunked and retried.** The Dart encryption
+  pipeline still expects whole-file bytes, but the disk read itself no longer
+  uses one monolithic `readAsBytes()` call. It reads in 8 MiB chunks, retries
+  transient read failures, and reports the failing offset.
+- **Drive file-entry creation avoids obvious duplicates after ambiguous 5xx
+  responses.** The `/files` POST now checks the destination folder after a
+  server-side failure and returns the already-created entry if the backend
+  accepted the create despite losing the response.
+
 ## 0.2.3 — Stop masking real API errors as 401
 
 ### Fixed
