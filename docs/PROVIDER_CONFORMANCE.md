@@ -48,3 +48,14 @@ packaging and performance require their own tests before changing app defaults.
 Keep both Dart and Rust implementations supported. Automatic fallback must
 remain a pre-operation availability decision, never a replay after a provider
 or mutation failure.
+
+
+The first completed shared run exercised 131 cases and 363 cross-decryptions
+with zero unexpected failures. Ten exact diagnostic cases remain promotion
+blockers: empty CBC encryption, CBC envelope validation, two legacy secret
+encoding directions, two negative CTR offsets, odd-length password salt hex,
+unreadable Filen metadata, missing Internxt listing collections and listing
+GET retry behavior. These are SDK compatibility findings, not live-account or
+GUI qualification. Dart retries an Internxt listing 503; Rust currently returns
+the error. Rejection is compared at the API boundary; exception classes/messages
+are language-specific. See each CI run’s report for its actual source results.
