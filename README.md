@@ -346,3 +346,5 @@ The live tests confine all operations to a sentinel folder
 ## 📄 License
 
 This project is licensed under the **Mozilla Public License 2.0 (MPL-2.0)** — weak copyleft: modifications to these files stay open, but you can use it in any app (including proprietary). See the [LICENSE](LICENSE) file for details.
+
+Dart/Rust interoperability checks and reproduction commands: [provider conformance](docs/PROVIDER_CONFORMANCE.md).
