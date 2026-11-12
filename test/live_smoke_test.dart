@@ -1905,90 +1905,45 @@ void main() {
     } catch (_) {/* swallow */}
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  liveTest('setFileTimestamp known-broken marker (gateway 409)', () async {
-    // NEW gateway gap surfaced while expanding the Phase 9.6
-    // marker set: PUT /files/{uuid}/meta with the (required by
-    // the documented contract) plainName + type echo triggers a
-    // 409 "A file with this name already exists in this location"
-    // even when echoing the file's own current name. The gateway
-    // appears to run a uniqueness check that doesn't exclude the
-    // file itself.
-    //
-    // Distinct from setFolderTimestamp: PUT /folders/{uuid}/meta
-    // accepts the same payload shape (and silently ignores the
-    // mtime — see the folder marker below), no 409.
-    //
-    // Asserts the *current broken behavior*: setFileTimestamp
-    // throws with 409. Fires if Internxt fixes the uniqueness
-    // check (then we'd start checking whether mtime is honored,
-    // matching the folder marker).
-    final stem = _uniqueName('mtime-file');
-    final w = _writePayload(tmpRoot, '$stem.txt', sizeBytes: 64);
-    await client.uploadSingleItem(
-      w.file,
-      _sentinelPath,
-      sentinelUuid!,
-      'overwrite',
-      bridgeUser: creds!['bridgeUser'] as String,
-      userIdForAuth: creds!['userId'].toString(),
-      preserveTimestamps: false,
-      remoteFileName: '$stem.txt',
-    );
-    final initial = await client.resolvePath('$_sentinelPath/$stem.txt');
-    final fileUuid = initial['uuid'] as String;
+  // Timestamps: drive-server-wip accepts creationTime/modificationTime only
+  // when an item is created (POST /folders, file entries). PUT .../meta only
+  // renames, so changing an existing item's times is unsupported.
+  Future<Map<String, dynamic>> folderMetaEventually(String uuid) async {
+    for (var attempt = 0;; attempt++) {
+      try {
+        return await client.getFolderMetadata(uuid);
+      } catch (e) {
+        if (!e.toString().contains('404') || attempt >= 7) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+      }
+    }
+  }
 
-    final targetMtime = DateTime.utc(2021, 6, 1, 8, 15, 30);
-
-    expect(
-      () => client.setFileTimestamp(fileUuid, targetMtime),
-      throwsA(predicate((e) => e.toString().contains('409'))),
-      reason: 'setFileTimestamp no longer 409s — the gateway uniqueness '
-          'check has changed. Remove this marker and check whether mtime '
-          'is now honored end-to-end.',
+  liveTest('folder created with timestamps keeps them', () async {
+    final created = await client.createFolderRecursive(
+      _uniqueSubpath('stamped'),
+      creationTime: '2020-02-03T04:05:06.000Z',
+      modificationTime: '2021-06-01T08:15:30.000Z',
     );
+    final meta = await folderMetaEventually(created['uuid'] as String);
+    expect(DateTime.parse(meta['modificationTime'] as String).toUtc(),
+        DateTime.utc(2021, 6, 1, 8, 15, 30));
+    expect(DateTime.parse(meta['creationTime'] as String).toUtc(),
+        DateTime.utc(2020, 2, 3, 4, 5, 6));
   });
 
-  liveTest('setFolderTimestamp known-broken marker (Phase 9.6)', () async {
-    // Regression pin for the gateway-side gap discovered during
-    // the Phase 9.6 stale-cache audit. Sequence:
-    //   1. Audit found setFileTimestamp/setFolderTimestamp had no
-    //      cache invalidation while the listing cache *does* store
-    //      modificationTime → in theory a stale-read bug.
-    //   2. Adding a live test for the fix surfaced that
-    //      PUT /folders/{uuid}/meta requires plainName too (400 on
-    //      partial body). Fix: include plainName in payload.
-    //   3. With both fixes in place, the gateway *still* doesn't
-    //      honor the requested mtime — direct GET-PUT-GET shows it
-    //      always reflects back "now()", regardless of the body.
-    //
-    // So this test asserts the *current broken behavior*: requesting
-    // a 2021 mtime should NOT actually land. If Internxt fixes the
-    // gateway, this fires and the cache-invalidation code we added
-    // becomes load-bearing instead of defensive.
-    final subInfo = await client.createFolderRecursive(_uniqueSubpath('mtime'));
-    final folderUuid = subInfo['uuid'] as String;
-
-    final before = await client.getFolderMetadata(folderUuid);
-    final targetMtime = DateTime.utc(2021, 6, 1, 8, 15, 30);
-
-    await client.setFolderTimestamp(folderUuid, targetMtime);
-
-    final after = await client.getFolderMetadata(folderUuid);
-    final rawAfter =
-        (after['modificationTime'] ?? after['updatedAt']) as String?;
-    expect(rawAfter, isNotNull);
-    final actualMtime = DateTime.parse(rawAfter!).toUtc();
-
-    // Known broken: gateway should ignore our value and return ~now.
-    final secondsSinceTarget =
-        actualMtime.difference(targetMtime).inSeconds.abs();
-    expect(
-      secondsSinceTarget,
-      greaterThan(
-          60), // generous; if it ever lands within a minute, the gateway accepted
-      reason: 'gateway honored the requested mtime — '
-          'remove this known-broken marker, the feature now works end-to-end. '
-          'before=${before['modificationTime']} after=$rawAfter target=$targetMtime',
-    );
+  liveTest('existing item timestamps are unsupported and unchanged', () async {
+    final created =
+        await client.createFolderRecursive(_uniqueSubpath('unstamped'));
+    final uuid = created['uuid'] as String;
+    final before = await folderMetaEventually(uuid);
+    final target = DateTime.utc(2021, 6, 1, 8, 15, 30);
+    await expectLater(client.setFolderTimestamp(uuid, target),
+        throwsA(isA<TimestampUpdateUnsupported>()));
+    await expectLater(client.setFileTimestamp(uuid, target),
+        throwsA(isA<TimestampUpdateUnsupported>()));
+    final after = await folderMetaEventually(uuid);
+    expect(after['plainName'], before['plainName']);
+    expect(after['modificationTime'], before['modificationTime']);
   });
 }

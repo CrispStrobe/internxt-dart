@@ -315,36 +315,103 @@ void main() {
       expect(body['plainName'], equals('doc'));
     });
 
-    test('searchFiles tolerates the three known response shapes', () async {
-      // Internxt's /fuzzy endpoint historically returned three shapes:
-      //   {data: [...]}, {results: [...]}, [...]
-      // searchFiles normalizes all three to a List.
-      // This test verifies the wrapper logic for each shape via direct
-      // makeRequest calls (helpers don't yet take a client param).
-      final shapes = [
-        {
-          'data': ['A', 'B']
-        },
+    test('searchFiles POSTs /fuzzy/{encoded text} with a JSON body', () async {
+      late http.Request seen;
+      final client = MockClient((req) async {
+        seen = req;
+        return http.Response(
+            json.encode({
+              'data': [
+                {'itemId': 'u1', 'itemType': 'file', 'name': 'report'}
+              ]
+            }),
+            200);
+      });
+      final items = await searchFiles(
+          'https://api.test', 'tok', ' my report #2/a ',
+          offset: 7, client: client);
+      expect(seen.method, 'POST');
+      expect(
+          seen.url.toString(), 'https://api.test/fuzzy/my%20report%20%232%2Fa');
+      expect(json.decode(seen.body), {'offset': 7});
+      expect(seen.headers['Authorization'], 'Bearer tok');
+      expect(items, hasLength(1));
+    });
+
+    test('searchFiles sends every filter', () async {
+      late http.Request seen;
+      final client = MockClient((req) async {
+        seen = req;
+        return http.Response('{"data": []}', 200);
+      });
+      await searchFiles('https://api.test', 'tok', 'report',
+          filters: SearchFilters(
+            types: ['pdf', 'folder'],
+            minSize: 10,
+            maxSize: 99,
+            modifiedAfter: DateTime.utc(2026, 1, 1),
+            modifiedBefore: DateTime.utc(2026, 6, 30, 23, 59, 59),
+          ),
+          client: client);
+      expect(json.decode(seen.body), {
+        'offset': 0,
+        'type': ['pdf', 'folder'],
+        'minSize': 10,
+        'maxSize': 99,
+        'modifiedAfter': '2026-01-01T00:00:00.000Z',
+        'modifiedBefore': '2026-06-30T23:59:59.000Z',
+      });
+    });
+
+    for (final bad in ['', 'ab', '  ab  ', 'x' * 256]) {
+      test(
+          'searchFiles rejects "${bad.length > 10 ? '256 chars' : bad}" without a request',
+          () async {
+        final client = MockClient((req) async => fail('no request expected'));
+        await expectLater(
+            searchFiles('https://api.test', 'tok', bad, client: client),
+            throwsArgumentError);
+      });
+    }
+
+    test('searchFiles accepts the 3 and 255 character boundaries', () async {
+      var calls = 0;
+      final client = MockClient((req) async {
+        calls++;
+        return http.Response('{"data": []}', 200);
+      });
+      await searchFiles('https://api.test', 'tok', 'abc', client: client);
+      await searchFiles('https://api.test', 'tok', 'y' * 255, client: client);
+      expect(calls, 2);
+    });
+
+    test('searchFiles accepts {results} and bare lists, rejects other shapes',
+        () async {
+      for (final shape in [
         {
           'results': ['X']
         },
         ['raw', 'list'],
-      ];
-      for (final shape in shapes) {
+      ]) {
         final client =
             MockClient((_) async => http.Response(json.encode(shape), 200));
-        final response = await makeRequest(
-          'GET',
-          Uri.parse('https://api.test/fuzzy/q'),
-          bearerToken: 'tok',
-          client: client,
-        );
-        final data = json.decode(response.body);
-        final items = data is Map
-            ? (data['data'] ?? data['results'] ?? data) as List<dynamic>
-            : data as List<dynamic>;
-        expect(items, isA<List<dynamic>>());
+        expect(
+            await searchFiles('https://api.test', 't', 'query', client: client),
+            isA<List<dynamic>>());
       }
+      final bad = MockClient((_) async => http.Response('{"wrong": 1}', 200));
+      await expectLater(
+          searchFiles('https://api.test', 't', 'query', client: bad),
+          throwsFormatException);
+    });
+
+    test('searchFiles propagates HTTP errors instead of returning []',
+        () async {
+      final client = MockClient(
+          (_) async => http.Response('{"message":"Cannot GET"}', 404));
+      await expectLater(
+          searchFiles('https://api.test', 't', 'query', client: client),
+          throwsA(anything));
     });
   });
 }

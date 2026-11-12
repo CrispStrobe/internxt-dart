@@ -146,44 +146,24 @@ Future<void> renameFolder(
   });
 }
 
-/// Set the modification time on a file.
+/// Internxt sets timestamps only when an item is created or uploaded.
 ///
-/// **KNOWN GATEWAY LIMITATIONS — TWO COMPOUNDING BUGS** (verified
-/// empirically by `tool/probe_setmeta.dart`):
-///
-///   1. **Same-name 409.** PUT /files/{uuid}/meta with the
-///      documented `{plainName, type, modificationTime}` body
-///      returns **409 "A file with this name already exists in
-///      this location"** even when echoing the file's own current
-///      name. The gateway runs a uniqueness check that doesn't
-///      exclude the file itself. The same 409 fires for a bare
-///      same-name rename `{plainName, type}` (no mtime), so this
-///      is independent of the timestamp issue.
-///   2. **Silent overwrite.** Even if you sidestep the 409 by
-///      renaming to a temporary name (which DOES return 200), the
-///      gateway *still* silently overwrites `modificationTime`
-///      with `now()` server-side. Direct GET-PUT-GET inspection
-///      confirms the requested value never lands.
-///
-/// Net result: this function throws 409 end-to-end against the
-/// live API. The Python sibling avoids the issue by **not having
-/// a `set_file_timestamps` function at all** — its WebDAV
-/// PROPPATCH only sets folder timestamps. Our WebDAV file
-/// PROPPATCH (webdav_filesystem.dart::InternxtFile.setStat)
-/// catches and swallows the 409 since PROPPATCH is officially
-/// advisory.
-///
-/// Why we keep this implementation as-is despite both bugs:
-///   - The day Internxt fixes either bug, the regression marker
-///     fires and we re-evaluate.
-///   - Non-WebDAV callers see the real error rather than a silent
-///     no-op (honest signal).
-///
-/// Cache rationale: cached entries from [listFolderFiles] carry
-/// `modificationTime` (drive.dart:489) and the `ls --long`
-/// formatter renders it (cli.dart's `Modified` column). The cache
-/// invalidation pattern matches every other mutating op in this
-/// module and protects the day-the-gateway-is-fixed case.
+/// drive-server-wip: `PUT /folders/{uuid}/meta` (UpdateFolderMetaDto) and
+/// `PUT /files/{uuid}/meta` (UpdateFileMetaDto) only rename (`plainName`,
+/// file `type`); `POST /folders` and file entries accept
+/// `creationTime`/`modificationTime`; replacing a file (`PUT /files/{uuid}`)
+/// requires a new network file id. There is no way to change the times of
+/// an existing item, so the setters below throw without a request instead
+/// of sending a disguised rename (which the gateway rejected with 409).
+class TimestampUpdateUnsupported extends UnsupportedError {
+  final String kind;
+  TimestampUpdateUnsupported(this.kind)
+      : super('Internxt cannot change timestamps of an existing $kind; '
+            'they can only be set when it is created or uploaded');
+}
+
+/// Always throws [TimestampUpdateUnsupported]; see that class. Pass
+/// times at upload instead (`preserveTimestamps`).
 Future<void> setFileTimestamp(
   String driveApiUrl,
   String? bearerToken,
@@ -192,31 +172,11 @@ Future<void> setFileTimestamp(
   String fileUuid,
   DateTime mTime, {
   http.Client? client,
-}) async {
-  final meta = await inxt_api
-      .getFileMetadata(driveApiUrl, bearerToken, fileUuid, client: client);
-  await _clearParent(
-      driveApiUrl, bearerToken, folderCache, fileCache, fileUuid, 'file',
-      client: client);
-  await inxt_api.updateFileMetadata(
-      driveApiUrl,
-      bearerToken,
-      fileUuid,
-      {
-        'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
-        'type': (meta['type'] ?? '') as String,
-        'modificationTime': mTime.toUtc().toIso8601String(),
-      },
-      client: client);
-}
+}) async =>
+    throw TimestampUpdateUnsupported('file');
 
-/// Set the modification time on a folder. Same gateway limitation
-/// as [setFileTimestamp] — the live API silently overwrites
-/// `modificationTime` with `now()` on every PUT. Same payload
-/// constraint (gateway requires `plainName`) and same cache
-/// rationale (folder listings cache `modificationTime`,
-/// drive.dart:407, so the grandparent's listing must be dropped if
-/// the gateway ever starts honoring the value).
+/// Always throws [TimestampUpdateUnsupported]; pass times to
+/// [createFolder] instead.
 Future<void> setFolderTimestamp(
   String driveApiUrl,
   String? bearerToken,
@@ -224,16 +184,8 @@ Future<void> setFolderTimestamp(
   Map<String, inxt_cache.CacheEntry> fileCache,
   String folderUuid,
   DateTime mTime,
-) async {
-  final meta =
-      await inxt_api.getFolderMetadata(driveApiUrl, bearerToken, folderUuid);
-  await _clearParent(
-      driveApiUrl, bearerToken, folderCache, fileCache, folderUuid, 'folder');
-  await inxt_api.updateFolderMetadata(driveApiUrl, bearerToken, folderUuid, {
-    'plainName': (meta['plainName'] ?? meta['name'] ?? '') as String,
-    'modificationTime': mTime.toUtc().toIso8601String(),
-  });
-}
+) async =>
+    throw TimestampUpdateUnsupported('folder');
 
 /// POST /storage/trash/add  body: `{items: [{uuid, type}]}`.
 /// Invalidates the source parent's listing.
@@ -984,8 +936,10 @@ Future<Map<String, List<Map<String, dynamic>>>> search(
   String? rootFolderId,
   String query, {
   bool detailed = false,
+  inxt_api.SearchFilters filters = const inxt_api.SearchFilters(),
 }) async {
-  final results = await inxt_api.searchFiles(driveApiUrl, bearerToken, query);
+  final results = await inxt_api.searchFiles(driveApiUrl, bearerToken, query,
+      filters: filters);
 
   final folders = <Map<String, dynamic>>[];
   final files = <Map<String, dynamic>>[];

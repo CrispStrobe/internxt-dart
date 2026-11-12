@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — search and timestamps follow the current API
+
+- `searchFiles` now uses `POST /fuzzy/{search}` with a JSON body, as the
+  current server (`FuzzySearchController`) and `@internxt/sdk`
+  (`getGlobalSearchItems`) do; the old `GET` returned 404. The 3–255
+  character limit is checked locally, API errors propagate instead of
+  turning into an empty list, and `SearchFilters` (`--type`, `--min-size`,
+  `--max-size`, `--modified-after`, `--modified-before` in the CLI) expose
+  the server filters.
+- `setFileTimestamp` / `setFolderTimestamp` throw
+  `TimestampUpdateUnsupported` without a request. Internxt accepts
+  `creationTime`/`modificationTime` only at creation/upload; `PUT …/meta`
+  only renames (the old call 409ed or was ignored). WebDAV PROPPATCH of
+  dates still fails as before.
+
 ## 0.2.4 — Upload target compatibility and local read hardening
 
 ### Added
