@@ -75,6 +75,12 @@ class InternxtCLI {
               'safety_pattern = rename old to .bak then upload)',
           allowed: ['overwrite', 'skip', 'safety_pattern'],
           defaultsTo: 'skip')
+      ..addMultiOption('type',
+          help: 'search: file extension to include (repeatable; "folder" includes folders)')
+      ..addOption('min-size', help: 'search: minimum file size in bytes')
+      ..addOption('max-size', help: 'search: maximum file size in bytes')
+      ..addOption('modified-after', help: 'search: ISO 8601 date')
+      ..addOption('modified-before', help: 'search: ISO 8601 date')
       ..addMultiOption('include', help: 'Include only files matching pattern')
       ..addMultiOption('exclude', help: 'Exclude files matching pattern')
       ..addOption('workers',
@@ -2212,7 +2218,25 @@ class InternxtCLI {
         print("   (Fetching full paths, this may take a moment...)");
       }
 
-      final results = await client.search(query, detailed: detailed);
+      DateTime? date(String name) {
+        final value = argResults[name] as String?;
+        return value == null ? null : DateTime.parse(value);
+      }
+
+      int? size(String name) {
+        final value = argResults[name] as String?;
+        return value == null ? null : int.parse(value);
+      }
+
+      final filters = inxt_api.SearchFilters(
+        types: argResults['type'] as List<String>,
+        minSize: size('min-size'),
+        maxSize: size('max-size'),
+        modifiedAfter: date('modified-after'),
+        modifiedBefore: date('modified-before'),
+      );
+      final results =
+          await client.search(query, detailed: detailed, filters: filters);
       final folders = results['folders']!;
       final files = results['files']!;
 
@@ -2829,9 +2853,10 @@ class InternxtClient {
   // session state through.
 
   Future<Map<String, List<Map<String, dynamic>>>> search(String query,
-          {bool detailed = false}) =>
+          {bool detailed = false,
+          inxt_api.SearchFilters filters = const inxt_api.SearchFilters()}) =>
       inxt_drive.search(driveApiUrl, newToken, rootFolderId, query,
-          detailed: detailed);
+          detailed: detailed, filters: filters);
 
   Future<List<Map<String, dynamic>>> findFiles(
     String startPath,

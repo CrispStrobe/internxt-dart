@@ -254,26 +254,72 @@ Future<Map<String, dynamic>> updateFolderMetadata(
   return json.decode(response.body) as Map<String, dynamic>;
 }
 
-/// GET /fuzzy/{query} — server-side fuzzy search across the user's
-/// drive. The response shape is unpredictable (sometimes
-/// `{data: [...]}`, sometimes `{results: [...]}`, sometimes the bare
-/// list); this helper normalizes to a `List<dynamic>`. Empty list
-/// when the response shape is unrecognized.
+/// drive-server-wip `FuzzySearchParamsDto` limits.
+const int fuzzySearchMinLength = 3;
+const int fuzzySearchMaxLength = 255;
+
+/// Optional server-side filters for [searchFiles] (all combined with AND;
+/// [types] entries are OR-ed). `'folder'` in [types] includes folders;
+/// size limits exclude folders.
+class SearchFilters {
+  final List<String>? types;
+  final int? minSize;
+  final int? maxSize;
+  final DateTime? modifiedAfter;
+  final DateTime? modifiedBefore;
+  const SearchFilters({
+    this.types,
+    this.minSize,
+    this.maxSize,
+    this.modifiedAfter,
+    this.modifiedBefore,
+  });
+
+  Map<String, dynamic> toBody(int offset) => {
+        'offset': offset,
+        if (types != null && types!.isNotEmpty) 'type': types,
+        if (minSize != null) 'minSize': minSize,
+        if (maxSize != null) 'maxSize': maxSize,
+        if (modifiedAfter != null)
+          'modifiedAfter': modifiedAfter!.toUtc().toIso8601String(),
+        if (modifiedBefore != null)
+          'modifiedBefore': modifiedBefore!.toUtc().toIso8601String(),
+      };
+}
+
+/// POST /fuzzy/{search} — server-side fuzzy search over file and folder
+/// names (drive-server-wip `FuzzySearchController`, @internxt/sdk
+/// `getGlobalSearchItems`). The former `GET /fuzzy/{search}` now returns
+/// 404. The search text must be [fuzzySearchMinLength]–[fuzzySearchMaxLength]
+/// characters ([ArgumentError] otherwise, without a request). Returns the
+/// `data` list of `{id, itemId, itemType, name, rank, similarity}`; API
+/// errors propagate and an unrecognized body is a [FormatException].
 Future<List<dynamic>> searchFiles(
   String driveApiUrl,
   String? bearerToken,
   String query, {
+  int offset = 0,
+  SearchFilters filters = const SearchFilters(),
   http.Client? client,
 }) async {
+  final text = query.trim();
+  if (text.length < fuzzySearchMinLength || text.length > fuzzySearchMaxLength) {
+    throw ArgumentError.value(query, 'query',
+        'Search text must be $fuzzySearchMinLength-$fuzzySearchMaxLength characters (Internxt API limit)');
+  }
   final response = await makeRequest(
-    'GET',
-    Uri.parse('$driveApiUrl/fuzzy/$query'),
+    'POST',
+    Uri.parse('$driveApiUrl/fuzzy/${Uri.encodeComponent(text)}'),
     bearerToken: bearerToken,
+    body: json.encode(filters.toBody(offset)),
     client: client,
   );
   final data = json.decode(response.body);
-  final items = data['data'] ?? data['results'] ?? data;
-  return items is List ? items : <dynamic>[];
+  final items = data is Map ? (data['data'] ?? data['results']) : data;
+  if (items is! List) {
+    throw FormatException('Unexpected search response', response.body);
+  }
+  return items;
 }
 
 /// GET /folders/{uuid}/ancestors — returns the parent chain for a

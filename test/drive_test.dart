@@ -171,45 +171,34 @@ void main() {
     });
   });
 
-  group('setFileTimestamp (Phase 9.6 contract)', () {
-    test('echoes plainName + type from current meta + sends modificationTime',
-        () async {
-      final folderCache = <String, CacheEntry>{};
-      final fileCache = <String, CacheEntry>{};
-      final ts = DateTime.utc(2024, 6, 1, 12, 30);
-      const fileUuid = 'file-ts';
+  group('timestamps of existing items (not supported by the API)', () {
+    // drive-server-wip: PUT .../meta only renames; times are accepted
+    // only at creation/upload. The setters must not send any request.
+    final ts = DateTime.utc(2024, 6, 1, 12, 30);
+    MockClient failOnRequest() => MockClient((req) async =>
+        fail('no request expected, got ${req.method} ${req.url}'));
 
-      // setFileTimestamp does GET meta TWICE: once to read current
-      // plainName/type, once inside _clearParent to find the parent.
-      final mock = _routingMock([
-        (
-          method: 'GET',
-          match: (u) => u.path == '/files/$fileUuid/meta',
-          respond: (_) => http.Response(
-              jsonEncode({
-                'plainName': 'doc',
-                'type': 'pdf',
-                'folderUuid': 'parent',
-              }),
-              200),
-        ),
-        (
-          method: 'PUT',
-          match: (u) => u.path == '/files/$fileUuid/meta',
-          respond: (req) {
-            final body = jsonDecode(req.body) as Map<String, dynamic>;
-            expect(body['plainName'], equals('doc'),
-                reason: 'must echo current plainName');
-            expect(body['type'], equals('pdf'),
-                reason: 'must echo current type');
-            expect(body['modificationTime'], equals(ts.toIso8601String()));
-            return http.Response('{}', 200);
-          },
-        ),
-      ]);
+    test('setFileTimestamp throws without a request', () async {
+      await expectLater(
+        setFileTimestamp(_api, _tok, {}, {}, 'file-ts', ts,
+            client: failOnRequest()),
+        throwsA(isA<TimestampUpdateUnsupported>()
+            .having((e) => e.kind, 'kind', 'file')
+            .having((e) => e.message, 'message',
+                contains('only be set when it is created or uploaded'))),
+      );
+    });
 
-      await setFileTimestamp(_api, _tok, folderCache, fileCache, fileUuid, ts,
-          client: mock);
+    test('setFolderTimestamp throws without a request', () async {
+      await expectLater(
+        setFolderTimestamp(_api, _tok, {}, {}, 'folder-ts', ts),
+        throwsA(isA<TimestampUpdateUnsupported>()
+            .having((e) => e.kind, 'kind', 'folder')),
+      );
+    });
+
+    test('the error is an UnsupportedError', () {
+      expect(TimestampUpdateUnsupported('file'), isA<UnsupportedError>());
     });
   });
 
