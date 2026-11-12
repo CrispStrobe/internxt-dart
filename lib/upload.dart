@@ -223,16 +223,15 @@ const int maxFileSizeBytes = 20 * 1024 * 1024 * 1024; // 20 GB
 // WITHIN-FILE MULTIPART CONCURRENCY
 // =============================================================================
 //
-// Multipart is an explicit opt-in because the current gateway stalls large
-// multipart sessions. The default path uses one ordinary presigned PUT for
-// every file size; tests and callers can opt in below.
-// its continuous AES-CTR ciphertext is sliced into 30 MB parts whose
+// A SINGLE large file (>= 100 MiB) is uploaded with true S3 multipart by
+// default (`--no-multipart` falls back to one ordinary PUT, which S3 caps at
+// 5 GB): its continuous AES-CTR ciphertext is sliced into 30 MB parts whose
 // PUTs run in parallel through `runBoundedPool` + `MemoryGate`. The
 // crypto stays sequential (one keystream produced by `encryptStream`);
 // only the network transfer is parallel. Mirrors the Python sibling's
 // `_perform_network_upload`.
 
-/// Multipart eligibility floor when multipart is explicitly enabled.
+/// The gateway rejects multipart below this size. Mirrors `MULTIPART_MIN_SIZE`.
 const int multipartMinSize = 100 * 1024 * 1024; // 100 MiB
 
 /// S3 multipart part size (drive-web uses 30 MB). Mirrors
@@ -248,9 +247,9 @@ const int maxMultiparts = 10000;
 /// option, which assigns [uploadChunkWorkers].
 const int defaultChunkWorkers = 1;
 
-/// Whether production uploads may use true S3 multipart. Disabled by default;
-/// the CLI `--multipart` flag enables it for explicit testing.
-bool multipartUploads = false;
+/// Whether uploads >= [multipartMinSize] use true S3 multipart (default).
+/// The CLI `--no-multipart` flag sends one ordinary PUT instead.
+bool multipartUploads = true;
 
 /// How many multipart part PUTs may be in flight at once for a SINGLE
 /// large file. Bytes in flight are additionally bounded by the memory

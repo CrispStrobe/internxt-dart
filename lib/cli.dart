@@ -92,9 +92,9 @@ class InternxtCLI {
               'single large file (multipart default: 1; ranged download default: 4)',
           defaultsTo: '1')
       ..addFlag('multipart',
-          help: 'Opt in to true S3 multipart for files >= 100 MiB '
-              '(default: one ordinary PUT)',
-          defaultsTo: false)
+          help: 'Use S3 multipart for files >= 100 MiB (default); '
+              '--no-multipart sends one ordinary PUT (S3 limit 5 GB)',
+          defaultsTo: true)
       ..addFlag('ranged',
           help: 'Download large files (>=100 MiB) as parallel byte ranges '
               '(falls back to a single GET if the server ignores Range)',

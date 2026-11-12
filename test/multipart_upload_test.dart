@@ -116,6 +116,7 @@ Future<_Capture> _run(
   int partDelayMs = 0,
   bool reverseDelay = false,
   int? failPart,
+  bool? multipart,
 }) async {
   final cap = _Capture();
   final client = _mockNetwork(cap,
@@ -132,6 +133,7 @@ Future<_Capture> _run(
       chunkWorkers: chunkWorkers,
       partSize: partSize,
       multipartMin: multipartMin,
+      multipart: multipart,
     );
   }, () => client);
   return cap;
@@ -166,6 +168,19 @@ void main() {
         shard['hash'],
         equals(crypto.sha256.convert(data).toString()),
       );
+    });
+
+    test('multipart is the default switch value', () {
+      expect(multipartUploads, isTrue);
+    });
+
+    test('multipart: false sends a large ciphertext as one PUT', () async {
+      final data = Uint8List.fromList(List.generate(250, (i) => i % 256));
+      final cap =
+          await _run(data, partSize: 100, multipartMin: 50, multipart: false);
+      expect(cap.partsRequested, equals(1));
+      expect(cap.chunkPuts, equals(1));
+      expect(cap.partUrls, isEmpty);
     });
 
     test('small ciphertext stays on the single-PUT path', () async {
