@@ -950,7 +950,8 @@ Future<Map<String, dynamic>> uploadFile(
     );
 
     print('     📋 [STEP 5/5] Creating Drive file entry...');
-    return createFileEntry(driveApiUrl, bearerToken, folderCache, fileCache, {
+    return await createFileEntry(
+        driveApiUrl, bearerToken, folderCache, fileCache, {
       'folderUuid': destinationFolderUuid,
       'plainName': p.basenameWithoutExtension(remoteFileName),
       'type': p.extension(remoteFileName).replaceAll('.', ''),

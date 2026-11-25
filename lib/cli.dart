@@ -76,7 +76,8 @@ class InternxtCLI {
           allowed: ['overwrite', 'skip', 'safety_pattern'],
           defaultsTo: 'skip')
       ..addMultiOption('type',
-          help: 'search: file extension to include (repeatable; "folder" includes folders)')
+          help:
+              'search: file extension to include (repeatable; "folder" includes folders)')
       ..addOption('min-size', help: 'search: minimum file size in bytes')
       ..addOption('max-size', help: 'search: maximum file size in bytes')
       ..addOption('modified-after', help: 'search: ISO 8601 date')
@@ -596,8 +597,9 @@ class InternxtCLI {
 
   /// Supports the canonical `--target/-t/--path` target option and the older
   /// shorthand `upload SOURCE /Remote`, including Windows `\Remote` spelling.
-  static ({List<String> sources, String targetPath}) parseUploadSourcesAndTarget(
-      List<String> rawSources, String? optionTarget) {
+  static ({List<String> sources, String targetPath})
+      parseUploadSourcesAndTarget(
+          List<String> rawSources, String? optionTarget) {
     final sources = List<String>.from(rawSources);
     var targetPath = normalizeRemotePath(optionTarget);
 

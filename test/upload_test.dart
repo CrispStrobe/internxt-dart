@@ -333,8 +333,7 @@ void main() {
         final data = List<int>.generate(10000, (i) => i % 251);
         await file.writeAsBytes(data);
 
-        final read =
-            await readLocalFileBytesWithRetry(file, chunkSize: 1024);
+        final read = await readLocalFileBytesWithRetry(file, chunkSize: 1024);
         expect(read, equals(data));
       } finally {
         if (await dir.exists()) await dir.delete(recursive: true);

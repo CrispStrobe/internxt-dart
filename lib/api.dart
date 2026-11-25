@@ -92,8 +92,12 @@ Future<http.Response> makeRequest(
     requestHeaders['Authorization'] = 'Bearer $bearerToken';
   }
 
+  // Only the request itself sits in the try: a transport failure there is
+  // retried in the catch. The 5xx retry and the status check come after
+  // it, so a nested retry's outcome propagates as-is instead of being
+  // caught and retried a second time here.
+  http.Response response;
   try {
-    http.Response response;
     switch (method.toUpperCase()) {
       case 'GET':
         response = client != null
@@ -123,38 +127,6 @@ Future<http.Response> makeRequest(
       default:
         throw Exception('Unsupported method');
     }
-
-    if (response.statusCode >= 500 && retryCount < maxRetries) {
-      final delay = Duration(seconds: pow(2, retryCount).toInt());
-      await Future<void>.delayed(delay);
-      return makeRequest(
-        method,
-        url,
-        bearerToken: bearerToken,
-        headers: headers,
-        body: body,
-        useAuth: useAuth,
-        isNetworkAuth: isNetworkAuth,
-        networkUser: networkUser,
-        networkPass: networkPass,
-        retryCount: retryCount + 1,
-        client: client,
-      );
-    }
-
-    if (response.statusCode >= 400) {
-      throw ApiException(response.statusCode, response.body);
-    }
-
-    return response;
-  } on ApiException {
-    // An error *response* — the server answered. Surface it as-is so the
-    // caller sees the real status and body. Retrying here used to swallow
-    // the true error: the retry below dropped the network-auth arguments,
-    // so e.g. a genuine 420 "Max space used" came back as a bogus 401
-    // "No authentication strategy detected". 5xx retries are handled
-    // above, before the throw.
-    rethrow;
   } catch (e) {
     // Transport failure (socket, DNS, timeout) — worth retrying.
     if (retryCount < maxRetries) {
@@ -174,6 +146,35 @@ Future<http.Response> makeRequest(
     }
     rethrow;
   }
+
+  if (response.statusCode >= 500 && retryCount < maxRetries) {
+    final delay = Duration(seconds: pow(2, retryCount).toInt());
+    await Future<void>.delayed(delay);
+    return makeRequest(
+      method,
+      url,
+      bearerToken: bearerToken,
+      headers: headers,
+      body: body,
+      useAuth: useAuth,
+      isNetworkAuth: isNetworkAuth,
+      networkUser: networkUser,
+      networkPass: networkPass,
+      retryCount: retryCount + 1,
+      client: client,
+    );
+  }
+
+  // An error *response* — the server answered. Surface it as-is so the
+  // caller sees the real status and body. It is thrown outside the try
+  // above, so the transport retry never swallows it (that retry used to
+  // drop the network-auth arguments, so e.g. a genuine 420 "Max space
+  // used" came back as a bogus 401 "No authentication strategy detected").
+  if (response.statusCode >= 400) {
+    throw ApiException(response.statusCode, response.body);
+  }
+
+  return response;
 }
 
 // --- Raw drive endpoint wrappers ---
@@ -303,7 +304,8 @@ Future<List<dynamic>> searchFiles(
   http.Client? client,
 }) async {
   final text = query.trim();
-  if (text.length < fuzzySearchMinLength || text.length > fuzzySearchMaxLength) {
+  if (text.length < fuzzySearchMinLength ||
+      text.length > fuzzySearchMaxLength) {
     throw ArgumentError.value(query, 'query',
         'Search text must be $fuzzySearchMinLength-$fuzzySearchMaxLength characters (Internxt API limit)');
   }
